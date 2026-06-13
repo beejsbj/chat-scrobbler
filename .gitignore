@@ -1,0 +1,20 @@
+# Original platform exports (Google Takeout, ChatGPT/Claude exports) — the
+# immutable groundwork. Bulky; kept locally, never committed.
+takeout-exports/
+
+# Scrobbler raw API captures — provider payloads shipped by the extension
+raw/
+
+# Derived, rebuildable artifacts (regenerate with `bun run unify`)
+index/
+canonical/
+
+# Local backup snapshots (chat-scrobbler backup) + compiled distributable
+backups/
+dist/
+
+# Tooling / OS
+node_modules/
+packages/extension/build/
+.DS_Store
+*.log

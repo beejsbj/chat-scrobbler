@@ -1,0 +1,63 @@
+{
+  "source": "claude",
+  "capture_method": "api",
+  "schema_version": 1,
+  "fetched_at": "2026-06-05T10:05:00.000Z",
+  "source_id": "cl-1",
+  "endpoint": "/api/organizations/org-1/chat_conversations/cl-1?tree=True&rendering_mode=messages&render_all_tools=true",
+  "account": "org-1",
+  "conversation_updated_at": "2025-01-01T00:10:00.000Z",
+  "cursor": null,
+  "raw_url": "https://claude.ai/chat/cl-1",
+  "payload": {
+    "uuid": "cl-1",
+    "name": "Healing",
+    "summary": "",
+    "model": "claude-3-5-sonnet",
+    "platform": "web",
+    "is_starred": false,
+    "is_temporary": false,
+    "settings": {},
+    "created_at": "2025-01-01T00:00:00Z",
+    "updated_at": "2025-01-01T00:10:00Z",
+    "current_leaf_message_uuid": "m2",
+    "chat_messages": [
+      {
+        "uuid": "m1",
+        "index": 0,
+        "sender": "human",
+        "created_at": "2025-01-01T00:00:01Z",
+        "updated_at": "2025-01-01T00:00:01Z",
+        "parent_message_uuid": "00000000-0000-4000-8000-000000000000",
+        "input_mode": "default",
+        "stop_reason": null,
+        "truncated": false,
+        "sync_sources": [],
+        "text": "What is healing?",
+        "content": [{ "type": "text", "text": "What is healing?", "citations": [], "start_timestamp": "2025-01-01T00:00:01Z", "stop_timestamp": "2025-01-01T00:00:01Z" }],
+        "attachments": [],
+        "files": [{ "file_uuid": "f-1", "file_name": "note.png" }]
+      },
+      {
+        "uuid": "m2",
+        "index": 1,
+        "sender": "assistant",
+        "created_at": "2025-01-01T00:00:05Z",
+        "updated_at": "2025-01-01T00:00:05Z",
+        "parent_message_uuid": "m1",
+        "input_mode": null,
+        "stop_reason": "stop_sequence",
+        "truncated": false,
+        "sync_sources": [],
+        "text": "Healing is...",
+        "content": [
+          { "type": "thinking", "thinking": "Consider definitions.", "summaries": [], "cut_off": false, "truncated": false, "start_timestamp": "2025-01-01T00:00:02Z", "stop_timestamp": "2025-01-01T00:00:03Z" },
+          { "type": "text", "text": "Healing is restoration of wholeness.", "citations": [], "start_timestamp": "2025-01-01T00:00:04Z", "stop_timestamp": "2025-01-01T00:00:05Z" },
+          { "type": "tool_use", "name": "artifacts", "input": { "id": "art1", "type": "text/markdown", "title": "Healing Note", "content": "# Healing", "version_uuid": "v1" } }
+        ],
+        "attachments": [],
+        "files": []
+      }
+    ]
+  }
+}

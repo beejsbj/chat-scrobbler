@@ -1,0 +1,35 @@
+[
+  {
+    "conversation_id": "conv-1",
+    "title": "Ego and Identity",
+    "create_time": 1700000000.0,
+    "update_time": 1700000600.0,
+    "default_model_slug": "gpt-4",
+    "current_node": "n3",
+    "mapping": {
+      "root": { "id": "root", "message": null, "parent": null, "children": ["n1"] },
+      "n1": {
+        "id": "n1",
+        "message": { "id": "n1", "author": { "role": "user" }, "create_time": 1700000001.0,
+          "content": { "content_type": "text", "parts": ["What is ego?"] }, "metadata": {} },
+        "parent": "root", "children": ["n2"]
+      },
+      "n2": {
+        "id": "n2",
+        "message": { "id": "n2", "author": { "role": "assistant" }, "create_time": 1700000002.0,
+          "content": { "content_type": "thoughts", "thoughts": [{ "content": "Consider self-protection.", "summary": "s" }] },
+          "metadata": { "model_slug": "gpt-4" } },
+        "parent": "n1", "children": ["n3"]
+      },
+      "n3": {
+        "id": "n3",
+        "message": { "id": "n3", "author": { "role": "assistant" }, "create_time": 1700000003.0,
+          "content": { "content_type": "multimodal_text", "parts": [
+            "Ego is a protective interface.",
+            { "content_type": "image_asset_pointer", "asset_pointer": "file-service://file-IMG1" }
+          ] }, "metadata": { "model_slug": "gpt-4" } },
+        "parent": "n2", "children": []
+      }
+    }
+  }
+]

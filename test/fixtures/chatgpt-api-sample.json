@@ -1,0 +1,94 @@
+{
+  "source": "chatgpt",
+  "capture_method": "api",
+  "schema_version": 1,
+  "fetched_at": "2026-06-05T10:00:00.000Z",
+  "source_id": "conv-1",
+  "endpoint": "/backend-api/conversation/conv-1",
+  "account": null,
+  "conversation_updated_at": "2023-11-14T22:23:20.000Z",
+  "cursor": null,
+  "raw_url": "https://chatgpt.com/c/conv-1",
+  "payload": {
+    "conversation_id": "conv-1",
+    "title": "Ego and Identity",
+    "create_time": 1700000000.0,
+    "update_time": 1700000600.0,
+    "default_model_slug": "gpt-4",
+    "current_node": "n3",
+    "is_archived": false,
+    "is_starred": false,
+    "owner": "user-xyz",
+    "moderation_results": [],
+    "safe_urls": [],
+    "blocked_urls": [],
+    "gizmo_id": null,
+    "gizmo_type": null,
+    "async_status": null,
+    "conversation_origin": null,
+    "is_temporary_chat": false,
+    "mapping": {
+      "root": { "id": "root", "message": null, "parent": null, "children": ["n1"] },
+      "n1": {
+        "id": "n1",
+        "message": {
+          "id": "n1",
+          "author": { "role": "user", "name": null, "metadata": {} },
+          "create_time": 1700000001.0,
+          "update_time": null,
+          "content": { "content_type": "text", "parts": ["What is ego?"] },
+          "status": "finished_successfully",
+          "end_turn": true,
+          "weight": 1.0,
+          "metadata": {},
+          "recipient": "all",
+          "channel": null
+        },
+        "parent": "root",
+        "children": ["n2"]
+      },
+      "n2": {
+        "id": "n2",
+        "message": {
+          "id": "n2",
+          "author": { "role": "assistant", "name": null, "metadata": {} },
+          "create_time": 1700000002.0,
+          "update_time": null,
+          "content": { "content_type": "thoughts", "thoughts": [{ "content": "Consider self-protection.", "summary": "s" }], "source_analysis_msg_id": "n2" },
+          "status": "finished_successfully",
+          "end_turn": false,
+          "weight": 1.0,
+          "metadata": { "model_slug": "gpt-4" },
+          "recipient": "all",
+          "channel": "analysis"
+        },
+        "parent": "n1",
+        "children": ["n3"]
+      },
+      "n3": {
+        "id": "n3",
+        "message": {
+          "id": "n3",
+          "author": { "role": "assistant", "name": null, "metadata": {} },
+          "create_time": 1700000003.0,
+          "update_time": null,
+          "content": {
+            "content_type": "multimodal_text",
+            "parts": [
+              "Ego is a protective interface.",
+              { "content_type": "image_asset_pointer", "asset_pointer": "file-service://file-IMG1", "width": 512, "height": 512 }
+            ]
+          },
+          "status": "finished_successfully",
+          "end_turn": true,
+          "weight": 1.0,
+          "metadata": { "model_slug": "gpt-4" },
+          "recipient": "all",
+          "channel": "final"
+        },
+        "parent": "n2",
+        "children": []
+      }
+    }
+  }
+}

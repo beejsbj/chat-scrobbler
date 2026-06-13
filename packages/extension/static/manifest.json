@@ -1,0 +1,38 @@
+{
+  "manifest_version": 3,
+  "name": "Chat Scrobbler",
+  "version": "0.1.0",
+  "description": "Scrobbles logged-in ChatGPT, Claude, and Gemini conversations into a local unified-session ingest receiver.",
+  "permissions": ["alarms", "cookies", "storage", "tabs"],
+  "host_permissions": [
+    "http://127.0.0.1/*",
+    "http://localhost/*",
+    "http://*.ts.net/*",
+    "https://*.ts.net/*",
+    "https://chatgpt.com/*",
+    "https://chat.openai.com/*",
+    "https://auth.openai.com/*",
+    "https://claude.ai/*",
+    "https://gemini.google.com/*"
+  ],
+  "background": {
+    "service_worker": "dist/background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_title": "Chat Scrobbler",
+    "default_popup": "popup.html"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://chatgpt.com/*",
+        "https://chat.openai.com/*",
+        "https://claude.ai/*",
+        "https://gemini.google.com/*"
+      ],
+      "js": ["dist/content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}

@@ -1,0 +1,267 @@
+// src/cli/chat-scrobbler.ts
+// CLI entrypoint for the chat-scrobbler tool.
+// Subcommands: search, get, list, unify, serve, backup, backups, restore
+// Arg parsing: manual / node:util parseArgs (no extra packages).
+
+import { parseArgs } from "node:util";
+import { homedir } from "node:os";
+import { join } from "node:path";
+import { loadConfig } from "../config";
+import {
+  runSearch,
+  runGet,
+  runList,
+  runUnifyCmd,
+  runInit,
+  runBackup,
+  runBackups,
+  runRestore,
+  runConnect,
+  startServe,
+  printServeInfo,
+} from "./commands";
+
+const USAGE = `
+Usage: chat-scrobbler <command> [options]
+
+Commands:
+  search <query>         Full-text search across all messages
+    --source <s>           Filter to chatgpt|claude|gemini
+    --limit <n>            Max results (default 20)
+    --json                 Output raw JSON array
+
+  get <id>               Fetch a session by id (e.g. claude:abc123)
+    --format json|markdown Output format (default json)
+    --markdown             Shorthand for --format markdown
+
+  list                   List sessions (newest first)
+    --source <s>           Filter by source
+    --title <substr>       Filter by title substring
+    --limit <n>            Max results (default 50)
+    --json                 Output raw JSON array
+
+  init                   Scaffold data dirs + a starter config file
+    --config <path>        Where to write the config (default ~/.config/chat-scrobbler/config.json)
+
+  unify                  Rebuild the SQLite index from canonical/
+
+  serve                  Start the ingest receiver + MCP HTTP connector
+
+  mcp                    Run the read-only MCP server over stdio (for Claude Desktop)
+
+  connect                Print the MCP endpoint + how to wire it into clients
+
+  backup                 Snapshot canonical/ (+ config) to every configured target
+    --target <path>        Back up only to this one target
+    --config <path>        Include a specific config file in the snapshot
+
+  backups                List snapshots in the primary (first) backup target
+    --target <path>        Use a different target
+    --json                 Output raw JSON array
+
+  restore <snapshot>     Restore a snapshot from the primary (first) backup target
+    --target <path>        Restore from a different target
+    --force                Overwrite a non-empty canonical dir
+
+  --help                 Show this help
+`.trim();
+
+async function main(argv: string[]): Promise<void> {
+  if (argv.length === 0 || argv[0] === "--help" || argv[0] === "-h") {
+    process.stdout.write(USAGE + "\n");
+    process.exit(0);
+  }
+
+  const [command, ...rest] = argv;
+  const cfg = loadConfig();
+  const write = (s: string) => process.stdout.write(s + "\n");
+
+  try {
+    switch (command) {
+      case "search": {
+        const { positionals, values } = parseArgs({
+          args: rest,
+          options: {
+            source: { type: "string" },
+            limit: { type: "string" },
+            json: { type: "boolean", default: false },
+          },
+          allowPositionals: true,
+          strict: false,
+        });
+        const query = positionals[0] ?? "";
+        await runSearch({
+          query,
+          cfg,
+          source: values.source as string | undefined,
+          limit: values.limit ? Number(values.limit) : undefined,
+          json: values.json as boolean | undefined,
+          write,
+        });
+        break;
+      }
+
+      case "get": {
+        const { positionals, values } = parseArgs({
+          args: rest,
+          options: {
+            format: { type: "string" },
+            markdown: { type: "boolean", default: false },
+          },
+          allowPositionals: true,
+          strict: false,
+        });
+        const id = positionals[0];
+        if (!id) {
+          process.stderr.write("Error: get requires a session id\n");
+          process.exit(1);
+        }
+        const fmt = values.markdown
+          ? "markdown"
+          : (values.format as "json" | "markdown" | undefined) ?? "json";
+        await runGet({ id, cfg, format: fmt, write });
+        break;
+      }
+
+      case "list": {
+        const { values } = parseArgs({
+          args: rest,
+          options: {
+            source: { type: "string" },
+            title: { type: "string" },
+            limit: { type: "string" },
+            json: { type: "boolean", default: false },
+          },
+          strict: false,
+        });
+        await runList({
+          cfg,
+          source: values.source as string | undefined,
+          titleContains: values.title as string | undefined,
+          limit: values.limit ? Number(values.limit) : undefined,
+          json: values.json as boolean | undefined,
+          write,
+        });
+        break;
+      }
+
+      case "unify": {
+        await runUnifyCmd({ cfg, write });
+        break;
+      }
+
+      case "init": {
+        const { values } = parseArgs({
+          args: rest,
+          options: { config: { type: "string" } },
+          strict: false,
+        });
+        const configFilePath =
+          (values.config as string | undefined) ??
+          join(homedir(), ".config", "chat-scrobbler", "config.json");
+        await runInit({ cfg, configFilePath, write });
+        break;
+      }
+
+      case "serve": {
+        const handles = await startServe(cfg);
+        printServeInfo(cfg, handles);
+        // Keep alive indefinitely until the process is terminated.
+        await new Promise<void>(() => {});
+        break;
+      }
+
+      case "mcp": {
+        // Read-only MCP over stdio. Imported lazily so the common CLI paths do
+        // not pull in the MCP SDK.
+        const { buildServer } = await import("../mcp/server");
+        const { StdioServerTransport } = await import(
+          "@modelcontextprotocol/sdk/server/stdio.js"
+        );
+        const server = buildServer({ indexPath: cfg.indexPath, canonicalDir: cfg.canonicalDir });
+        await server.connect(new StdioServerTransport());
+        // connect() keeps the process alive on stdio.
+        break;
+      }
+
+      case "connect": {
+        runConnect({ cfg, write });
+        break;
+      }
+
+      case "backup": {
+        const { values } = parseArgs({
+          args: rest,
+          options: {
+            target: { type: "string" },
+            config: { type: "string" },
+          },
+          strict: false,
+        });
+        await runBackup({
+          cfg,
+          targetSpec: values.target as string | undefined,
+          configPath: values.config as string | undefined,
+          write,
+        });
+        break;
+      }
+
+      case "backups": {
+        const { values } = parseArgs({
+          args: rest,
+          options: {
+            target: { type: "string" },
+            json: { type: "boolean", default: false },
+          },
+          strict: false,
+        });
+        await runBackups({
+          cfg,
+          targetSpec: values.target as string | undefined,
+          json: values.json as boolean | undefined,
+          write,
+        });
+        break;
+      }
+
+      case "restore": {
+        const { positionals, values } = parseArgs({
+          args: rest,
+          options: {
+            target: { type: "string" },
+            force: { type: "boolean", default: false },
+          },
+          allowPositionals: true,
+          strict: false,
+        });
+        const snapshot = positionals[0];
+        if (!snapshot) {
+          process.stderr.write("Error: restore requires a snapshot name (see: chat-scrobbler backups)\n");
+          process.exit(1);
+        }
+        await runRestore({
+          cfg,
+          snapshot,
+          targetSpec: values.target as string | undefined,
+          force: values.force as boolean | undefined,
+          write,
+        });
+        break;
+      }
+
+      default: {
+        process.stderr.write(`Unknown command: "${command}"\n\n${USAGE}\n`);
+        process.exit(2);
+      }
+    }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    process.stderr.write(`Error: ${msg}\n`);
+    process.exit(1);
+  }
+}
+
+if (import.meta.main) {
+  await main(process.argv.slice(2));
+}

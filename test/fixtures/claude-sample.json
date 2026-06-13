@@ -1,0 +1,29 @@
+[
+  {
+    "uuid": "cl-1",
+    "name": "Healing",
+    "created_at": "2025-01-01T00:00:00Z",
+    "updated_at": "2025-01-01T00:10:00Z",
+    "account": { "uuid": "acct-9" },
+    "chat_messages": [
+      {
+        "uuid": "m1", "sender": "human", "created_at": "2025-01-01T00:00:01Z",
+        "parent_message_uuid": "00000000-0000-4000-8000-000000000000",
+        "text": "What is healing?",
+        "content": [{ "type": "text", "text": "What is healing?" }],
+        "attachments": [], "files": [{ "file_uuid": "f-1", "file_name": "note.png" }]
+      },
+      {
+        "uuid": "m2", "sender": "assistant", "created_at": "2025-01-01T00:00:05Z",
+        "parent_message_uuid": "m1",
+        "text": "Healing is...",
+        "content": [
+          { "type": "thinking", "thinking": "Consider definitions." },
+          { "type": "text", "text": "Healing is restoration of wholeness." },
+          { "type": "tool_use", "name": "artifacts", "input": { "id": "art1", "type": "text/markdown", "title": "Healing Note", "content": "# Healing", "version_uuid": "v1" } }
+        ],
+        "attachments": [], "files": []
+      }
+    ]
+  }
+]

@@ -1,0 +1,27 @@
+{
+  "name": "chat-scrobbler",
+  "version": "1.0.0",
+  "module": "src/cli/unify.ts",
+  "type": "module",
+  "scripts": {
+    "test": "bun test",
+    "cli": "bun run src/cli/chat-scrobbler.ts",
+    "serve": "bun run src/cli/chat-scrobbler.ts serve",
+    "unify": "bun run src/cli/unify.ts",
+    "mcp": "bun run src/mcp/server.ts",
+    "mcp:http": "bun run src/mcp/http.ts",
+    "ingest": "bun run packages/ingest/src/index.ts",
+    "build:extension": "bun run packages/extension/scripts/build.ts",
+    "build:dist": "bun run scripts/build-dist.ts",
+    "release": "bun run scripts/release.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "zod": "^3.23.0"
+  },
+  "devDependencies": {
+    "bun-types": "latest",
+    "typescript": "^5.5.0"
+  }
+}
