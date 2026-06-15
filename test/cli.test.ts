@@ -278,6 +278,33 @@ test("CLI spawn: list --json exits 0 with parseable JSON", () => {
   expect(Array.isArray(parsed)).toBe(true);
 });
 
+test("CLI spawn: --help explains what it is, the mental model, and the recall workflow", () => {
+  const result = Bun.spawnSync(
+    [process.execPath, "run", "src/cli/chat-scrobbler.ts", "--help"],
+    { cwd: repoRoot, env: process.env }
+  );
+  expect(result.exitCode).toBe(0);
+  const out = result.stdout.toString();
+
+  // What it is: names the providers it captures.
+  expect(out).toContain("ChatGPT");
+  expect(out).toContain("Claude");
+  expect(out).toContain("Gemini");
+
+  // Mental model: the session-id format an agent must construct.
+  expect(out).toContain("<source>:<source_id>");
+
+  // Recall workflow: search comes before get, the two-step an agent follows.
+  const searchIdx = out.indexOf("search");
+  const getIdx = out.indexOf("get ");
+  expect(searchIdx).toBeGreaterThan(-1);
+  expect(getIdx).toBeGreaterThan(searchIdx);
+
+  // Machine-readable affordance and a pointer to deeper docs.
+  expect(out).toContain("--json");
+  expect(out).toContain("github.com/beejsbj/chat-scrobbler");
+});
+
 test("CLI spawn: unknown command exits 2", () => {
   const result = Bun.spawnSync(
     [process.execPath, "run", "src/cli/chat-scrobbler.ts", "notacommand"],

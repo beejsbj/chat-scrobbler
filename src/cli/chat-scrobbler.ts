@@ -22,15 +22,36 @@ import {
 } from "./commands";
 
 const USAGE = `
+chat-scrobbler -- your AI chat history, captured and queryable.
+
+It scrobbles every conversation you have with ChatGPT, Claude, and Gemini into a
+local store you own: one canonical JSON file per session (the source of truth),
+indexed in SQLite FTS5 (a rebuildable view). The exact same search/get/list
+surface is exposed over a read-only MCP server, so agents and MCP clients query
+precisely what this CLI returns.
+
+Mental model
+  - A session id is "<source>:<source_id>", e.g. chatgpt:abc123, claude:cl-xyz.
+  - Sources are: chatgpt | claude | gemini.
+  - search spans every message in every branch, including edited and abandoned
+    forks, not just the visible path.
+  - Data lives in ~/.local/share/chat-scrobbler/ (override with CANONICAL_DIR);
+    the SQLite index is a throwaway view rebuilt by 'unify'.
+
+Recall workflow (the two steps an agent follows)
+  1. chat-scrobbler search "<terms>" --json      # find candidate sessions
+  2. chat-scrobbler get <source>:<source_id> --markdown   # read the full thread
+  Pass --json to search/get/list for machine-readable output.
+
 Usage: chat-scrobbler <command> [options]
 
-Commands:
+Recall
   search <query>         Full-text search across all messages
     --source <s>           Filter to chatgpt|claude|gemini
     --limit <n>            Max results (default 20)
     --json                 Output raw JSON array
 
-  get <id>               Fetch a session by id (e.g. claude:abc123)
+  get <id>               Fetch one session by id (e.g. claude:cl-xyz)
     --format json|markdown Output format (default json)
     --markdown             Shorthand for --format markdown
 
@@ -40,17 +61,19 @@ Commands:
     --limit <n>            Max results (default 50)
     --json                 Output raw JSON array
 
+Operate
   init                   Scaffold data dirs + a starter config file
-    --config <path>        Where to write the config (default ~/.config/chat-scrobbler/config.json)
+    --config <path>        Where to write it (default ~/.config/chat-scrobbler/config.json)
 
-  unify                  Rebuild the SQLite index from canonical/
-
-  serve                  Start the ingest receiver + MCP HTTP connector
+  serve                  Start the ingest receiver + MCP HTTP connector (always-on capture)
 
   mcp                    Run the read-only MCP server over stdio (for Claude Desktop)
 
   connect                Print the MCP endpoint + how to wire it into clients
 
+  unify                  Rebuild the SQLite index from canonical/
+
+Backup
   backup                 Snapshot canonical/ (+ config) to every configured target
     --target <path>        Back up only to this one target
     --config <path>        Include a specific config file in the snapshot
@@ -64,6 +87,8 @@ Commands:
     --force                Overwrite a non-empty canonical dir
 
   --help                 Show this help
+
+Docs: https://github.com/beejsbj/chat-scrobbler  (see ARCHITECTURE.md, ROADMAP.md)
 `.trim();
 
 async function main(argv: string[]): Promise<void> {
