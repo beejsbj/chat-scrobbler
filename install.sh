@@ -48,8 +48,26 @@ echo "chat-scrobbler: installed to ${BIN_DIR}/chat-scrobbler"
 
 case ":${PATH}:" in
   *":${BIN_DIR}:"*) ;;
-  *) echo ""; echo "Add ${BIN_DIR} to your PATH, then restart your shell:";
-     echo "  echo 'export PATH=\"\$HOME/.local/bin:\$PATH\"' >> ~/.zshrc" ;;
+  *)
+    shell_rc=""
+    case "${SHELL:-}" in
+      */zsh)  shell_rc="${HOME}/.zshrc" ;;
+      */bash) shell_rc="${HOME}/.bashrc" ;;
+    esac
+    if [ -n "$shell_rc" ]; then
+      line='export PATH="$HOME/.local/bin:$PATH"'
+      if ! grep -qF "$line" "$shell_rc" 2>/dev/null; then
+        echo "" >> "$shell_rc"
+        echo "# chat-scrobbler" >> "$shell_rc"
+        echo "$line" >> "$shell_rc"
+        echo "chat-scrobbler: added ${BIN_DIR} to PATH in ${shell_rc}"
+        echo "  (restart your shell or: source ${shell_rc})"
+      fi
+    else
+      echo ""
+      echo "Add ${BIN_DIR} to your PATH, then restart your shell."
+    fi
+    ;;
 esac
 
 cat <<EOF
