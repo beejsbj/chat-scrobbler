@@ -69,6 +69,16 @@ chat-scrobbler get chatgpt:<id> --markdown
 chat-scrobbler backup
 ```
 
+`get` can narrow a conversation down for an agent: `--role` keeps only the turns
+you want (`user`, `assistant`, `system`, `tool`, comma-separated), and
+`--text-only` strips reasoning and tool blocks to leave just the prose. They
+compose:
+
+```bash
+chat-scrobbler get chatgpt:<id> --role user                 # just your prompts
+chat-scrobbler get chatgpt:<id> --role assistant --text-only # answers, no thinking
+```
+
 The MCP server exposes the same search/get/list over a read-only connector, so
 any MCP client gets exactly what the CLI gets. `chat-scrobbler connect` prints
 a ready-to-paste Claude Desktop config and the local endpoint URL.
