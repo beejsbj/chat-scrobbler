@@ -57,6 +57,7 @@ Recall
     --role <roles>         Keep only these turn roles along the conversation,
                            comma-separated: user,assistant,system,tool
                            (e.g. --role user = just your prompts)
+    --text-only            Strip reasoning and tool blocks, keep only prose
 
   list                   List sessions (newest first)
     --source <s>           Filter by source
@@ -136,6 +137,7 @@ async function main(argv: string[]): Promise<void> {
             format: { type: "string" },
             markdown: { type: "boolean", default: false },
             role: { type: "string" },
+            "text-only": { type: "boolean", default: false },
           },
           allowPositionals: true,
           strict: false,
@@ -151,7 +153,8 @@ async function main(argv: string[]): Promise<void> {
         const roles = values.role
           ? (values.role as string).split(",").map((r) => r.trim()).filter(Boolean)
           : undefined;
-        await runGet({ id, cfg, format: fmt, roles, write });
+        const textOnly = values["text-only"] as boolean | undefined;
+        await runGet({ id, cfg, format: fmt, roles, textOnly, write });
         break;
       }
 

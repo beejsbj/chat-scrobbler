@@ -5,7 +5,7 @@
 
 import { openIndex, searchMessages, listSessions } from "../indexer/sqlite";
 import { readSession, sessionToMarkdown, activePath } from "../store/sessions";
-import type { Role } from "../schema/types";
+import type { Role, Block } from "../schema/types";
 import { runUnify } from "./unify";
 import { parseSessionId } from "../core/session-id";
 import { startHttpServer } from "../mcp/http";
@@ -56,12 +56,18 @@ export async function runSearch(opts: SearchOpts): Promise<void> {
 
 const VALID_ROLES: readonly Role[] = ["user", "assistant", "system", "tool"];
 
+function filterTextBlocks(blocks: Block[]): Block[] {
+  return blocks.filter((b) => b.type !== "reasoning" && b.type !== "tool_call" && b.type !== "tool_result");
+}
+
 export interface GetOpts {
   id: string;
   cfg: ChatHistoryConfig;
   format?: "json" | "markdown";
   /** When set, keep only these roles along the active conversation path. */
   roles?: string[];
+  /** When set, strip reasoning and tool blocks, keeping only text/artifact/attachment. */
+  textOnly?: boolean;
   write: Writer;
 }
 
@@ -85,6 +91,18 @@ export async function runGet(opts: GetOpts): Promise<void> {
     // is exactly the filtered turns.
     const messages = activePath(session).filter((m) => wanted.has(m.role));
     session = { ...session, messages, active_leaf_id: null };
+  }
+
+  if (opts.textOnly) {
+    // Strip reasoning and tool blocks, keeping only text/artifact/attachment.
+    // Apply after role filtering so order is deterministic.
+    session = {
+      ...session,
+      messages: session.messages.map((m) => ({
+        ...m,
+        blocks: filterTextBlocks(m.blocks),
+      })),
+    };
   }
 
   if (opts.format === "markdown") {

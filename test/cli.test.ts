@@ -47,7 +47,11 @@ const SESSION_A: Session = {
     {
       id: "msg2", role: "assistant", created_at: "2025-03-01T10:01:00.000Z",
       parent_id: "msg1", model: null,
-      blocks: [{ type: "text", text: "Hi there uniquetokenDEF" }],
+      blocks: [
+        { type: "reasoning", text: "Let me think about this deeply" },
+        { type: "text", text: "Hi there uniquetokenDEF" },
+        { type: "tool_call", name: "search", input: { q: "test" } },
+      ],
       text: "Hi there uniquetokenDEF",
     },
   ],
@@ -196,6 +200,49 @@ test("get rejects an unknown role and throws", async () => {
   await expect(
     runGet({ id: "chatgpt:abc123", cfg, roles: ["robot"], write: () => {} })
   ).rejects.toThrow();
+});
+
+test("get --text-only strips reasoning and tool blocks (json)", async () => {
+  const lines: string[] = [];
+  await runGet({ id: "chatgpt:abc123", cfg, textOnly: true, write: (s) => lines.push(s) });
+  const parsed = JSON.parse(lines.join(""));
+  // msg1 unchanged (only text block)
+  expect(parsed.messages[0].blocks.length).toBe(1);
+  expect(parsed.messages[0].blocks[0].type).toBe("text");
+  // msg2 should have reasoning and tool_call stripped, only text block left
+  expect(parsed.messages[1].blocks.length).toBe(1);
+  expect(parsed.messages[1].blocks[0].type).toBe("text");
+  expect(parsed.messages[1].blocks[0].text).toBe("Hi there uniquetokenDEF");
+});
+
+test("get --text-only strips reasoning and tool blocks (markdown)", async () => {
+  const lines: string[] = [];
+  await runGet({
+    id: "chatgpt:abc123", cfg, textOnly: true, format: "markdown",
+    write: (s) => lines.push(s),
+  });
+  const output = lines.join("\n");
+  // reasoning block text should not appear
+  expect(output).not.toContain("Let me think");
+  // tool call details should not appear
+  expect(output).not.toContain("search");
+  // text blocks should be there
+  expect(output).toContain("Hello uniquetokenABC");
+  expect(output).toContain("Hi there uniquetokenDEF");
+});
+
+test("get --text-only and --role compose", async () => {
+  const lines: string[] = [];
+  await runGet({
+    id: "chatgpt:abc123", cfg, textOnly: true, roles: ["assistant"],
+    write: (s) => lines.push(s),
+  });
+  const parsed = JSON.parse(lines.join(""));
+  // Only assistant turn, with only text blocks
+  expect(parsed.messages.length).toBe(1);
+  expect(parsed.messages[0].role).toBe("assistant");
+  expect(parsed.messages[0].blocks.length).toBe(1);
+  expect(parsed.messages[0].blocks[0].type).toBe("text");
 });
 
 test("get rejects an invalid session id and throws", async () => {
