@@ -4,7 +4,8 @@
 // Zero duplicated query logic: these are thin frontends over the core fns.
 
 import { openIndex, searchMessages, listSessions } from "../indexer/sqlite";
-import { readSession, sessionToMarkdown } from "../store/sessions";
+import { readSession, sessionToMarkdown, activePath } from "../store/sessions";
+import type { Role } from "../schema/types";
 import { runUnify } from "./unify";
 import { parseSessionId } from "../core/session-id";
 import { startHttpServer } from "../mcp/http";
@@ -53,10 +54,14 @@ export async function runSearch(opts: SearchOpts): Promise<void> {
 // get
 // ---------------------------------------------------------------------------
 
+const VALID_ROLES: readonly Role[] = ["user", "assistant", "system", "tool"];
+
 export interface GetOpts {
   id: string;
   cfg: ChatHistoryConfig;
   format?: "json" | "markdown";
+  /** When set, keep only these roles along the active conversation path. */
+  roles?: string[];
   write: Writer;
 }
 
@@ -65,7 +70,23 @@ export async function runGet(opts: GetOpts): Promise<void> {
   if (!parsed.ok) {
     throw new Error(parsed.error);
   }
-  const session = readSession(opts.cfg.canonicalDir, parsed.source, parsed.sourceId);
+  let session = readSession(opts.cfg.canonicalDir, parsed.source, parsed.sourceId);
+
+  if (opts.roles && opts.roles.length > 0) {
+    const wanted = new Set<string>();
+    for (const r of opts.roles) {
+      if (!VALID_ROLES.includes(r as Role)) {
+        throw new Error(`Unknown role "${r}". Valid roles: ${VALID_ROLES.join(", ")}`);
+      }
+      wanted.add(r);
+    }
+    // Filter the active conversation path, not the raw branch tree, so abandoned
+    // forks do not leak in. Drop active_leaf_id so the rendered/serialized view
+    // is exactly the filtered turns.
+    const messages = activePath(session).filter((m) => wanted.has(m.role));
+    session = { ...session, messages, active_leaf_id: null };
+  }
+
   if (opts.format === "markdown") {
     opts.write(sessionToMarkdown(session));
   } else {

@@ -158,6 +158,46 @@ test("get --format markdown returns markdown", async () => {
   expect(output).toContain("uniquetokenABC");
 });
 
+test("get --role user keeps only user turns (json)", async () => {
+  const lines: string[] = [];
+  await runGet({ id: "chatgpt:abc123", cfg, roles: ["user"], write: (s) => lines.push(s) });
+  const parsed = JSON.parse(lines.join(""));
+  // Session wrapper + metadata preserved, messages filtered to user turns.
+  expect(parsed.id).toBe("chatgpt:abc123");
+  expect(parsed.title).toBe("Alpha session");
+  expect(parsed.messages.length).toBe(1);
+  expect(parsed.messages[0].role).toBe("user");
+  expect(parsed.messages[0].text).toContain("uniquetokenABC");
+  // assistant turn dropped
+  expect(lines.join("")).not.toContain("uniquetokenDEF");
+});
+
+test("get --role assistant keeps only assistant turns (markdown)", async () => {
+  const lines: string[] = [];
+  await runGet({
+    id: "chatgpt:abc123", cfg, roles: ["assistant"], format: "markdown",
+    write: (s) => lines.push(s),
+  });
+  const output = lines.join("\n");
+  expect(output).toContain("## assistant");
+  expect(output).toContain("uniquetokenDEF");
+  expect(output).not.toContain("## user");
+  expect(output).not.toContain("uniquetokenABC");
+});
+
+test("get --role user,assistant keeps both turns", async () => {
+  const lines: string[] = [];
+  await runGet({ id: "chatgpt:abc123", cfg, roles: ["user", "assistant"], write: (s) => lines.push(s) });
+  const parsed = JSON.parse(lines.join(""));
+  expect(parsed.messages.length).toBe(2);
+});
+
+test("get rejects an unknown role and throws", async () => {
+  await expect(
+    runGet({ id: "chatgpt:abc123", cfg, roles: ["robot"], write: () => {} })
+  ).rejects.toThrow();
+});
+
 test("get rejects an invalid session id and throws", async () => {
   await expect(
     runGet({ id: "nocolon", cfg, write: () => {} })

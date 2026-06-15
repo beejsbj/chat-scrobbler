@@ -54,6 +54,9 @@ Recall
   get <id>               Fetch one session by id (e.g. claude:cl-xyz)
     --format json|markdown Output format (default json)
     --markdown             Shorthand for --format markdown
+    --role <roles>         Keep only these turn roles along the conversation,
+                           comma-separated: user,assistant,system,tool
+                           (e.g. --role user = just your prompts)
 
   list                   List sessions (newest first)
     --source <s>           Filter by source
@@ -132,6 +135,7 @@ async function main(argv: string[]): Promise<void> {
           options: {
             format: { type: "string" },
             markdown: { type: "boolean", default: false },
+            role: { type: "string" },
           },
           allowPositionals: true,
           strict: false,
@@ -144,7 +148,10 @@ async function main(argv: string[]): Promise<void> {
         const fmt = values.markdown
           ? "markdown"
           : (values.format as "json" | "markdown" | undefined) ?? "json";
-        await runGet({ id, cfg, format: fmt, write });
+        const roles = values.role
+          ? (values.role as string).split(",").map((r) => r.trim()).filter(Boolean)
+          : undefined;
+        await runGet({ id, cfg, format: fmt, roles, write });
         break;
       }
 
