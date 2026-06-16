@@ -13,6 +13,9 @@ canonical/
 backups/
 dist/
 
+# Internal planning docs and design notes — kept with the project, never published
+notes/
+
 # Tooling / OS
 node_modules/
 packages/extension/build/
