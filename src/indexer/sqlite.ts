@@ -3,6 +3,11 @@ import { Database } from "bun:sqlite";
 import type { Session } from "../schema/types";
 import { activePath } from "../store/sessions";
 
+export interface EmbeddingContext {
+  kind: "query" | "document";
+  title?: string | null;
+}
+
 export interface MessageHit {
   snippet: string; session_id: string; message_id: string;
   role: string; created_at: string | null; source: string; title: string | null;
@@ -13,23 +18,10 @@ export interface SessionSummary {
   created_at: string; updated_at: string; message_count: number;
 }
 export interface EmbeddingProvider {
-  dimensions: number;
-  embed(text: string): number[];
+  readonly kind?: string;
+  readonly dimensions?: number | null;
+  embed(text: string, context?: EmbeddingContext): number[] | Promise<number[]>;
 }
-
-export class HashEmbeddingProvider implements EmbeddingProvider {
-  dimensions = 64;
-  embed(text: string): number[] {
-    const vector = new Array(this.dimensions).fill(0);
-    for (const token of tokenizeForEmbedding(text)) {
-      const idx = hashToken(token) % this.dimensions;
-      vector[idx] += 1;
-    }
-    return normalize(vector);
-  }
-}
-
-const DEFAULT_EMBEDDING_PROVIDER = new HashEmbeddingProvider();
 
 export interface IndexSessionOptions { embeddingProvider?: EmbeddingProvider | null; }
 export interface SearchMessagesOptions { source?: string; limit?: number; embeddingProvider?: EmbeddingProvider | null; }
@@ -61,7 +53,7 @@ export function indexSession(db: Database, s: Session, opts: IndexSessionOptions
   const stmt = db.prepare(
     `INSERT INTO messages_fts (text, message_id, session_id, role, created_at, source, title)
      VALUES (?,?,?,?,?,?,?)`);
-  const embeddingProvider = opts.embeddingProvider === null ? null : (opts.embeddingProvider ?? DEFAULT_EMBEDDING_PROVIDER);
+  const embeddingProvider = opts.embeddingProvider ?? null;
   const embeddingStmt = db.prepare(
     `INSERT INTO message_embeddings (session_id, message_id, embedding, text, role, created_at, source, title)
      VALUES (?,?,?,?,?,?,?,?)`);
@@ -69,8 +61,35 @@ export function indexSession(db: Database, s: Session, opts: IndexSessionOptions
     if (!m.text) continue;
     stmt.run(m.text, m.id, s.id, m.role, m.created_at, s.source, s.title);
     if (embeddingProvider) {
-      embeddingStmt.run(s.id, m.id, JSON.stringify(embeddingProvider.embed(m.text)), m.text, m.role, m.created_at, s.source, s.title);
+      embeddingStmt.run(s.id, m.id, JSON.stringify(syncEmbedding(embeddingProvider, m.text, { kind: "document", title: s.title })), m.text, m.role, m.created_at, s.source, s.title);
     }
+  }
+}
+
+export async function indexSessionWithEmbeddings(db: Database, s: Session, opts: IndexSessionOptions = {}): Promise<void> {
+  const embeddingProvider = opts.embeddingProvider ?? null;
+  if (!embeddingProvider) {
+    indexSession(db, s, { embeddingProvider: null });
+    return;
+  }
+
+  const activeCount = activePath(s).length;
+  db.run(`INSERT OR REPLACE INTO sessions (id, source, source_id, title, created_at, updated_at, message_count)
+          VALUES (?,?,?,?,?,?,?)`,
+    [s.id, s.source, s.source_id, s.title, s.created_at, s.updated_at, activeCount]);
+  db.run(`DELETE FROM messages_fts WHERE session_id = ?`, [s.id]);
+  db.run(`DELETE FROM message_embeddings WHERE session_id = ?`, [s.id]);
+  const stmt = db.prepare(
+    `INSERT INTO messages_fts (text, message_id, session_id, role, created_at, source, title)
+     VALUES (?,?,?,?,?,?,?)`);
+  const embeddingStmt = db.prepare(
+    `INSERT INTO message_embeddings (session_id, message_id, embedding, text, role, created_at, source, title)
+     VALUES (?,?,?,?,?,?,?,?)`);
+  for (const m of s.messages) {
+    if (!m.text) continue;
+    stmt.run(m.text, m.id, s.id, m.role, m.created_at, s.source, s.title);
+    const embedding = await embeddingProvider.embed(m.text, { kind: "document", title: s.title });
+    embeddingStmt.run(s.id, m.id, JSON.stringify(embedding), m.text, m.role, m.created_at, s.source, s.title);
   }
 }
 
@@ -96,52 +115,27 @@ function ftsQuery(raw: string): string {
 export function searchMessages(db: Database, query: string, opts: SearchMessagesOptions = {}): MessageHit[] {
   if (!query.trim()) return [];
   const limit = opts.limit ?? 20;
-  const merged = new Map<string, MessageHit & { literalRank?: number; semanticRank?: number }>();
-  const params: any[] = [ftsQuery(query)];
-  let where = "";
-  if (opts.source) { where = "AND source = ?"; params.push(opts.source); }
-  params.push(limit);
-  const rows = db.query(
-    `SELECT snippet(messages_fts, 0, '[', ']', '…', 12) AS snippet,
-            message_id, session_id, role, created_at, source, title
-     FROM messages_fts WHERE messages_fts MATCH ? ${where}
-     ORDER BY rank LIMIT ?`).all(...params) as any[];
-  rows.forEach((r, idx) => {
-    const key = hitKey(r.session_id, r.message_id);
-    merged.set(key, {
-      snippet: r.snippet, session_id: r.session_id, message_id: r.message_id,
-      role: r.role, created_at: r.created_at, source: r.source, title: r.title,
-      provenance: "literal", score: 0, match_sources: ["literal"], literalRank: idx + 1,
-    });
-  });
+  const merged = literalHits(db, query, opts.source, limit);
 
-  const semanticProvider = opts.embeddingProvider === null ? null : (opts.embeddingProvider ?? DEFAULT_EMBEDDING_PROVIDER);
+  const semanticProvider = opts.embeddingProvider ?? null;
   if (semanticProvider) {
-    const queryEmbedding = semanticProvider.embed(query);
-    const semanticRows = semanticCandidates(db, queryEmbedding, opts.source, Math.max(limit * 3, 20));
-    semanticRows.forEach((r, idx) => {
-      const key = hitKey(r.session_id, r.message_id);
-      const existing = merged.get(key);
-      if (existing) {
-        existing.semanticRank = idx + 1;
-        existing.provenance = "hybrid";
-        existing.match_sources = ["literal", "semantic"];
-      } else {
-        merged.set(key, {
-          snippet: semanticSnippet(r.text, query),
-          session_id: r.session_id, message_id: r.message_id,
-          role: r.role, created_at: r.created_at, source: r.source, title: r.title,
-          provenance: "semantic", score: 0, match_sources: ["semantic"], semanticRank: idx + 1,
-        });
-      }
-    });
+    const queryEmbedding = syncEmbedding(semanticProvider, query, { kind: "query" });
+    mergeSemanticHits(merged, semanticCandidates(db, queryEmbedding, opts.source, Math.max(limit * 3, 20)), query);
   }
 
-  return [...merged.values()]
-    .map((hit) => ({ ...hit, score: fusedScore(hit.literalRank, hit.semanticRank) }))
-    .sort((a, b) => b.score - a.score || (a.created_at ?? "").localeCompare(b.created_at ?? ""))
-    .slice(0, limit)
-    .map(({ literalRank, semanticRank, ...hit }) => hit);
+  return finalizeHits(merged, limit);
+}
+
+export async function searchMessagesWithEmbeddings(db: Database, query: string, opts: SearchMessagesOptions = {}): Promise<MessageHit[]> {
+  if (!query.trim()) return [];
+  const limit = opts.limit ?? 20;
+  const merged = literalHits(db, query, opts.source, limit);
+  const semanticProvider = opts.embeddingProvider ?? null;
+  if (semanticProvider) {
+    const queryEmbedding = await semanticProvider.embed(query, { kind: "query" });
+    mergeSemanticHits(merged, semanticCandidates(db, queryEmbedding, opts.source, Math.max(limit * 3, 20)), query);
+  }
+  return finalizeHits(merged, limit);
 }
 
 export function listSessions(db: Database, opts: { source?: string; titleContains?: string; limit?: number } = {}): SessionSummary[] {
@@ -166,6 +160,57 @@ export function listSessions(db: Database, opts: { source?: string; titleContain
 interface SemanticRow {
   session_id: string; message_id: string; text: string; role: string;
   created_at: string | null; source: string; title: string | null; similarity: number;
+}
+
+type RankedHit = MessageHit & { literalRank?: number; semanticRank?: number };
+
+function literalHits(db: Database, query: string, source: string | undefined, limit: number): Map<string, RankedHit> {
+  const merged = new Map<string, RankedHit>();
+  const params: any[] = [ftsQuery(query)];
+  let where = "";
+  if (source) { where = "AND source = ?"; params.push(source); }
+  params.push(limit);
+  const rows = db.query(
+    `SELECT snippet(messages_fts, 0, '[', ']', '…', 12) AS snippet,
+            message_id, session_id, role, created_at, source, title
+     FROM messages_fts WHERE messages_fts MATCH ? ${where}
+     ORDER BY rank LIMIT ?`).all(...params) as any[];
+  rows.forEach((r, idx) => {
+    const key = hitKey(r.session_id, r.message_id);
+    merged.set(key, {
+      snippet: r.snippet, session_id: r.session_id, message_id: r.message_id,
+      role: r.role, created_at: r.created_at, source: r.source, title: r.title,
+      provenance: "literal", score: 0, match_sources: ["literal"], literalRank: idx + 1,
+    });
+  });
+  return merged;
+}
+
+function mergeSemanticHits(merged: Map<string, RankedHit>, semanticRows: SemanticRow[], query: string): void {
+  semanticRows.forEach((r, idx) => {
+    const key = hitKey(r.session_id, r.message_id);
+    const existing = merged.get(key);
+    if (existing) {
+      existing.semanticRank = idx + 1;
+      existing.provenance = "hybrid";
+      existing.match_sources = ["literal", "semantic"];
+    } else {
+      merged.set(key, {
+        snippet: semanticSnippet(r.text, query),
+        session_id: r.session_id, message_id: r.message_id,
+        role: r.role, created_at: r.created_at, source: r.source, title: r.title,
+        provenance: "semantic", score: 0, match_sources: ["semantic"], semanticRank: idx + 1,
+      });
+    }
+  });
+}
+
+function finalizeHits(merged: Map<string, RankedHit>, limit: number): MessageHit[] {
+  return [...merged.values()]
+    .map((hit) => ({ ...hit, score: fusedScore(hit.literalRank, hit.semanticRank) }))
+    .sort((a, b) => b.score - a.score || (a.created_at ?? "").localeCompare(b.created_at ?? ""))
+    .slice(0, limit)
+    .map(({ literalRank, semanticRank, ...hit }) => hit);
 }
 
 function semanticCandidates(db: Database, queryEmbedding: number[], source: string | undefined, limit: number): SemanticRow[] {
@@ -219,20 +264,10 @@ function cosine(a: number[], b: number[]): number {
   return a2 && b2 ? dot / (Math.sqrt(a2) * Math.sqrt(b2)) : 0;
 }
 
-function tokenizeForEmbedding(text: string): string[] {
-  return text.toLowerCase().match(/[a-z0-9]+/g) ?? [];
-}
-
-function hashToken(token: string): number {
-  let hash = 2166136261;
-  for (let i = 0; i < token.length; i++) {
-    hash ^= token.charCodeAt(i);
-    hash = Math.imul(hash, 16777619);
+function syncEmbedding(provider: EmbeddingProvider, text: string, context: EmbeddingContext): number[] {
+  const result = provider.embed(text, context);
+  if (result instanceof Promise) {
+    throw new Error(`Embedding provider "${provider.kind ?? "unknown"}" is async; use indexSessionWithEmbeddings/searchMessagesWithEmbeddings`);
   }
-  return hash >>> 0;
-}
-
-function normalize(vector: number[]): number[] {
-  const length = Math.sqrt(vector.reduce((sum, v) => sum + v * v, 0));
-  return length ? vector.map((v) => Number((v / length).toFixed(6))) : vector;
+  return result;
 }

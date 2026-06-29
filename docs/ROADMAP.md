@@ -21,12 +21,12 @@ FTS + semantic search into the existing `search` CLI/MCP surface. Embeddings ran
 results; results themselves are always raw verbatim sessions -- no summaries or
 generated artifacts. The embedding index lives in `index/`, never in `canonical/`.
 
-Current backend note: the built-in `HashEmbeddingProvider` is deterministic and has no
-runtime packaging footprint, so tests and local rebuilds are stable. It is a seam, not
-the destination. The recommended real backend path is a local, optional embedding
-provider selected at install/runtime, plus a vector store that can be rebuilt under
-`index/`. Packaging risks to surface before that step: native vector extensions,
-model downloads, CPU/GPU runtime availability, binary size, and first-run latency.
+Current backend note: real providers are configurable without changing the recall
+surface. `gemini` uses `gemini-embedding-2` by default for cloud embeddings; `ollama`
+uses `mxbai-embed-large` by default for local embeddings; `none` keeps literal-only
+search. The deterministic `hash` provider remains only as a test/debug backend.
+Embeddings are stored in SQLite JSON rows under `index/` for now; a vector extension or
+external vector store can replace that implementation later if corpus size demands it.
 
 This also frames a pipeline seam: chat-scrobbler should be easy to wire into external
 memory systems (mem0, Zep, Letta, custom vector stores) both as a data source and as a
@@ -40,8 +40,10 @@ A related affordance is an incremental-export cursor: a way for external tools t
 
 ## Maybe / later
 
-- Attachment byte resolution: map provider media URLs to local files in
-  `canonical/assets/` and populate `Message.Block.attachment.local_path`.
+- Attachment byte resolution and multimodal recall: map provider media URLs to local
+  files in `canonical/assets/`, populate `Message.Block.attachment.local_path`, and
+  decide whether image/file embeddings belong in chat-scrobbler or a downstream wiki
+  engine.
 - More providers: Perplexity, Mistral, or others with accessible APIs.
 - SFTP and S3 backup targets (the interface and `resolveTarget` already reserve these).
 - Chrome Web Store packaging and update infrastructure.

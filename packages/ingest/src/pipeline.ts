@@ -7,7 +7,7 @@ import type { Database } from "bun:sqlite";
 import type { RawCapture } from "../../shared/src";
 import { getParser } from "../../../src/parsers/registry";
 import { writeSession } from "../../../src/store/sessions";
-import { indexSession } from "../../../src/indexer/sqlite";
+import { indexSession, indexSessionWithEmbeddings, type EmbeddingProvider } from "../../../src/indexer/sqlite";
 
 export interface SpineResult {
   session_id: string;
@@ -19,6 +19,7 @@ export interface SpineResult {
 export interface SpineContext {
   canonicalDir: string;
   db: Database;
+  embeddingProvider?: EmbeddingProvider | null;
 }
 
 /** Parse one capture via (source, "api") and persist every session it yields.
@@ -31,4 +32,18 @@ export function foldCaptureIntoSpine(capture: RawCapture, ctx: SpineContext): Sp
     indexSession(ctx.db, session);
     return { session_id: session.id, source: session.source, source_id: session.source_id, indexed: true };
   });
+}
+
+export async function foldCaptureIntoSpineWithEmbeddings(capture: RawCapture, ctx: SpineContext): Promise<SpineResult[]> {
+  if (!ctx.embeddingProvider) return foldCaptureIntoSpine(capture, ctx);
+
+  const parse = getParser(capture.source, "api");
+  const sessions = parse(capture);
+  const results: SpineResult[] = [];
+  for (const session of sessions) {
+    writeSession(ctx.canonicalDir, session);
+    await indexSessionWithEmbeddings(ctx.db, session, { embeddingProvider: ctx.embeddingProvider });
+    results.push({ session_id: session.id, source: session.source, source_id: session.source_id, indexed: true });
+  }
+  return results;
 }

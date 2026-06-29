@@ -6,7 +6,7 @@ import { join } from "node:path";
 import type { Session } from "../src/schema/types";
 import { writeSession } from "../src/store/sessions";
 import { openIndex, indexSession } from "../src/indexer/sqlite";
-import type { ChatHistoryConfig } from "../src/config";
+import { DEFAULT_CONFIG, type ChatHistoryConfig } from "../src/config";
 
 // Import command functions
 import {
@@ -93,6 +93,7 @@ beforeAll(() => {
   db.close();
 
   cfg = {
+    ...DEFAULT_CONFIG,
     canonicalDir: tmpCanonical,
     indexPath: tmpIndex,
     ingestPort: 0,

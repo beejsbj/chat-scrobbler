@@ -124,3 +124,29 @@ test("CHAT_SCROBBLER_CONFIG env var is honored for config file discovery", () =>
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("embedding env config selects local and cloud providers", () => {
+  const gemini = loadConfig({
+    env: {
+      CHAT_SCROBBLER_EMBED_PROVIDER: "gemini",
+      CHAT_SCROBBLER_EMBED_MODEL: "gemini-embedding-2",
+      GEMINI_API_KEY: "key-123",
+    },
+    configPath: null,
+  });
+  expect(gemini.embeddingProvider).toBe("gemini");
+  expect(gemini.embeddingModel).toBe("gemini-embedding-2");
+  expect(gemini.geminiApiKey).toBe("key-123");
+
+  const ollama = loadConfig({
+    env: {
+      CHAT_SCROBBLER_EMBED_PROVIDER: "ollama",
+      CHAT_SCROBBLER_EMBED_MODEL: "mxbai-embed-large",
+      CHAT_SCROBBLER_OLLAMA_BASE_URL: "http://127.0.0.1:11434",
+    },
+    configPath: null,
+  });
+  expect(ollama.embeddingProvider).toBe("ollama");
+  expect(ollama.embeddingModel).toBe("mxbai-embed-large");
+  expect(ollama.ollamaBaseUrl).toBe("http://127.0.0.1:11434");
+});

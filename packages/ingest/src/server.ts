@@ -1,7 +1,7 @@
 import { Database } from "bun:sqlite";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
-import { foldCaptureIntoSpine, type SpineResult } from "./pipeline";
+import { foldCaptureIntoSpineWithEmbeddings, type SpineResult } from "./pipeline";
 import { conversationStatuses } from "./status";
 import {
   ASSET_INGEST_PATH,
@@ -14,6 +14,7 @@ import {
 } from "../../shared/src";
 import { openIndex } from "../../../src/indexer/sqlite";
 import { MAX_ASSET_BYTES, storeCanonicalAsset } from "../../../src/store/assets";
+import type { EmbeddingProvider } from "../../../src/indexer/sqlite";
 
 export interface IngestServerOptions {
   /**
@@ -31,6 +32,7 @@ export interface IngestServerOptions {
    */
   canonicalDir?: string;
   indexPath?: string;
+  embeddingProvider?: EmbeddingProvider | null;
 }
 
 export interface IngestResponse {
@@ -154,7 +156,11 @@ export async function handleIngestRequest(req: Request, opts: IngestServerOption
       const db = indexFor(fat.indexPath);
       for (const capture of captures) {
         try {
-          spine.push(...foldCaptureIntoSpine(capture, { canonicalDir: fat.canonicalDir, db }));
+          spine.push(...await foldCaptureIntoSpineWithEmbeddings(capture, {
+            canonicalDir: fat.canonicalDir,
+            db,
+            embeddingProvider: opts.embeddingProvider ?? null,
+          }));
         } catch (error) {
           logCaptureParseFailure(capture, error);
           throw error;

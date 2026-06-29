@@ -7,6 +7,7 @@ import { parseArgs } from "node:util";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { loadConfig } from "../config";
+import { embeddingProviderFromConfig } from "../indexer/embedding-providers";
 import {
   runSearch,
   runGet,
@@ -26,9 +27,9 @@ chat-scrobbler -- your AI chat history, captured and queryable.
 
 It scrobbles every conversation you have with ChatGPT, Claude, and Gemini into a
 local store you own: one canonical JSON file per session (the source of truth),
-indexed in SQLite FTS5 (a rebuildable view). The exact same search/get/list
-surface is exposed over a read-only MCP server, so agents and MCP clients query
-precisely what this CLI returns.
+indexed in SQLite FTS5 plus optional embeddings (a rebuildable view). The exact
+same search/get/list surface is exposed over a read-only MCP server, so agents
+and MCP clients query precisely what this CLI returns.
 
 Mental model
   - A session id is "<source>:<source_id>", e.g. chatgpt:abc123, claude:cl-xyz.
@@ -46,7 +47,7 @@ Recall workflow (the two steps an agent follows)
 Usage: chat-scrobbler <command> [options]
 
 Recall
-  search <query>         Full-text search across all messages
+  search <query>         Hybrid search when embeddings are enabled; otherwise FTS
     --source <s>           Filter to chatgpt|claude|gemini
     --limit <n>            Max results (default 20)
     --json                 Output raw JSON array
@@ -76,6 +77,9 @@ Operate
   connect                Print the MCP endpoint + how to wire it into clients
 
   unify                  Rebuild the SQLite index from canonical/
+                           Enable semantic recall with:
+                           CHAT_SCROBBLER_EMBED_PROVIDER=gemini|ollama
+                           CHAT_SCROBBLER_EMBED_MODEL=gemini-embedding-2
 
 Backup
   backup                 Snapshot canonical/ (+ config) to every configured target
@@ -213,7 +217,11 @@ async function main(argv: string[]): Promise<void> {
         const { StdioServerTransport } = await import(
           "@modelcontextprotocol/sdk/server/stdio.js"
         );
-        const server = buildServer({ indexPath: cfg.indexPath, canonicalDir: cfg.canonicalDir });
+        const server = buildServer({
+          indexPath: cfg.indexPath,
+          canonicalDir: cfg.canonicalDir,
+          embeddingProvider: embeddingProviderFromConfig(cfg),
+        });
         await server.connect(new StdioServerTransport());
         // connect() keeps the process alive on stdio.
         break;

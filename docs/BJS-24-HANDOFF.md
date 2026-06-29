@@ -1,10 +1,10 @@
-# BJS-24 Handoff: Hybrid Search vs Semantic Recall Quality
+# BJS-24 Handoff: Hybrid Search With Real Providers
 
 ## Assessment
 
-BJS-24 should stay open.
+BJS-24 now has the real provider choice wired behind the existing hybrid seam.
 
-The current implementation adds the right hybrid search/index seam:
+Implemented:
 
 - `chat-scrobbler search` and MCP `search` use one shared `searchMessages` path.
 - Results are one combined ranked set from FTS plus the semantic index table.
@@ -12,54 +12,45 @@ The current implementation adds the right hybrid search/index seam:
 - Existing result fields are preserved, with `provenance`, `score`, and `match_sources`
   added.
 - The semantic index is rebuildable under `index/`, keyed by `(session_id, message_id)`.
-- `unify` rebuilds the semantic rows from canonical sessions.
-- Ingest keeps immediate FTS availability and avoids cloud/model/service work.
+- `unify`, CLI `search`, stdio MCP, HTTP MCP, and `serve` all use the configured
+  embedding provider.
+- Cloud backend: `CHAT_SCROBBLER_EMBED_PROVIDER=gemini`, default model
+  `gemini-embedding-2`.
+- Local backend: `CHAT_SCROBBLER_EMBED_PROVIDER=ollama`, default model
+  `mxbai-embed-large`.
+- Default backend: `none`, so literal search still works without an API key or local
+  embedding server.
+- Test/debug backend: `hash`, deterministic and dependency-free.
 
-But the default `HashEmbeddingProvider` is not genuine semantic recall. It is a
-deterministic, dependency-free lexical vector scaffold behind the `EmbeddingProvider`
-seam. It proves the shape of hybrid search, ranking fusion, rebuildability, and shared
-CLI/MCP behavior, but it will not reliably retrieve conceptually related text that uses
-different language.
+## Commands
 
-Given the stop gates for this slice, I do not see a responsible bounded local-only real
-semantic backend to add without one of the forbidden moves: model download, native vector
-extension, cloud API, or long-running local embedding service. So the honest finish-line
-status is:
+Gemini:
 
-**Implemented:** hybrid search/index seam.
+```bash
+export CHAT_SCROBBLER_EMBED_PROVIDER=gemini
+export CHAT_SCROBBLER_EMBED_MODEL=gemini-embedding-2
+export GEMINI_API_KEY=...
+chat-scrobbler unify
+chat-scrobbler search "your conceptual query"
+```
 
-**Not Done:** semantic recall quality.
+Ollama:
 
-## Recommendation
+```bash
+ollama pull mxbai-embed-large
+export CHAT_SCROBBLER_EMBED_PROVIDER=ollama
+export CHAT_SCROBBLER_EMBED_MODEL=mxbai-embed-large
+chat-scrobbler unify
+chat-scrobbler search "your conceptual query"
+```
 
-Do not mark BJS-24 Done yet. Keep it open or split out a follow-up that explicitly
-chooses the local embedding backend and packaging tradeoffs.
+## Remaining Honest Limits
 
-## Smallest Follow-Up Issue
-
-Title: Choose and wire a real local embedding backend for chat-scrobbler search
-
-Body:
-
-Replace the deterministic `HashEmbeddingProvider` scaffold with a real local semantic
-embedding backend behind the existing `EmbeddingProvider` seam.
-
-Requirements:
-
-- Keep canonical sessions as the source of truth.
-- Keep embeddings rebuildable under `index/`, keyed by `(session_id, message_id)`.
-- Keep `chat-scrobbler search` and MCP `search` as the only recall surface.
-- Preserve the current shared result shape, including `provenance`, `score`, and
-  `match_sources`.
-- Decide explicitly whether the backend may use a model download, native vector
-  extension, bundled model artifact, optional install extra, or external local service.
-- Document packaging impact: binary size, first-run setup, CPU/GPU needs, offline
-  behavior, and rebuild performance.
-- Add at least one test or fixture that demonstrates conceptual recall across different
-  wording, not just token overlap.
-
-Suggested implementation path:
-
-Start with an optional local embedding provider and a rebuild path in `unify`, then keep
-ingest FTS-first. If the provider is slow or unavailable during capture, index FTS
-immediately and let semantic rows be repaired by `unify` or a dedicated rebuild command.
+- SQLite currently stores vectors as JSON and scans them in-process. That is acceptable
+  for the current personal corpus, but a true vector index is still a future
+  performance upgrade.
+- Recall is text-first. Attachments are only pointers/filenames today; image contents
+  and file bytes are not downloaded or embedded.
+- Ingest can embed immediately when a provider is configured, but provider outages will
+  fail that capture path until a retry/repair queue exists. Running `unify` repairs the
+  rebuildable index from canonical JSON.

@@ -206,19 +206,31 @@ Three tables:
   by `search`. Columns: `text` (indexed), `message_id`, `session_id`, `role`,
   `created_at`, `source`, `title` (all `UNINDEXED`).
 - `message_embeddings` -- rebuildable semantic rows keyed by `(session_id,
-  message_id)`. The built-in `HashEmbeddingProvider` is deterministic and
-  dependency-free; it is a packaging-safe placeholder behind the `EmbeddingProvider`
-  seam, not the final quality backend.
+  message_id)`. Rows are populated only when an embedding provider is configured.
+  Supported providers are Gemini (`gemini-embedding-2` by default), Ollama
+  (`mxbai-embed-large` by default), and a deterministic `hash` provider reserved
+  for tests/debugging.
 
-`searchMessages` AND-joins quoted FTS5 terms (to handle arbitrary user input safely),
-runs semantic lookup through the same core path, dedupes by `(session_id, message_id)`,
-and fuses ranks with literal hits weighted strongly. CLI `search` and MCP `search`
-return the same result shape: the legacy fields plus `provenance`, `score`, and
-`match_sources`. `listSessions` queries the `sessions` table ordered by `updated_at
-DESC`.
+`searchMessages` AND-joins quoted FTS5 terms (to handle arbitrary user input safely).
+`searchMessagesWithEmbeddings` runs semantic lookup through the same core path, dedupes
+by `(session_id, message_id)`, and fuses ranks with literal hits weighted strongly. CLI
+`search` and MCP `search` both use the configured provider and return the same result
+shape: the legacy fields plus `provenance`, `score`, and `match_sources`. `listSessions`
+queries the `sessions` table ordered by `updated_at DESC`.
 
 The index can be fully rebuilt from the canonical store at any time:
-`chat-scrobbler unify` (or `bun run unify`) calls `indexSession` on every session file.
+`chat-scrobbler unify` (or `bun run unify`) calls `indexSessionWithEmbeddings` on every
+session file. With `CHAT_SCROBBLER_EMBED_PROVIDER=none` (the default), it rebuilds FTS
+only.
+
+Embedding config:
+
+| Setting | Meaning |
+|---------|---------|
+| `CHAT_SCROBBLER_EMBED_PROVIDER` | `none` (default), `gemini`, `ollama`, or `hash` |
+| `CHAT_SCROBBLER_EMBED_MODEL` | Provider model override; defaults to `gemini-embedding-2` or `mxbai-embed-large` |
+| `GEMINI_API_KEY` / `GOOGLE_API_KEY` | API key for Gemini embeddings |
+| `CHAT_SCROBBLER_OLLAMA_BASE_URL` / `OLLAMA_BASE_URL` | Local Ollama URL, default `http://127.0.0.1:11434` |
 
 ---
 
@@ -328,7 +340,7 @@ The CLI is a thin frontend over the same core functions the MCP uses. Commands:
 
 | Command | What it does |
 |---------|-------------|
-| `search <query>` | FTS search; `--source`, `--limit`, `--json` |
+| `search <query>` | Hybrid search when embeddings are enabled, otherwise FTS; `--source`, `--limit`, `--json` |
 | `get <id>` | Fetch session by id (`source:source_id`); `--format json|markdown` |
 | `list` | List sessions; `--source`, `--title`, `--limit`, `--json` |
 | `unify` | Rebuild SQLite index from canonical store |

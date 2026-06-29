@@ -1,11 +1,14 @@
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import { buildServer } from "./server";
 import { loadConfig } from "../config";
+import { embeddingProviderFromConfig } from "../indexer/embedding-providers";
+import type { EmbeddingProvider } from "../indexer/sqlite";
 
 export interface HttpServerOptions {
   port: number;
   indexPath: string;
   canonicalDir: string;
+  embeddingProvider?: EmbeddingProvider | null;
 }
 
 const CORS_HEADERS: Record<string, string> = {
@@ -69,6 +72,7 @@ export async function startHttpServer(
       const mcpServer = buildServer({
         indexPath: opts.indexPath,
         canonicalDir: opts.canonicalDir,
+        embeddingProvider: opts.embeddingProvider ?? null,
       });
 
       await mcpServer.connect(transport);
@@ -96,5 +100,6 @@ if (import.meta.main) {
     port: cfg.mcpHttpPort,
     indexPath: cfg.indexPath,
     canonicalDir: cfg.canonicalDir,
+    embeddingProvider: embeddingProviderFromConfig(cfg),
   });
 }
