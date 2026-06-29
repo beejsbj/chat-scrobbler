@@ -43,7 +43,7 @@ test("handleGetSession rejects malformed and path-traversal ids", () => {
   rmSync(dir, { recursive: true, force: true });
 });
 
-test("handleSearch returns message hits", () => {
+test("handleSearch returns message hits", async () => {
   const dir = mkdtempSync(join(tmpdir(), "mcp-idx-"));
   const db = openIndex(join(dir, "i.db"));
   indexSession(db, {
@@ -52,7 +52,10 @@ test("handleSearch returns message hits", () => {
     default_model: null, account: null, raw_ref: "x", schema_version: 1,
     messages: [{ id: "a-m1", role: "user", created_at: null, parent_id: null, model: null, blocks: [{ type: "text", text: "uniquetokenxyz" }], text: "uniquetokenxyz" }],
   });
-  const res = handleSearch(db, { query: "uniquetokenxyz" });
+  const res = await handleSearch(db, { query: "uniquetokenxyz" });
   expect(res.content[0].text).toContain("chatgpt:a");
+  const hits = JSON.parse(res.content[0].text);
+  expect(hits[0].match_sources).toEqual(["literal"]);
+  expect(hits[0].score).toBeGreaterThan(0);
   rmSync(dir, { recursive: true, force: true });
 });

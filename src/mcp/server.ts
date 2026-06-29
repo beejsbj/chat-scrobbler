@@ -2,17 +2,22 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import type { Database } from "bun:sqlite";
-import { openIndex, searchMessages, listSessions } from "../indexer/sqlite";
+import { openIndex, searchMessagesWithEmbeddings, listSessions, type EmbeddingProvider } from "../indexer/sqlite";
 import { readSession, sessionToMarkdown } from "../store/sessions";
 import { loadConfig } from "../config";
 import { parseSessionId } from "../core/session-id";
+import { embeddingProviderFromConfig } from "../indexer/embedding-providers";
 
-export interface ServerOptions { indexPath: string; canonicalDir: string; }
+export interface ServerOptions { indexPath: string; canonicalDir: string; embeddingProvider?: EmbeddingProvider | null; }
 
 type ToolResult = { content: { type: "text"; text: string }[]; isError?: boolean };
 
-export function handleSearch(db: Database, args: { query: string; source?: string; limit?: number }): ToolResult {
-  const hits = searchMessages(db, args.query, { source: args.source, limit: args.limit });
+export async function handleSearch(db: Database, args: { query: string; source?: string; limit?: number }, embeddingProvider: EmbeddingProvider | null = null): Promise<ToolResult> {
+  const hits = await searchMessagesWithEmbeddings(db, args.query, {
+    source: args.source,
+    limit: args.limit,
+    embeddingProvider,
+  });
   return { content: [{ type: "text", text: JSON.stringify(hits, null, 2) }] };
 }
 
@@ -38,7 +43,7 @@ export function buildServer(opts: ServerOptions): McpServer {
   server.registerTool("search", {
     description: "Full-text search across all chat messages from every source. Returns message-level hits (snippet + session_id + message_id + timestamp) so you can locate where a topic was discussed. Pass a session_id to get_session for full context.",
     inputSchema: { query: z.string(), source: z.string().optional(), limit: z.number().optional() },
-  }, async (args) => handleSearch(db, args));
+  }, async (args) => handleSearch(db, args, opts.embeddingProvider ?? null));
 
   server.registerTool("get_session", {
     description: "Fetch a full conversation by id. The id has the form `source:source_id` (e.g. as returned by search/list_sessions). Returns canonical JSON, or rendered markdown when format='markdown'.",
@@ -55,6 +60,10 @@ export function buildServer(opts: ServerOptions): McpServer {
 
 if (import.meta.main) {
   const cfg = loadConfig();
-  const server = buildServer({ indexPath: cfg.indexPath, canonicalDir: cfg.canonicalDir });
+  const server = buildServer({
+    indexPath: cfg.indexPath,
+    canonicalDir: cfg.canonicalDir,
+    embeddingProvider: embeddingProviderFromConfig(cfg),
+  });
   await server.connect(new StdioServerTransport());
 }

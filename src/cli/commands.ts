@@ -3,7 +3,8 @@
 // All commands accept an injected cfg and a write() function for testability.
 // Zero duplicated query logic: these are thin frontends over the core fns.
 
-import { openIndex, searchMessages, listSessions } from "../indexer/sqlite";
+import { openIndex, searchMessagesWithEmbeddings, listSessions } from "../indexer/sqlite";
+import { embeddingProviderFromConfig } from "../indexer/embedding-providers";
 import { readSession, sessionToMarkdown, activePath } from "../store/sessions";
 import type { Role, Block } from "../schema/types";
 import { runUnify } from "./unify";
@@ -35,7 +36,11 @@ export interface SearchOpts {
 export async function runSearch(opts: SearchOpts): Promise<void> {
   const db = openIndex(opts.cfg.indexPath);
   try {
-    const hits = searchMessages(db, opts.query, { source: opts.source, limit: opts.limit });
+    const hits = await searchMessagesWithEmbeddings(db, opts.query, {
+      source: opts.source,
+      limit: opts.limit,
+      embeddingProvider: embeddingProviderFromConfig(opts.cfg),
+    });
     if (opts.json) {
       opts.write(JSON.stringify(hits, null, 2));
       return;
@@ -153,8 +158,14 @@ export interface UnifyOpts {
 }
 
 export async function runUnifyCmd(opts: UnifyOpts): Promise<void> {
-  const count = await runUnify({ canonicalDir: opts.cfg.canonicalDir, indexPath: opts.cfg.indexPath });
-  opts.write(`Reindexed ${count} sessions from canonical into index.`);
+  const provider = embeddingProviderFromConfig(opts.cfg);
+  const count = await runUnify({
+    canonicalDir: opts.cfg.canonicalDir,
+    indexPath: opts.cfg.indexPath,
+    embeddingProvider: provider,
+  });
+  const embeddingNote = provider ? ` with ${provider.kind ?? "configured"} embeddings` : "";
+  opts.write(`Reindexed ${count} sessions from canonical into index${embeddingNote}.`);
 }
 
 // ---------------------------------------------------------------------------
@@ -185,6 +196,9 @@ export async function runInit(opts: InitCmdOpts): Promise<void> {
       ingestPort: cfg.ingestPort,
       mcpHttpPort: cfg.mcpHttpPort,
       backupTargets: cfg.backupTargets,
+      embeddingProvider: cfg.embeddingProvider,
+      embeddingModel: cfg.embeddingModel,
+      ollamaBaseUrl: cfg.ollamaBaseUrl,
     };
     mkdirSync(dirname(configFilePath), { recursive: true });
     writeFileSync(configFilePath, JSON.stringify(starter, null, 2) + "\n");
@@ -361,6 +375,7 @@ export async function startServe(cfg: ChatHistoryConfig): Promise<ServeHandles> 
         canonicalDir: cfg.canonicalDir,
         indexPath: cfg.indexPath,
         ingestToken: cfg.ingestToken ?? undefined,
+        embeddingProvider: embeddingProviderFromConfig(cfg),
       });
     },
   });
@@ -369,6 +384,7 @@ export async function startServe(cfg: ChatHistoryConfig): Promise<ServeHandles> 
     port: cfg.mcpHttpPort,
     indexPath: cfg.indexPath,
     canonicalDir: cfg.canonicalDir,
+    embeddingProvider: embeddingProviderFromConfig(cfg),
   });
 
   return { ingestServer, mcpServer };

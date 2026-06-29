@@ -29,7 +29,18 @@ export interface ChatHistoryConfig {
   /** Where `backup` writes snapshots. Every target receives every snapshot;
    *  the first entry is the primary (default for `backups` / `restore`). */
   backupTargets: string[];
+  /** Semantic recall backend. "none" keeps search literal-only. */
+  embeddingProvider: EmbeddingProviderKind;
+  /** Provider model override. Defaults depend on the selected provider. */
+  embeddingModel: string | null;
+  /** Local Ollama server used when embeddingProvider = "ollama". */
+  ollamaBaseUrl: string;
+  /** Gemini API key used when embeddingProvider = "gemini". Prefer env. */
+  geminiApiKey: string | null;
 }
+
+export type EmbeddingProviderKind = "none" | "gemini" | "ollama" | "hash";
+const EMBEDDING_PROVIDER_KINDS: readonly EmbeddingProviderKind[] = ["none", "gemini", "ollama", "hash"];
 
 /** Default data home: keeps user data out of whatever repo/cwd the tool runs from. */
 const DATA_HOME = join(homedir(), ".local", "share", "chat-scrobbler");
@@ -42,6 +53,10 @@ export const DEFAULT_CONFIG: ChatHistoryConfig = {
   ingestBaseUrl: DEFAULT_INGEST_BASE_URL,
   ingestToken: null,
   backupTargets: [join(DATA_HOME, "backups")],
+  embeddingProvider: "none",
+  embeddingModel: null,
+  ollamaBaseUrl: "http://127.0.0.1:11434",
+  geminiApiKey: null,
 };
 
 export interface LoadConfigOptions {
@@ -68,6 +83,10 @@ const FILE_KEYS: Array<keyof ChatHistoryConfig> = [
   "ingestBaseUrl",
   "ingestToken",
   "backupTargets",
+  "embeddingProvider",
+  "embeddingModel",
+  "ollamaBaseUrl",
+  "geminiApiKey",
 ];
 
 /** Resolve the layered config. Pure given its options (env + fs are injectable). */
@@ -80,8 +99,10 @@ export function loadConfig(opts: LoadConfigOptions = {}): ChatHistoryConfig {
   // Layer 1: config file.
   const fileLayer = readConfigFile(resolveConfigPath(opts.configPath, env, cwd));
   for (const k of FILE_KEYS) {
+    if (k === "embeddingProvider") continue;
     if (fileLayer[k] !== undefined) (cfg as any)[k] = fileLayer[k];
   }
+  applyEmbeddingProvider(cfg, fileLayer.embeddingProvider);
   // Legacy: a singular backupTarget string in the config file still works.
   if (fileLayer.backupTargets === undefined && typeof fileLayer.backupTarget === "string" && fileLayer.backupTarget !== "") {
     cfg.backupTargets = [fileLayer.backupTarget];
@@ -96,6 +117,10 @@ export function loadConfig(opts: LoadConfigOptions = {}): ChatHistoryConfig {
   applyString(cfg, "indexPath", env.INDEX_PATH);
   applyNumber(cfg, "ingestPort", env.PORT);
   applyNumber(cfg, "mcpHttpPort", env.MCP_HTTP_PORT);
+  applyEmbeddingProvider(cfg, env.CHAT_SCROBBLER_EMBED_PROVIDER ?? env.EMBED_PROVIDER);
+  applyNullableString(cfg, "embeddingModel", env.CHAT_SCROBBLER_EMBED_MODEL ?? env.EMBED_MODEL);
+  applyString(cfg, "ollamaBaseUrl", env.CHAT_SCROBBLER_OLLAMA_BASE_URL ?? env.OLLAMA_BASE_URL);
+  applyNullableString(cfg, "geminiApiKey", env.GEMINI_API_KEY ?? env.GOOGLE_API_KEY);
   if (env.BACKUP_TARGET !== undefined && env.BACKUP_TARGET !== "") {
     const targets = env.BACKUP_TARGET.split(",").map(s => s.trim()).filter(Boolean);
     if (targets.length > 0) cfg.backupTargets = targets;
@@ -150,8 +175,20 @@ function readConfigFile(path: string | null): PartialConfig {
   }
 }
 
-function applyString(cfg: ChatHistoryConfig, key: "canonicalDir" | "indexPath", v: string | undefined): void {
+function applyString(cfg: ChatHistoryConfig, key: "canonicalDir" | "indexPath" | "ollamaBaseUrl", v: string | undefined): void {
   if (v !== undefined && v !== "") cfg[key] = v;
+}
+
+function applyNullableString(cfg: ChatHistoryConfig, key: "embeddingModel" | "geminiApiKey", v: string | undefined): void {
+  if (v !== undefined) cfg[key] = v || null;
+}
+
+function applyEmbeddingProvider(cfg: ChatHistoryConfig, v: unknown): void {
+  if (v === undefined || v === "") return;
+  if (typeof v !== "string") return;
+  if (EMBEDDING_PROVIDER_KINDS.includes(v as EmbeddingProviderKind)) {
+    cfg.embeddingProvider = v as EmbeddingProviderKind;
+  }
 }
 
 function applyNumber(cfg: ChatHistoryConfig, key: "ingestPort" | "mcpHttpPort", v: string | undefined): void {

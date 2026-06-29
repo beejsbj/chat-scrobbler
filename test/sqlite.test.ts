@@ -1,6 +1,6 @@
 // test/sqlite.test.ts
 import { test, expect } from "bun:test";
-import { openIndex, indexSession, searchMessages, listSessions } from "../src/indexer/sqlite";
+import { openIndex, indexSession, searchMessages, searchMessagesWithEmbeddings, listSessions, type EmbeddingProvider } from "../src/indexer/sqlite";
 import type { Session } from "../src/schema/types";
 
 function mk(id: string, source: "chatgpt" | "claude", title: string, text: string): Session {
@@ -18,12 +18,15 @@ test("search returns message-level hits matching the query", () => {
   indexSession(db, mk("a", "chatgpt", "Ego talk", "ego is a protective interface"));
   indexSession(db, mk("b", "claude", "Healing", "healing is restoration of wholeness"));
 
-  const hits = searchMessages(db, "protective");
+  const hits = searchMessages(db, "protective", { embeddingProvider: null });
   expect(hits).toHaveLength(1);
   expect(hits[0].session_id).toBe("chatgpt:a");
   expect(hits[0].message_id).toBe("a-m1");
   expect(hits[0].source).toBe("chatgpt");
   expect(hits[0].snippet.toLowerCase()).toContain("protective");
+  expect(hits[0].provenance).toBe("literal");
+  expect(hits[0].score).toBeGreaterThan(0);
+  expect(hits[0].match_sources).toEqual(["literal"]);
 });
 
 test("search filters by source", () => {
@@ -56,4 +59,60 @@ test("empty or whitespace query returns [] without throwing", () => {
   indexSession(db, mk("a", "chatgpt", "T", "hello"));
   expect(searchMessages(db, "")).toEqual([]);
   expect(searchMessages(db, "   ")).toEqual([]);
+});
+
+test("search includes semantic-only hits in the same ranked result set", () => {
+  const provider: EmbeddingProvider = {
+    dimensions: 3,
+    embed(text: string): number[] {
+      if (text.includes("nostalgia") || text.includes("homesick")) return [1, 0, 0];
+      return [0, 1, 0];
+    },
+  };
+  const db = openIndex(":memory:");
+  indexSession(db, mk("a", "chatgpt", "Exact", "nostalgia and old houses"), { embeddingProvider: provider });
+  indexSession(db, mk("b", "claude", "Semantic", "homesick feeling after moving"), { embeddingProvider: provider });
+
+  const hits = searchMessages(db, "nostalgia", { embeddingProvider: provider, limit: 10 });
+  expect(hits.map((h) => h.session_id)).toContain("chatgpt:a");
+  expect(hits.map((h) => h.session_id)).toContain("claude:b");
+  expect(hits[0].session_id).toBe("chatgpt:a");
+  const semantic = hits.find((h) => h.session_id === "claude:b");
+  expect(semantic?.provenance).toBe("semantic");
+  expect(semantic?.match_sources).toEqual(["semantic"]);
+  expect(semantic?.snippet).toContain("homesick");
+});
+
+test("search dedupes literal and semantic matches while preserving both sources", () => {
+  const provider: EmbeddingProvider = {
+    dimensions: 2,
+    embed(text: string): number[] {
+      return text.includes("protection") ? [1, 0] : [0, 1];
+    },
+  };
+  const db = openIndex(":memory:");
+  indexSession(db, mk("a", "chatgpt", "T", "protection matters"), { embeddingProvider: provider });
+
+  const hits = searchMessages(db, "protection", { embeddingProvider: provider });
+  expect(hits).toHaveLength(1);
+  expect(hits[0].provenance).toBe("hybrid");
+  expect(hits[0].match_sources).toEqual(["literal", "semantic"]);
+});
+
+test("async search falls back to literal hits when query embedding fails", async () => {
+  const provider: EmbeddingProvider = {
+    kind: "test-failing-query",
+    async embed(): Promise<number[]> {
+      throw new Error("query embedding service unavailable");
+    },
+  };
+  const db = openIndex(":memory:");
+  indexSession(db, mk("a", "chatgpt", "T", "protection matters"), { embeddingProvider: null });
+
+  const hits = await searchMessagesWithEmbeddings(db, "protection", { embeddingProvider: provider });
+
+  expect(hits).toHaveLength(1);
+  expect(hits[0].session_id).toBe("chatgpt:a");
+  expect(hits[0].provenance).toBe("literal");
+  expect(hits[0].match_sources).toEqual(["literal"]);
 });

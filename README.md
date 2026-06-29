@@ -68,6 +68,26 @@ chat-scrobbler get chatgpt:<id> --markdown
 chat-scrobbler backup
 ```
 
+Search is literal by default and becomes hybrid when you enable embeddings. To
+use Gemini as the cloud semantic backend:
+
+```bash
+export CHAT_SCROBBLER_EMBED_PROVIDER=gemini
+export CHAT_SCROBBLER_EMBED_MODEL=gemini-embedding-2
+export GEMINI_API_KEY=...
+chat-scrobbler unify
+chat-scrobbler search "that conversation about keeping ideas alive"
+```
+
+For a local backend, run Ollama and choose an embedding model:
+
+```bash
+ollama pull mxbai-embed-large
+export CHAT_SCROBBLER_EMBED_PROVIDER=ollama
+export CHAT_SCROBBLER_EMBED_MODEL=mxbai-embed-large
+chat-scrobbler unify
+```
+
 `get` can narrow a conversation down for an agent: `--role` keeps only the turns
 you want (`user`, `assistant`, `system`, `tool`, comma-separated), and
 `--text-only` strips reasoning and tool blocks to leave just the prose. They
@@ -122,7 +142,9 @@ searchable, so treat the data dir accordingly.
 
 ## Limitations (honest list)
 
-- Attachments are stored as pointers, not bytes. Text is what is preserved.
+- Attachments are stored as pointers, not bytes. Text and attachment filenames
+  are what recall can use today; image/file contents are not downloaded or
+  embedded yet.
 - Capture happens while the extension and server are running. The extension
   reconciles whatever the provider sidebar lists; truly ancient history
   backfills only as you open those chats.

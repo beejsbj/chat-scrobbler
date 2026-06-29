@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { handleIngestRequest } from "../packages/ingest/src";
 import { foldCaptureIntoSpine } from "../packages/ingest/src/pipeline";
-import { openIndex, searchMessages, indexSession } from "../src/indexer/sqlite";
+import { openIndex, searchMessages, indexSession, type EmbeddingProvider } from "../src/indexer/sqlite";
 import { readSession, writeSession } from "../src/store/sessions";
 import { makeSessionId, type Session } from "../src/schema/types";
 import type { RawCapture } from "../packages/shared/src";
@@ -42,6 +42,40 @@ test("POST /captures folds the capture into canonical + index immediately", asyn
     const db = openIndex(indexPath);
     expect(searchMessages(db, "protective").length).toBe(1);
     db.close();
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("POST /captures keeps canonical and literal index reliable when embeddings fail", async () => {
+  const { root, canonicalDir, indexPath } = ctx();
+  const provider: EmbeddingProvider = {
+    kind: "test-failing-document",
+    async embed(): Promise<number[]> {
+      throw new Error("document embedding service unavailable");
+    },
+  };
+  try {
+    const res = await handleIngestRequest(
+      new Request("http://local/captures", { method: "POST", body: JSON.stringify(chatgptApi) }),
+      { canonicalDir, indexPath, embeddingProvider: provider },
+    );
+    const body = await res.json() as any;
+    expect(res.status).toBe(200);
+    expect(body).toMatchObject({ ok: true, count: 1 });
+    expect(body.spine[0]).toMatchObject({ session_id: "chatgpt:conv-1", indexed: true });
+    expect(existsSync(join(canonicalDir, "chatgpt", "conv-1.json"))).toBe(true);
+
+    const db = openIndex(indexPath);
+    try {
+      expect(searchMessages(db, "protective", { embeddingProvider: null })).toHaveLength(1);
+      const embeddingRows = db.query(
+        "SELECT COUNT(*) AS count FROM message_embeddings WHERE session_id = ?",
+      ).get("chatgpt:conv-1") as { count: number };
+      expect(embeddingRows.count).toBe(0);
+    } finally {
+      db.close();
+    }
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
