@@ -30,6 +30,10 @@ export function assetsDirForCanonicalDir(canonicalDir: string): string {
   return join(canonicalRootFromSessionsDir(canonicalDir), "assets");
 }
 
+export function assetsDirForSession(canonicalDir: string, source: string, sourceId: string): string {
+  return join(assetsDirForCanonicalDir(canonicalDir), sanitizePathSegment(source), sanitizePathSegment(sourceId));
+}
+
 export function resolveLocalAssetPath(canonicalDir: string, localPath: string): string {
   return join(canonicalRootFromSessionsDir(canonicalDir), localPath);
 }

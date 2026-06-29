@@ -1,9 +1,10 @@
 // test/store.test.ts
 import { test, expect, afterAll } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { writeSession, readSession, listSessionFiles, sessionToMarkdown } from "../src/store/sessions";
+import { writeSession, readSession, listSessionFiles, sessionToMarkdown, deleteSession } from "../src/store/sessions";
+import { resolveLocalAssetPath, storeCanonicalAsset } from "../src/store/assets";
 import type { Session } from "../src/schema/types";
 
 const dir = mkdtempSync(join(tmpdir(), "sess-"));
@@ -32,4 +33,31 @@ test("sessionToMarkdown includes title and message text", () => {
   const md = sessionToMarkdown(session);
   expect(md).toContain("# Healing");
   expect(md).toContain("What is healing?");
+});
+
+test("deleteSession removes canonical JSON and captured assets for one session", () => {
+  const root = mkdtempSync(join(tmpdir(), "sess-delete-"));
+  const canonicalDir = join(root, "canonical", "sessions");
+  const target = { ...session, source: "chatgpt" as const, source_id: "conv-1", id: "chatgpt:conv-1" };
+  try {
+    const sessionPath = writeSession(canonicalDir, target);
+    const asset = storeCanonicalAsset({
+      canonicalDir,
+      source: "chatgpt",
+      sourceId: "conv-1",
+      pointer: "file-service://file-1",
+      filename: "pic.png",
+      contentType: "image/png",
+      bytes: new Uint8Array([1, 2, 3]),
+    });
+    const assetPath = resolveLocalAssetPath(canonicalDir, asset.local_path);
+
+    const result = deleteSession(canonicalDir, "chatgpt", "conv-1");
+
+    expect(result).toMatchObject({ sessionDeleted: true, assetsDeleted: true });
+    expect(existsSync(sessionPath)).toBe(false);
+    expect(existsSync(assetPath)).toBe(false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });

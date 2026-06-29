@@ -79,6 +79,12 @@ export interface ToggleIgnoredChatMessage {
   id: string;
 }
 
+export interface DeleteCaptureMessage {
+  type: "SCROBBLER_DELETE_CAPTURE";
+  provider: ProviderSource;
+  id: string;
+}
+
 export interface SnapshotCredentialsMessage {
   type: "SCROBBLER_SNAPSHOT_CREDENTIALS";
   provider: ProviderSource;
@@ -108,6 +114,7 @@ export type RuntimeMessage =
   | CaptureProgressMessage
   | IgnoredChatsMessage
   | ToggleIgnoredChatMessage
+  | DeleteCaptureMessage
   | CaptureLoggedMessage;
 
 export interface ConversationStatesResponse {

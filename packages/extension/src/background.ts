@@ -1,5 +1,5 @@
 import "./chrome-api";
-import { assetsUrl, capturesUrl, statusUrl, DEFAULT_INGEST_BASE_URL, DEFAULT_SYNC_PERIOD_MINUTES, type ProviderSource } from "../../shared/src";
+import { assetsUrl, capturesUrl, deleteCaptureUrl, statusUrl, DEFAULT_INGEST_BASE_URL, DEFAULT_SYNC_PERIOD_MINUTES, type ProviderSource } from "../../shared/src";
 import { collectCredentialSnapshot } from "./credentials";
 import { toolbarProgressView, aggregateTabProgress, type ToolbarProgressInput } from "./toolbar-progress";
 import { appendRecentCapture, RECENT_CAPTURES_KEY, type RecentCapture } from "./recent-captures";
@@ -12,6 +12,7 @@ import type {
   SaveSettingsMessage,
   SyncResponse,
   AssetUploadRequest,
+  DeleteCaptureMessage,
 } from "./messages";
 
 interface Settings {
@@ -96,6 +97,7 @@ async function handleRuntimeMessage(message: RuntimeMessage, sender: any): Promi
   if (message.type === "SCROBBLER_CONVERSATION_STATES") return getConversationStates(message);
   if (message.type === "SCROBBLER_IGNORED_CHATS") return listIgnoredChats(message.provider);
   if (message.type === "SCROBBLER_TOGGLE_IGNORED_CHAT") return toggleIgnoredChat(message.provider, message.id);
+  if (message.type === "SCROBBLER_DELETE_CAPTURE") return deleteCapture(message);
   if (message.type === "SCROBBLER_CAPTURE_PROGRESS") return updateToolbarProgress(message, sender);
   if (message.type === "SCROBBLER_GET_STATUS") return { ok: true, settings: await getSettings(), status: await getStatus() };
   if (message.type === "SCROBBLER_SAVE_SETTINGS") {
@@ -256,6 +258,18 @@ async function postCapture(message: CaptureReadyMessage): Promise<unknown> {
     status.capturesPosted += 1;
   });
   return { ok: true, ingest: await res.json() };
+}
+
+async function deleteCapture(message: DeleteCaptureMessage): Promise<unknown> {
+  const settings = await getSettings();
+  const headers: Record<string, string> = {};
+  if (settings.ingestToken) headers["authorization"] = `Bearer ${settings.ingestToken}`;
+  const res = await fetch(deleteCaptureUrl(settings.ingestBaseUrl, message.provider, message.id), {
+    method: "DELETE",
+    headers,
+  });
+  if (!res.ok) throw new Error(`Delete request failed with HTTP ${res.status}: ${await res.text()}`);
+  return { ok: true, delete: await res.json() };
 }
 
 async function getConversationStates(message: ConversationStatesMessage): Promise<unknown> {

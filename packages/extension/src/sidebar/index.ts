@@ -12,6 +12,7 @@ import {
   captureDelayMs,
   captureQueue,
   captureWithRetry,
+  deleteConfirmationMessage,
   nextCooldownMs,
   nextFullReconcileDelayMs,
   shouldRecapture,
@@ -29,6 +30,7 @@ export interface SidebarDeps {
   getAutoSync: () => Promise<boolean>;
   getIgnoredIds: () => Promise<Set<string>>;
   toggleIgnored: (id: string) => Promise<boolean>;
+  deleteCapture: (id: string) => Promise<void>;
   emitCapture: (capture: RawCapture) => Promise<void>;
   uploadAsset?: ProviderSyncOptions["uploadAsset"];
   reportCaptureProgress?: (remaining: number, total: number) => Promise<void> | void;
@@ -57,6 +59,7 @@ export function runSidebarBadges(provider: ProviderAdapter, deps: SidebarDeps): 
   let retryAfterUntilMs = 0;
   let rateLimitAttempts = 0;
   let cachedStatuses: Record<string, ConversationState> = {};
+  let cachedUpdatedAtById = new Map<string, string | null>();
   let ignoredIds = new Set<string>();
   /**
    * Session-scoped re-capture guard: maps conversation id -> updatedAt (ms) at
@@ -111,6 +114,7 @@ export function runSidebarBadges(provider: ProviderAdapter, deps: SidebarDeps): 
         }
         /* fall back to id-only status */
       }
+      cachedUpdatedAtById = updatedById;
 
       const ids = [...anchors.keys()];
       const visible = ids.map((id) => ({ id, updatedAt: updatedById.get(id) ?? null }));
@@ -231,6 +235,7 @@ export function runSidebarBadges(provider: ProviderAdapter, deps: SidebarDeps): 
         if (isRateLimitError(error)) { scheduleRateLimitRetry(error); return; }
         // If we can't get updatedAt, proceed with null (shouldRecapture will allow first-time captures).
       }
+      cachedUpdatedAtById.set(activeId, liveUpdatedAt);
 
       const liveMs = liveUpdatedAt ? Date.parse(liveUpdatedAt) : 0;
       if (!shouldRecapture(lastCapturedAt.get(activeId), liveMs)) return;
@@ -285,7 +290,41 @@ export function runSidebarBadges(provider: ProviderAdapter, deps: SidebarDeps): 
   }
 
   function paintBadge(anchor: Element, id: string, state: ConversationState): void {
-    setBadge(anchor, state, () => { void toggleIgnored(id, anchor); });
+    setBadge(anchor, state, {
+      onDelete: () => { void deleteLocalCapture(id, anchor); },
+      onToggle: () => { void toggleIgnored(id, anchor); },
+    });
+  }
+
+  async function deleteLocalCapture(id: string, anchor: Element): Promise<void> {
+    if (!window.confirm(deleteConfirmationMessage(anchorTitle(anchor)))) return;
+    try {
+      await deps.deleteCapture(id);
+      markDeletedCaptureGuard(id);
+      await refreshOneStatus(id, anchor);
+    } catch {
+      cachedStatuses[id] = "error";
+      paintBadge(anchor, id, "error");
+    }
+  }
+
+  async function refreshOneStatus(id: string, anchor: Element): Promise<void> {
+    let statuses: Record<string, ConversationState> = {};
+    try {
+      statuses = await deps.getStates([{ id, updatedAt: cachedUpdatedAtById.get(id) ?? null }]);
+    } catch {
+      statuses = {};
+    }
+    ignoredIds = await deps.getIgnoredIds().catch(() => ignoredIds);
+    const withIgnored = applyIgnoredStates(statuses, ignoredIds);
+    cachedStatuses[id] = withIgnored[id] ?? (ignoredIds.has(id) ? "ignored" : "missing");
+    paintBadge(anchor, id, cachedStatuses[id] ?? "missing");
+  }
+
+  function markDeletedCaptureGuard(id: string): void {
+    const raw = cachedUpdatedAtById.get(id);
+    const parsed = raw ? Date.parse(raw) : 0;
+    lastCapturedAt.set(id, Number.isFinite(parsed) ? parsed : 0);
   }
 
   async function toggleIgnored(id: string, anchor: Element): Promise<void> {
@@ -317,6 +356,8 @@ export function runSidebarBadges(provider: ProviderAdapter, deps: SidebarDeps): 
  *  text but may produce whitespace), then returns the cleaned textContent. */
 function anchorTitle(anchor: Element): string {
   const clone = anchor.cloneNode(true) as Element;
+  const actions = clone.querySelector("[data-scrobbler-actions]");
+  if (actions) actions.remove();
   const badge = clone.querySelector("[data-scrobbler-badge]");
   if (badge) badge.remove();
   return cleanTitle(clone.textContent ?? "");

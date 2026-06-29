@@ -1,6 +1,6 @@
 // test/sqlite.test.ts
 import { test, expect } from "bun:test";
-import { openIndex, indexSession, searchMessages, searchMessagesWithEmbeddings, listSessions, type EmbeddingProvider } from "../src/indexer/sqlite";
+import { deleteIndexedSession, openIndex, indexSession, searchMessages, searchMessagesWithEmbeddings, listSessions, type EmbeddingProvider } from "../src/indexer/sqlite";
 import type { Session } from "../src/schema/types";
 
 function mk(id: string, source: "chatgpt" | "claude", title: string, text: string): Session {
@@ -115,4 +115,26 @@ test("async search falls back to literal hits when query embedding fails", async
   expect(hits[0].session_id).toBe("chatgpt:a");
   expect(hits[0].provenance).toBe("literal");
   expect(hits[0].match_sources).toEqual(["literal"]);
+});
+
+test("deleteIndexedSession removes session, FTS, and embedding rows for a capture", () => {
+  const provider: EmbeddingProvider = {
+    dimensions: 2,
+    embed(): number[] {
+      return [1, 0];
+    },
+  };
+  const db = openIndex(":memory:");
+  indexSession(db, mk("a", "chatgpt", "Delete me", "local-only secret"), { embeddingProvider: provider });
+  indexSession(db, mk("b", "chatgpt", "Keep me", "local-only secret kept"), { embeddingProvider: provider });
+
+  const result = deleteIndexedSession(db, "chatgpt", "a");
+
+  expect(result).toMatchObject({ deleted: true, sessionIds: ["chatgpt:a"] });
+  expect(listSessions(db).map((s) => s.id)).toEqual(["chatgpt:b"]);
+  expect(searchMessages(db, "secret")).toHaveLength(1);
+  const embeddingRows = db.query(
+    "SELECT COUNT(*) AS count FROM message_embeddings WHERE session_id = ?",
+  ).get("chatgpt:a") as { count: number };
+  expect(embeddingRows.count).toBe(0);
 });

@@ -12,13 +12,14 @@ import {
   type ProviderSource,
   type RawCapture,
 } from "../../shared/src";
-import { openIndex } from "../../../src/indexer/sqlite";
+import { deleteIndexedSession, openIndex } from "../../../src/indexer/sqlite";
 import { MAX_ASSET_BYTES, storeCanonicalAsset } from "../../../src/store/assets";
+import { deleteSession } from "../../../src/store/sessions";
 import type { EmbeddingProvider } from "../../../src/indexer/sqlite";
 
 export interface IngestServerOptions {
   /**
-   * Optional shared secret. When set, every POST /captures (and /status) request
+   * Optional shared secret. When set, every mutating/status request
    * must carry `Authorization: Bearer <token>`. Omit (or leave empty) for local
    * dev -- no auth is enforced when the option is absent or an empty string.
    * Maps 1-to-1 with the INGEST_TOKEN env var used by the production entry point.
@@ -49,10 +50,19 @@ export interface AssetUploadResponse {
   size_bytes: number;
 }
 
+export interface DeleteCaptureResponse {
+  ok: true;
+  source: ProviderSource;
+  source_id: string;
+  local_only: true;
+  canonical: ReturnType<typeof deleteSession>;
+  index: ReturnType<typeof deleteIndexedSession>;
+}
+
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "content-type,authorization",
-  "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
+  "Access-Control-Allow-Methods": "GET,POST,DELETE,OPTIONS",
 };
 
 // Cache one open Database per index file across requests -- the index is a
@@ -86,9 +96,10 @@ export async function handleIngestRequest(req: Request, opts: IngestServerOption
   }
 
   const isCapture = req.method === "POST" && url.pathname === CAPTURE_INGEST_PATH;
+  const isDeleteCapture = req.method === "DELETE" && url.pathname === CAPTURE_INGEST_PATH;
   const isAsset = req.method === "POST" && url.pathname === ASSET_INGEST_PATH;
   const isStatus = req.method === "POST" && url.pathname === STATUS_PATH;
-  if (!isCapture && !isAsset && !isStatus) {
+  if (!isCapture && !isDeleteCapture && !isAsset && !isStatus) {
     return json({ ok: false, error: "Not found" }, 404);
   }
 
@@ -101,6 +112,26 @@ export async function handleIngestRequest(req: Request, opts: IngestServerOption
   }
 
   const fat = fatMode(opts);
+
+  if (isDeleteCapture) {
+    if (!fat) return json({ ok: false, error: "delete endpoint requires canonicalDir + indexPath" }, 400);
+    try {
+      const source = readSource(url.searchParams.get("source"));
+      const sourceId = requiredParam(url, "source_id");
+      const canonical = deleteSession(fat.canonicalDir, source, sourceId);
+      const index = deleteIndexedSession(indexFor(fat.indexPath), source, sourceId);
+      return json({
+        ok: true,
+        source,
+        source_id: sourceId,
+        local_only: true,
+        canonical,
+        index,
+      } satisfies DeleteCaptureResponse);
+    } catch (error) {
+      return json({ ok: false, error: error instanceof Error ? error.message : String(error) }, 400);
+    }
+  }
 
   if (isAsset) {
     if (!fat) return json({ ok: false, error: "asset endpoint requires canonicalDir + indexPath" }, 400);

@@ -20,5 +20,5 @@ if (import.meta.main) {
 
   console.log(`chat scrobbler ingest listening on http://127.0.0.1:${port}`);
   console.log(`folding captures into ${canonicalDir} + ${indexPath} (fat server; POST /status enabled)`);
-  if (ingestToken) console.log("bearer token auth ENABLED on POST /captures + /status");
+  if (ingestToken) console.log("bearer token auth ENABLED on capture, asset, status, and delete endpoints");
 }

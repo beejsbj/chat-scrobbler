@@ -1,10 +1,13 @@
 import { expect, spyOn, test } from "bun:test";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { handleIngestRequest } from "../packages/ingest/src";
 import { buildRawCapture } from "../packages/shared/src";
-import { resolveLocalAssetPath } from "../src/store/assets";
+import { resolveLocalAssetPath, storeCanonicalAsset } from "../src/store/assets";
+import { indexSession, listSessions, openIndex } from "../src/indexer/sqlite";
+import { writeSession } from "../src/store/sessions";
+import type { Session } from "../src/schema/types";
 
 interface IngestTestResponse {
   ok: boolean;
@@ -61,6 +64,97 @@ test("asset endpoint stores content-addressed files beside canonical sessions", 
     const res2 = await handleIngestRequest(makeReq(), opts);
     const body2 = await res2.json() as { local_path: string };
     expect(body2.local_path).toBe(body.local_path);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("DELETE /captures removes one local capture from canonical, assets, and index", async () => {
+  const root = mkdtempSync(join(tmpdir(), "ingest-delete-"));
+  const canonicalDir = join(root, "canonical", "sessions");
+  const indexPath = join(root, "index", "sessions.db");
+  const session: Session = {
+    id: "chatgpt:conv-delete",
+    source: "chatgpt",
+    source_id: "conv-delete",
+    capture_method: "api",
+    title: "Delete me",
+    created_at: "2026-06-05T10:00:00.000Z",
+    updated_at: "2026-06-05T10:01:00.000Z",
+    default_model: null,
+    account: null,
+    raw_ref: "chatgpt-api:conv-delete",
+    schema_version: 1,
+    messages: [{
+      id: "m1",
+      role: "user",
+      created_at: null,
+      parent_id: null,
+      model: null,
+      blocks: [{ type: "text", text: "local-only secret" }],
+      text: "local-only secret",
+    }],
+  };
+  try {
+    const sessionPath = writeSession(canonicalDir, session);
+    const asset = storeCanonicalAsset({
+      canonicalDir,
+      source: "chatgpt",
+      sourceId: "conv-delete",
+      pointer: "file-service://file-1",
+      filename: "pic.png",
+      contentType: "image/png",
+      bytes: new Uint8Array([1, 2, 3]),
+    });
+    const assetPath = resolveLocalAssetPath(canonicalDir, asset.local_path);
+    mkdirSync(join(root, "index"), { recursive: true });
+    const db = openIndex(indexPath);
+    indexSession(db, session);
+    db.close();
+
+    const res = await handleIngestRequest(
+      new Request("http://local/captures?source=chatgpt&source_id=conv-delete", {
+        method: "DELETE",
+        headers: { authorization: "Bearer secret-token" },
+      }),
+      { canonicalDir, indexPath, ingestToken: "secret-token" },
+    );
+    const body = await res.json() as any;
+
+    expect(res.status).toBe(200);
+    expect(body).toMatchObject({
+      ok: true,
+      source: "chatgpt",
+      source_id: "conv-delete",
+      local_only: true,
+      canonical: { sessionDeleted: true, assetsDeleted: true },
+      index: { deleted: true },
+    });
+    expect(existsSync(sessionPath)).toBe(false);
+    expect(existsSync(assetPath)).toBe(false);
+
+    const checkDb = openIndex(indexPath);
+    try {
+      expect(listSessions(checkDb)).toEqual([]);
+    } finally {
+      checkDb.close();
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("DELETE /captures requires the configured bearer token", async () => {
+  const root = mkdtempSync(join(tmpdir(), "ingest-delete-auth-"));
+  try {
+    const res = await handleIngestRequest(
+      new Request("http://local/captures?source=chatgpt&source_id=conv-delete", { method: "DELETE" }),
+      { canonicalDir: join(root, "canonical", "sessions"), indexPath: join(root, "index", "sessions.db"), ingestToken: "secret-token" },
+    );
+    const body = await res.json() as IngestTestResponse;
+
+    expect(res.status).toBe(401);
+    expect(body.ok).toBe(false);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

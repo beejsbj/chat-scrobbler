@@ -122,6 +122,19 @@ export function badgeActionLabel(state: ConversationState): string {
   return state === "ignored" ? "Enable sync for this chat" : "Disable sync for this chat";
 }
 
+export function deleteActionLabel(): string {
+  return "Delete local chat-scrobbler data for this chat";
+}
+
+export function sidebarActionLabels(state: ConversationState): [string, string] {
+  return [deleteActionLabel(), badgeActionLabel(state)];
+}
+
+export function deleteConfirmationMessage(title: string): string {
+  const subject = title.trim() ? `"${title.trim()}"` : "this chat";
+  return `Delete local chat-scrobbler data for ${subject}? This removes the local JSON, index rows, and captured files. It will not delete the provider-side chat.`;
+}
+
 /** Conversations that auto-sync should capture, in sidebar order: anything not
  *  already current. Returns [] when auto-sync is off. */
 export function captureQueue(

@@ -25,6 +25,7 @@ export interface EmbeddingProvider {
 
 export interface IndexSessionOptions { embeddingProvider?: EmbeddingProvider | null; }
 export interface SearchMessagesOptions { source?: string; limit?: number; embeddingProvider?: EmbeddingProvider | null; }
+export interface DeleteIndexedSessionResult { deleted: boolean; sessionIds: string[]; }
 
 export function openIndex(path: string): Database {
   const db = new Database(path);
@@ -76,6 +77,19 @@ export function indexedConversations(db: Database, source: string, ids: string[]
   ).all(source, ...ids) as Array<{ source_id: string; updated_at: string }>;
   for (const r of rows) out.set(r.source_id, r.updated_at);
   return out;
+}
+
+export function deleteIndexedSession(db: Database, source: string, sourceId: string): DeleteIndexedSessionResult {
+  const rows = db.query(
+    `SELECT id FROM sessions WHERE source = ? AND source_id = ?`,
+  ).all(source, sourceId) as Array<{ id: string }>;
+  const sessionIds = rows.length > 0 ? rows.map((row) => row.id) : [`${source}:${sourceId}`];
+  for (const sessionId of sessionIds) {
+    db.run(`DELETE FROM messages_fts WHERE session_id = ?`, [sessionId]);
+    db.run(`DELETE FROM message_embeddings WHERE session_id = ?`, [sessionId]);
+    db.run(`DELETE FROM sessions WHERE id = ?`, [sessionId]);
+  }
+  return { deleted: rows.length > 0, sessionIds };
 }
 
 // Quote each term so arbitrary user input can't break FTS5 syntax (terms AND-ed).

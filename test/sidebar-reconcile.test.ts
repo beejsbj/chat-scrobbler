@@ -15,8 +15,11 @@ import {
   captureDelayMs,
   captureQueue,
   captureWithRetry,
+  deleteActionLabel,
+  deleteConfirmationMessage,
   nextCooldownMs,
   nextFullReconcileDelayMs,
+  sidebarActionLabels,
   shouldRecapture,
 } from "../packages/extension/src/sidebar/reconcile";
 
@@ -75,6 +78,25 @@ test("badgeActionLabel describes the toggle action for tooltip and aria", () => 
   expect(badgeActionLabel("error")).toBe("Disable sync for this chat");
   expect(badgeActionLabel("syncing")).toBe("Disable sync for this chat");
   expect(badgeActionLabel("ignored")).toBe("Enable sync for this chat");
+});
+
+test("sidebarActionLabels orders local delete before prevent-sync toggle", () => {
+  expect(deleteActionLabel()).toBe("Delete local chat-scrobbler data for this chat");
+  expect(sidebarActionLabels("synced")).toEqual([
+    "Delete local chat-scrobbler data for this chat",
+    "Disable sync for this chat",
+  ]);
+  expect(sidebarActionLabels("ignored")).toEqual([
+    "Delete local chat-scrobbler data for this chat",
+    "Enable sync for this chat",
+  ]);
+});
+
+test("deleteConfirmationMessage is explicit that provider chats are not deleted", () => {
+  const message = deleteConfirmationMessage("Healing");
+  expect(message).toContain("Healing");
+  expect(message).toContain("local chat-scrobbler data");
+  expect(message).toContain("will not delete the provider-side chat");
 });
 
 test("captureQueue selects missing+stale in order, only when auto-sync is on", () => {

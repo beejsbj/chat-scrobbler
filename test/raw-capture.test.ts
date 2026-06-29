@@ -4,6 +4,7 @@ import {
   buildRawCapture,
   captureStorageName,
   capturesUrl,
+  deleteCaptureUrl,
   healthUrl,
   isRawCapture,
   toCaptureArray,
@@ -74,4 +75,7 @@ test("captureStorageName prevents path traversal in source ids", () => {
 test("endpoint helpers normalize trailing slashes", () => {
   expect(capturesUrl("http://127.0.0.1:4319/")).toBe("http://127.0.0.1:4319/captures");
   expect(healthUrl("http://127.0.0.1:4319///")).toBe("http://127.0.0.1:4319/health");
+  expect(deleteCaptureUrl("http://127.0.0.1:4319///", "chatgpt", "conv 1")).toBe(
+    "http://127.0.0.1:4319/captures?source=chatgpt&source_id=conv+1",
+  );
 });

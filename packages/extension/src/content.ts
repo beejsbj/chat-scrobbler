@@ -38,6 +38,10 @@ if (provider) {
       if (!res?.ok) throw new Error(res?.error ?? "Failed to toggle ignored chat");
       return !!res.ignored;
     },
+    deleteCapture: async (id) => {
+      const res = await sendRuntimeMessage({ type: "SCROBBLER_DELETE_CAPTURE", provider: provider.source, id });
+      if (!res?.ok) throw new Error(res?.error ?? "Failed to delete local capture");
+    },
     emitCapture,
     uploadAsset,
     reportCaptureProgress: async (remaining, total) => {
