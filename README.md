@@ -104,6 +104,22 @@ ready-to-paste Claude Desktop config, the local endpoint URL, and client-specifi
 remote connector cautions. See [docs/MCP_CONNECTORS.md](docs/MCP_CONNECTORS.md)
 before putting the endpoint behind any tunnel.
 
+For Claude web/mobile, keep the origin local and put a public HTTPS tunnel in
+front of it. Set a capability token before exposing the tunnel:
+
+```bash
+export MCP_AUTH_TOKEN="$(openssl rand -hex 24)"
+export MCP_PUBLIC_BASE_URL="https://your-tunnel.example"
+chat-scrobbler serve
+chat-scrobbler connect
+```
+
+With both values set, `connect` prints a Claude web/mobile URL shaped like
+`https://your-tunnel.example/mcp/<token>`. Header-capable clients can instead
+use `Authorization: Bearer <token>` against `/mcp`. This remains a read-only,
+personal/ephemeral setup; use a stronger OAuth/Access layer before treating it
+as durable shared infrastructure.
+
 <details>
 <summary>Build from source instead</summary>
 
@@ -124,8 +140,9 @@ bun run build:dist          # compiles dist/chat-scrobbler + dist/extension/
 - Backups fan out to a local snapshot dir, with a second machine next on the
   list. `backupTargets` in the config is just an array.
 - The MCP endpoint can be wired into cloud clients only through a public HTTPS
-  route with compatible authentication. The local endpoint itself stays bound to
-  localhost; see [docs/MCP_CONNECTORS.md](docs/MCP_CONNECTORS.md).
+  route with compatible authentication. `MCP_AUTH_TOKEN` enables `/mcp/<token>`
+  and Bearer auth while rejecting anonymous `/mcp`; the local endpoint itself
+  stays bound to localhost; see [docs/MCP_CONNECTORS.md](docs/MCP_CONNECTORS.md).
 - Longer term, this corpus feeds a personal wiki project: agents following
   search hits back to the raw sessions and distilling them into notes. That
   lives elsewhere; this repo stays the neutral substrate.

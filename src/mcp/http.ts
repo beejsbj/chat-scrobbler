@@ -1,4 +1,5 @@
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
+import { timingSafeEqual } from "node:crypto";
 import { buildServer } from "./server";
 import { loadConfig } from "../config";
 import { embeddingProviderFromConfig } from "../indexer/embedding-providers";
@@ -9,6 +10,7 @@ export interface HttpServerOptions {
   indexPath: string;
   canonicalDir: string;
   embeddingProvider?: EmbeddingProvider | null;
+  mcpAuthToken?: string | null;
 }
 
 const CORS_HEADERS: Record<string, string> = {
@@ -31,6 +33,42 @@ function addCors(response: Response): Response {
   });
 }
 
+type McpRoute = { kind: "base"; pathToken: null } | { kind: "token"; pathToken: string };
+
+function parseMcpRoute(pathname: string): McpRoute | null {
+  const parts = pathname.split("/").filter(Boolean);
+  if (parts.length === 1 && parts[0] === "mcp") {
+    return { kind: "base", pathToken: null };
+  }
+  if (parts.length === 2 && parts[0] === "mcp") {
+    try {
+      return { kind: "token", pathToken: decodeURIComponent(parts[1]) };
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+function bearerToken(req: Request): string | null {
+  const header = req.headers.get("authorization");
+  const match = header?.match(/^Bearer\s+(.+)$/i);
+  return match ? match[1].trim() : null;
+}
+
+function tokensEqual(a: string | null, b: string): boolean {
+  if (a === null) return false;
+  const aBytes = Buffer.from(a);
+  const bBytes = Buffer.from(b);
+  if (aBytes.length !== bBytes.length) return false;
+  return timingSafeEqual(aBytes, bBytes);
+}
+
+function authorized(req: Request, route: McpRoute, token: string | null): boolean {
+  if (!token) return route.kind === "base";
+  return tokensEqual(route.pathToken, token) || tokensEqual(bearerToken(req), token);
+}
+
 /**
  * Start the MCP HTTP server.
  *
@@ -44,20 +82,29 @@ function addCors(response: Response): Response {
 export async function startHttpServer(
   opts: HttpServerOptions
 ): Promise<ReturnType<typeof Bun.serve>> {
+  const mcpAuthToken = opts.mcpAuthToken ?? null;
   const server = Bun.serve({
     hostname: "127.0.0.1",
     port: opts.port,
 
     async fetch(req: Request): Promise<Response> {
       const url = new URL(req.url);
+      const route = parseMcpRoute(url.pathname);
 
-      if (url.pathname !== "/mcp") {
+      if (!route) {
         return new Response("Not Found", { status: 404 });
       }
 
       // CORS preflight
       if (req.method === "OPTIONS") {
         return new Response(null, { status: 200, headers: CORS_HEADERS });
+      }
+
+      if (!authorized(req, route, mcpAuthToken)) {
+        return addCors(new Response("Unauthorized", {
+          status: 401,
+          headers: { "WWW-Authenticate": "Bearer" },
+        }));
       }
 
       // Stateless: create a fresh transport + server per request.
@@ -87,9 +134,8 @@ export async function startHttpServer(
     },
   });
 
-  process.stderr.write(
-    `MCP HTTP server listening on http://127.0.0.1:${opts.port}/mcp\n`
-  );
+  const authNote = mcpAuthToken ? " (auth token required)" : "";
+  process.stderr.write(`MCP HTTP server listening on http://127.0.0.1:${opts.port}/mcp${authNote}\n`);
 
   return server;
 }
@@ -101,5 +147,6 @@ if (import.meta.main) {
     indexPath: cfg.indexPath,
     canonicalDir: cfg.canonicalDir,
     embeddingProvider: embeddingProviderFromConfig(cfg),
+    mcpAuthToken: cfg.mcpAuthToken,
   });
 }

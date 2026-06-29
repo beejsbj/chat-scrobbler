@@ -22,6 +22,10 @@ export interface ChatHistoryConfig {
   ingestPort: number;
   /** Port the read-only MCP HTTP connector listens on. */
   mcpHttpPort: number;
+  /** Optional shared secret for MCP HTTP. Null keeps localhost /mcp anonymous. */
+  mcpAuthToken: string | null;
+  /** Optional public HTTPS tunnel base used only for printed connector URLs. */
+  mcpPublicBaseUrl: string | null;
   /** Base URL the extension POSTs captures to / that `serve` prints. */
   ingestBaseUrl: string;
   /** Optional shared bearer secret for the ingest server; null = no auth. */
@@ -50,6 +54,8 @@ export const DEFAULT_CONFIG: ChatHistoryConfig = {
   indexPath: join(DATA_HOME, "index", "sessions.db"),
   ingestPort: 4318,
   mcpHttpPort: 4319,
+  mcpAuthToken: null,
+  mcpPublicBaseUrl: null,
   ingestBaseUrl: DEFAULT_INGEST_BASE_URL,
   ingestToken: null,
   backupTargets: [join(DATA_HOME, "backups")],
@@ -80,6 +86,8 @@ const FILE_KEYS: Array<keyof ChatHistoryConfig> = [
   "indexPath",
   "ingestPort",
   "mcpHttpPort",
+  "mcpAuthToken",
+  "mcpPublicBaseUrl",
   "ingestBaseUrl",
   "ingestToken",
   "backupTargets",
@@ -117,6 +125,8 @@ export function loadConfig(opts: LoadConfigOptions = {}): ChatHistoryConfig {
   applyString(cfg, "indexPath", env.INDEX_PATH);
   applyNumber(cfg, "ingestPort", env.PORT);
   applyNumber(cfg, "mcpHttpPort", env.MCP_HTTP_PORT);
+  applyNullableString(cfg, "mcpAuthToken", env.MCP_AUTH_TOKEN ?? env.CHAT_SCROBBLER_MCP_AUTH_TOKEN);
+  applyNullableString(cfg, "mcpPublicBaseUrl", env.MCP_PUBLIC_BASE_URL ?? env.CHAT_SCROBBLER_MCP_PUBLIC_BASE_URL);
   applyEmbeddingProvider(cfg, env.CHAT_SCROBBLER_EMBED_PROVIDER ?? env.EMBED_PROVIDER);
   applyNullableString(cfg, "embeddingModel", env.CHAT_SCROBBLER_EMBED_MODEL ?? env.EMBED_MODEL);
   applyString(cfg, "ollamaBaseUrl", env.CHAT_SCROBBLER_OLLAMA_BASE_URL ?? env.OLLAMA_BASE_URL);
@@ -179,7 +189,7 @@ function applyString(cfg: ChatHistoryConfig, key: "canonicalDir" | "indexPath" |
   if (v !== undefined && v !== "") cfg[key] = v;
 }
 
-function applyNullableString(cfg: ChatHistoryConfig, key: "embeddingModel" | "geminiApiKey", v: string | undefined): void {
+function applyNullableString(cfg: ChatHistoryConfig, key: "mcpAuthToken" | "mcpPublicBaseUrl" | "embeddingModel" | "geminiApiKey", v: string | undefined): void {
   if (v !== undefined) cfg[key] = v || null;
 }
 

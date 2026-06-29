@@ -195,6 +195,7 @@ export async function runInit(opts: InitCmdOpts): Promise<void> {
       indexPath: cfg.indexPath,
       ingestPort: cfg.ingestPort,
       mcpHttpPort: cfg.mcpHttpPort,
+      mcpPublicBaseUrl: cfg.mcpPublicBaseUrl,
       backupTargets: cfg.backupTargets,
       embeddingProvider: cfg.embeddingProvider,
       embeddingModel: cfg.embeddingModel,
@@ -229,14 +230,26 @@ export interface ConnectCmdOpts {
   write: Writer;
 }
 
+function mcpUrl(baseUrl: string, token?: string | null): string {
+  const base = baseUrl.replace(/\/+$/, "");
+  const tokenSegment = token ? `/${encodeURIComponent(token)}` : "";
+  return `${base}/mcp${tokenSegment}`;
+}
+
 export function runConnect(opts: ConnectCmdOpts): void {
   const { cfg, write } = opts;
   const binaryPath = opts.binaryPath ?? process.execPath;
-  const mcpUrl = `http://127.0.0.1:${cfg.mcpHttpPort}/mcp`;
+  const localBaseUrl = `http://127.0.0.1:${cfg.mcpHttpPort}`;
+  const localMcpUrl = mcpUrl(localBaseUrl);
 
-  write(`MCP endpoint (local, read-only): ${mcpUrl}`);
-  write(`  Served while "chat-scrobbler serve" is running. This URL is only reachable`);
-  write(`  from the same machine unless you deliberately put a secure proxy in front of it.`);
+  write(`MCP endpoint (local, read-only): ${localMcpUrl}`);
+  write(`  Served while "chat-scrobbler serve" is running. The origin stays bound`);
+  write(`  to 127.0.0.1 unless you deliberately put a secure HTTPS tunnel in front of it.`);
+  if (cfg.mcpAuthToken) {
+    write(`MCP endpoint (local, token path): ${mcpUrl(localBaseUrl, cfg.mcpAuthToken)}`);
+    write(`  Anonymous /mcp is rejected. Header-capable clients may use:`);
+    write(`  Authorization: Bearer ${cfg.mcpAuthToken}`);
+  }
   write("");
   write(`Claude Desktop (stdio) -- add to claude_desktop_config.json:`);
   write(
@@ -248,13 +261,32 @@ export function runConnect(opts: ConnectCmdOpts): void {
   );
   write("");
   write(`Claude Desktop / local tools (HTTP):`);
-  write(`  Local MCP clients running on this machine may use ${mcpUrl}.`);
+  if (cfg.mcpAuthToken) {
+    write(`  Local MCP clients running on this machine may use the token path above,`);
+    write(`  or ${localMcpUrl} with Authorization: Bearer <token>.`);
+  } else {
+    write(`  Local MCP clients running on this machine may use ${localMcpUrl}.`);
+  }
   write("");
   write(`Claude web/mobile:`);
-  write(`  Do not paste the localhost URL into claude.ai. Cloud clients need a publicly`);
-  write(`  reachable HTTPS URL plus compatible authentication. Do not publish this`);
-  write(`  endpoint without auth. Cloudflare Tunnel + Access is a candidate route, but`);
-  write(`  verify live Claude connector compatibility before calling it supported.`);
+  if (cfg.mcpAuthToken && cfg.mcpPublicBaseUrl) {
+    write(`  Claude web/mobile URL: ${mcpUrl(cfg.mcpPublicBaseUrl, cfg.mcpAuthToken)}`);
+    write(`  Point the public HTTPS tunnel at ${localMcpUrl}. This is read-only,`);
+    write(`  personal and ephemeral. Add a stronger OAuth/Access layer before durable`);
+    write(`  or shared exposure.`);
+  } else if (cfg.mcpPublicBaseUrl && !cfg.mcpAuthToken) {
+    write(`  Public base URL configured, but no Claude URL was printed. Set MCP_AUTH_TOKEN`);
+    write(`  first so /mcp is not anonymous through the tunnel.`);
+  } else if (cfg.mcpAuthToken) {
+    write(`  Set MCP_PUBLIC_BASE_URL=https://your-tunnel.example to print a pasteable`);
+    write(`  Claude web/mobile URL. Cloud clients need publicly reachable HTTPS and`);
+    write(`  compatible authentication; do not publish /mcp anonymously.`);
+  } else {
+    write(`  Do not paste the localhost URL into claude.ai. Cloud clients need a publicly`);
+    write(`  reachable HTTPS URL plus compatible authentication. Do not publish this`);
+    write(`  endpoint without auth. Set MCP_AUTH_TOKEN and MCP_PUBLIC_BASE_URL to print`);
+    write(`  a tokenized Claude web/mobile connector URL.`);
+  }
   write("");
   write(`OpenAI Secure MCP Tunnel:`);
   write(`  Use the local endpoint as the private origin only if the tunnel's current`);
@@ -385,6 +417,7 @@ export async function startServe(cfg: ChatHistoryConfig): Promise<ServeHandles> 
     indexPath: cfg.indexPath,
     canonicalDir: cfg.canonicalDir,
     embeddingProvider: embeddingProviderFromConfig(cfg),
+    mcpAuthToken: cfg.mcpAuthToken,
   });
 
   return { ingestServer, mcpServer };
@@ -402,10 +435,21 @@ export function printServeInfo(cfg: ChatHistoryConfig, handles: ServeHandles): v
     ? `http://127.0.0.1:${ingestPort}`
     : cfg.ingestBaseUrl;
 
-  const mcpUrl = `http://127.0.0.1:${mcpPort}/mcp`;
+  const localMcpUrl = mcpUrl(`http://127.0.0.1:${mcpPort}`);
 
   process.stdout.write(`Ingest receiver (paste into extension): ${ingestUrl}\n`);
-  process.stdout.write(`MCP endpoint (local, read-only):       ${mcpUrl}\n`);
+  if (cfg.mcpAuthToken) {
+    process.stdout.write(`MCP endpoint (local, token path):     ${mcpUrl(`http://127.0.0.1:${mcpPort}`, cfg.mcpAuthToken)}\n`);
+    process.stdout.write(`MCP endpoint (local, Bearer auth):    ${localMcpUrl}\n`);
+    if (cfg.mcpPublicBaseUrl) {
+      process.stdout.write(`Claude web/mobile URL:                ${mcpUrl(cfg.mcpPublicBaseUrl, cfg.mcpAuthToken)}\n`);
+    }
+  } else {
+    process.stdout.write(`MCP endpoint (local, read-only):       ${localMcpUrl}\n`);
+    if (cfg.mcpPublicBaseUrl) {
+      process.stdout.write(`Claude web/mobile URL:                not printed; set MCP_AUTH_TOKEN first\n`);
+    }
+  }
   process.stdout.write(`Canonical dir: ${cfg.canonicalDir}\n`);
   process.stdout.write(`Index path:    ${cfg.indexPath}\n`);
 }
