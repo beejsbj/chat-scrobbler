@@ -267,11 +267,19 @@ Two transport modes:
 
 - **stdio** (`bun run mcp`): standard MCP stdio transport for local harness integration.
 - **Streamable HTTP** (`bun run mcp:http`, default port 4319): stateless -- a fresh
-  `McpServer` + transport is created per request. Suitable for remote connectors such as
-  claude.ai custom connectors. Endpoint: `http://127.0.0.1:4319/mcp`.
+  `McpServer` + transport is created per request. The origin endpoint is local:
+  `http://127.0.0.1:4319/mcp`.
 
 `chat-scrobbler serve` starts both the ingest server (port 4318) and the MCP HTTP server
 (port 4319) together and prints both URLs.
+
+Client surface guidance lives in [MCP_CONNECTORS.md](MCP_CONNECTORS.md). Cloud
+clients such as Claude web/mobile cannot reach the localhost URL directly and
+need a publicly reachable HTTPS route with compatible authentication. Tailscale
+Serve is private and does not make the endpoint reachable to cloud clients;
+Tailscale Funnel is public and unsafe unless compatible auth protects the MCP
+endpoint. Cloudflare Tunnel + Access is only a candidate route until live
+connector compatibility is verified.
 
 ---
 

@@ -24,5 +24,20 @@ test("runConnect emits a Claude Desktop stdio config block pointing at the binar
 test("runConnect mentions exposing the endpoint for remote/claude.ai connectors", () => {
   const out: string[] = [];
   runConnect({ cfg: cfgWith(4319), binaryPath: "/opt/chat-scrobbler", write: (s) => out.push(s) });
-  expect(out.join("\n").toLowerCase()).toContain("claude.ai");
+  const text = out.join("\n").toLowerCase();
+  expect(text).toContain("claude web/mobile");
+  expect(text).toContain("publicly reachable https");
+  expect(text).toContain("compatible authentication");
+  expect(text).toContain("do not publish");
+});
+
+test("runConnect gives OpenAI Secure MCP Tunnel guidance without claiming support", () => {
+  const out: string[] = [];
+  runConnect({ cfg: cfgWith(4319), binaryPath: "/opt/chat-scrobbler", write: (s) => out.push(s) });
+  const text = out.join("\n");
+  const lower = text.toLowerCase();
+  expect(text).toContain("OpenAI Secure MCP Tunnel");
+  expect(lower).toContain("verify");
+  expect(lower).toContain("current tunnel requirements");
+  expect(lower).toContain("compatible auth");
 });

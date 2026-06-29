@@ -10,6 +10,7 @@ import type { ChatHistoryConfig } from "../src/config";
 
 // Import command functions
 import {
+  printServeInfo,
   runSearch,
   runGet,
   runList,
@@ -337,6 +338,33 @@ test("serve boots ingest + MCP HTTP on ephemeral ports and responds", async () =
     ingestServer.stop(true);
     mcpServer.stop(true);
   }
+});
+
+test("serve output labels MCP URL local and avoids cloud-client localhost guidance", () => {
+  const serveCfg: ChatHistoryConfig = {
+    ...cfg,
+    ingestBaseUrl: "http://127.0.0.1:4318",
+  };
+  const writes: string[] = [];
+  const originalWrite = process.stdout.write;
+  process.stdout.write = ((chunk: string | Uint8Array) => {
+    writes.push(String(chunk));
+    return true;
+  }) as typeof process.stdout.write;
+
+  try {
+    printServeInfo(serveCfg, {
+      ingestServer: { port: 4318 } as ReturnType<typeof Bun.serve>,
+      mcpServer: { port: 4319 } as Awaited<ReturnType<typeof startServe>>["mcpServer"],
+    });
+  } finally {
+    process.stdout.write = originalWrite;
+  }
+
+  const output = writes.join("");
+  expect(output).toContain("MCP endpoint (local, read-only):");
+  expect(output).toContain("http://127.0.0.1:4319/mcp");
+  expect(output).not.toContain("paste into claude.ai");
 });
 
 // ---------------------------------------------------------------------------
