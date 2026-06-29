@@ -72,7 +72,6 @@ async function syncClaude(fetcher: FetchLike, options: ProviderSyncOptions): Pro
 
     for (const item of items) {
       scanned += 1;
-      maxConversationUpdatedAt = maxIso(maxConversationUpdatedAt, item.updatedAt);
       if (options.shouldIgnore?.("claude", item.id)) {
         skipped += 1;
         continue;
@@ -98,6 +97,7 @@ async function syncClaude(fetcher: FetchLike, options: ProviderSyncOptions): Pro
         rawUrl: `${currentOrigin()}${detailEndpoint}`,
       }));
       captured += 1;
+      maxConversationUpdatedAt = maxIso(maxConversationUpdatedAt, item.updatedAt);
     }
 
     offset += items.length;

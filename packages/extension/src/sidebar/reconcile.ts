@@ -118,6 +118,10 @@ export function badgePresentation(state: ConversationState): BadgePresentation {
   }
 }
 
+export function badgeActionLabel(state: ConversationState): string {
+  return state === "ignored" ? "Enable sync for this chat" : "Disable sync for this chat";
+}
+
 /** Conversations that auto-sync should capture, in sidebar order: anything not
  *  already current. Returns [] when auto-sync is off. */
 export function captureQueue(

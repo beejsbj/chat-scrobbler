@@ -56,6 +56,31 @@ test("ChatGPT adapter skips ignored conversations before detail fetch", async ()
   expect(calls.some((call) => call.startsWith("/backend-api/conversation/ignored"))).toBe(false);
 });
 
+test("ChatGPT adapter does not advance cursor from ignored conversations", async () => {
+  const fetcher: FetchLike = async (input) => {
+    if (input === "/api/auth/session") return json({ accessToken: "tok" });
+    if (String(input).startsWith("/backend-api/conversations")) {
+      return json({
+        items: [
+          { id: "ignored-newest", update_time: "2026-06-05T12:00:00.000Z" },
+          { id: "captured-older", update_time: "2026-06-05T11:00:00.000Z" },
+        ],
+      });
+    }
+    if (input === "/backend-api/conversation/captured-older") return json({ id: "captured-older", mapping: {} });
+    throw new Error(`unexpected fetch ${input}`);
+  };
+
+  const result = await createChatgptAdapter(fetcher).sync({
+    lastSync: null,
+    emitCapture: async () => {},
+    shouldIgnore: (source, id) => source === "chatgpt" && id === "ignored-newest",
+  });
+
+  expect(result).toMatchObject({ scanned: 2, captured: 1, skipped: 1 });
+  expect(result.maxConversationUpdatedAt).toBe("2026-06-05T11:00:00.000Z");
+});
+
 test("ChatGPT adapter stops paginating early when cursor page is all old", async () => {
   const pageRequests: string[] = [];
   const fetcher: FetchLike = async (input) => {
@@ -217,6 +242,31 @@ test("Claude adapter skips ignored conversations before detail fetch", async () 
 
   expect(result).toMatchObject({ scanned: 1, captured: 0, skipped: 1 });
   expect(calls.some((call) => call.includes("/chat_conversations/ignored"))).toBe(false);
+});
+
+test("Claude adapter does not advance cursor from ignored conversations", async () => {
+  const fetcher: FetchLike = async (input) => {
+    if (input === "/api/organizations") return json([{ uuid: "org-1" }]);
+    if (String(input).startsWith("/api/organizations/org-1/chat_conversations?")) {
+      return json([
+        { uuid: "ignored-newest", updated_at: "2026-06-05T12:00:00.000Z" },
+        { uuid: "captured-older", updated_at: "2026-06-05T11:00:00.000Z" },
+      ]);
+    }
+    if (String(input).startsWith("/api/organizations/org-1/chat_conversations/captured-older")) {
+      return json({ uuid: "captured-older", chat_messages: [] });
+    }
+    throw new Error(`unexpected fetch ${input}`);
+  };
+
+  const result = await createClaudeAdapter(fetcher).sync({
+    lastSync: null,
+    emitCapture: async () => {},
+    shouldIgnore: (source, id) => source === "claude" && id === "ignored-newest",
+  });
+
+  expect(result).toMatchObject({ scanned: 2, captured: 1, skipped: 1 });
+  expect(result.maxConversationUpdatedAt).toBe("2026-06-05T11:00:00.000Z");
 });
 
 test("Claude adapter normalizes numeric string timestamps to ISO", async () => {

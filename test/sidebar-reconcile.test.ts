@@ -10,6 +10,7 @@ import {
   SIDEBAR_CONFIGS,
   activeConversationId,
   applyIgnoredStates,
+  badgeActionLabel,
   badgePresentation,
   captureDelayMs,
   captureQueue,
@@ -65,6 +66,15 @@ test("badgePresentation maps each state to a glyph + accessible label", () => {
   expect(ignored.state).toBe("ignored");
   expect(ignored.glyph).toContain("<svg");
   expect(ignored.label).toMatch(/ignored/i);
+});
+
+test("badgeActionLabel describes the toggle action for tooltip and aria", () => {
+  expect(badgeActionLabel("synced")).toBe("Disable sync for this chat");
+  expect(badgeActionLabel("missing")).toBe("Disable sync for this chat");
+  expect(badgeActionLabel("stale")).toBe("Disable sync for this chat");
+  expect(badgeActionLabel("error")).toBe("Disable sync for this chat");
+  expect(badgeActionLabel("syncing")).toBe("Disable sync for this chat");
+  expect(badgeActionLabel("ignored")).toBe("Enable sync for this chat");
 });
 
 test("captureQueue selects missing+stale in order, only when auto-sync is on", () => {

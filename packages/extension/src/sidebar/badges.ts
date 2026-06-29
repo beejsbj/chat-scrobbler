@@ -1,7 +1,7 @@
 // packages/extension/src/sidebar/badges.ts
 // Thin DOM glue: inject an iCloud-style sync glyph next to a sidebar chat link.
 // All decision logic is in reconcile.ts; this only touches the DOM.
-import { badgePresentation, type ConversationState } from "./reconcile";
+import { badgeActionLabel, badgePresentation, type ConversationState } from "./reconcile";
 
 const BADGE_ATTR = "data-scrobbler-badge";
 const STYLE_ID = "scrobbler-badge-style";
@@ -45,8 +45,9 @@ export function setBadge(anchor: Element, state: ConversationState, onToggle?: (
   }
   badge.dataset.state = pres.state;
   badge.innerHTML = pres.glyph;
-  badge.title = `Chat history: ${pres.label}`;
+  badge.title = badgeActionLabel(state);
   badge.setAttribute("aria-label", badge.title);
+  badge.setAttribute("aria-pressed", state === "ignored" ? "true" : "false");
   badge.onclick = (event) => {
     event.preventDefault();
     event.stopPropagation();
