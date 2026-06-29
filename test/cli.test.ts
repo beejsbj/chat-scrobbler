@@ -371,6 +371,36 @@ test("serve output labels MCP URL local and avoids cloud-client localhost guidan
   expect(output).not.toContain("paste into claude.ai");
 });
 
+test("serve output prints a public Claude web MCP URL when token and public base are configured", () => {
+  const serveCfg: ChatHistoryConfig = {
+    ...cfg,
+    ingestBaseUrl: "http://127.0.0.1:4318",
+    mcpAuthToken: "public-test-token",
+    mcpPublicBaseUrl: "https://chat-history.example.com",
+  };
+  const writes: string[] = [];
+  const originalWrite = process.stdout.write;
+  process.stdout.write = ((chunk: string | Uint8Array) => {
+    writes.push(String(chunk));
+    return true;
+  }) as typeof process.stdout.write;
+
+  try {
+    printServeInfo(serveCfg, {
+      ingestServer: { port: 4318 } as ReturnType<typeof Bun.serve>,
+      mcpServer: { port: 4319 } as Awaited<ReturnType<typeof startServe>>["mcpServer"],
+    });
+  } finally {
+    process.stdout.write = originalWrite;
+  }
+
+  const output = writes.join("");
+  expect(output).toContain("MCP endpoint (local, token path):");
+  expect(output).toContain("http://127.0.0.1:4319/mcp/public-test-token");
+  expect(output).toContain("Claude web/mobile URL:");
+  expect(output).toContain("https://chat-history.example.com/mcp/public-test-token");
+});
+
 // ---------------------------------------------------------------------------
 // End-to-end spawn test
 // ---------------------------------------------------------------------------

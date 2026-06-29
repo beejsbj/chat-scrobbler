@@ -252,6 +252,8 @@ Config file auto-discovery order:
 | `indexPath` | `~/.local/share/chat-scrobbler/index/sessions.db` |
 | `ingestPort` | `4318` |
 | `mcpHttpPort` | `4319` |
+| `mcpAuthToken` | `null` (no MCP HTTP auth) |
+| `mcpPublicBaseUrl` | `null` (no printed public connector URL) |
 | `ingestBaseUrl` | `http://127.0.0.1:4318` (tracks `ingestPort` unless overridden) |
 | `ingestToken` | `null` (no auth) |
 | `backupTargets` | `["~/.local/share/chat-scrobbler/backups"]` |
@@ -264,6 +266,8 @@ Config file auto-discovery order:
 | `INDEX_PATH` | `indexPath` |
 | `PORT` | `ingestPort` |
 | `MCP_HTTP_PORT` | `mcpHttpPort` |
+| `MCP_AUTH_TOKEN` or `CHAT_SCROBBLER_MCP_AUTH_TOKEN` | `mcpAuthToken` |
+| `MCP_PUBLIC_BASE_URL` or `CHAT_SCROBBLER_MCP_PUBLIC_BASE_URL` | `mcpPublicBaseUrl` |
 | `INGEST_BASE_URL` | `ingestBaseUrl` |
 | `INGEST_TOKEN` | `ingestToken` |
 | `BACKUP_TARGET` | `backupTargets` (comma-separated list) |
@@ -324,11 +328,12 @@ Two transport modes:
 
 Client surface guidance lives in [MCP_CONNECTORS.md](MCP_CONNECTORS.md). Cloud
 clients such as Claude web/mobile cannot reach the localhost URL directly and
-need a publicly reachable HTTPS route with compatible authentication. Tailscale
-Serve is private and does not make the endpoint reachable to cloud clients;
-Tailscale Funnel is public and unsafe unless compatible auth protects the MCP
-endpoint. Cloudflare Tunnel + Access is only a candidate route until live
-connector compatibility is verified.
+need a publicly reachable HTTPS route with compatible authentication. When
+`mcpAuthToken` is configured, `/mcp/<token>` and `Authorization: Bearer <token>`
+are accepted, while anonymous `/mcp` is rejected. `mcpPublicBaseUrl` only affects
+printed CLI guidance; the HTTP server still binds to `127.0.0.1`. This is a
+read-only, personal/ephemeral connector mode unless a stronger OAuth/Access
+layer sits in front of it.
 
 ---
 

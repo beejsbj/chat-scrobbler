@@ -11,6 +11,8 @@ test("loadConfig returns data-home defaults with empty env and no config file", 
   expect(cfg.indexPath).toBe(join(dataHome, "index", "sessions.db"));
   expect(cfg.ingestPort).toBe(4318);
   expect(cfg.mcpHttpPort).toBe(4319);
+  expect(cfg.mcpAuthToken).toBeNull();
+  expect(cfg.mcpPublicBaseUrl).toBeNull();
   expect(cfg.ingestToken).toBeNull();
   expect(cfg.ingestBaseUrl).toBe("http://127.0.0.1:4318");
   expect(cfg.backupTargets).toEqual([join(dataHome, "backups")]);
@@ -23,6 +25,8 @@ test("env overrides defaults", () => {
       INDEX_PATH: "/data/idx.db",
       PORT: "5000",
       MCP_HTTP_PORT: "5001",
+      MCP_AUTH_TOKEN: "mcp-secret",
+      MCP_PUBLIC_BASE_URL: "https://chat-history.example.com",
       INGEST_TOKEN: "secret",
       BACKUP_TARGET: "/backups/chat",
     },
@@ -32,10 +36,24 @@ test("env overrides defaults", () => {
   expect(cfg.indexPath).toBe("/data/idx.db");
   expect(cfg.ingestPort).toBe(5000);
   expect(cfg.mcpHttpPort).toBe(5001);
+  expect(cfg.mcpAuthToken).toBe("mcp-secret");
+  expect(cfg.mcpPublicBaseUrl).toBe("https://chat-history.example.com");
   expect(cfg.ingestToken).toBe("secret");
   expect(cfg.backupTargets).toEqual(["/backups/chat"]);
   // ingestBaseUrl tracks the ingest port by default
   expect(cfg.ingestBaseUrl).toBe("http://127.0.0.1:5000");
+});
+
+test("prefixed MCP env vars override defaults", () => {
+  const cfg = loadConfig({
+    env: {
+      CHAT_SCROBBLER_MCP_AUTH_TOKEN: "prefixed-secret",
+      CHAT_SCROBBLER_MCP_PUBLIC_BASE_URL: "https://prefixed.example.com",
+    },
+    configPath: null,
+  });
+  expect(cfg.mcpAuthToken).toBe("prefixed-secret");
+  expect(cfg.mcpPublicBaseUrl).toBe("https://prefixed.example.com");
 });
 
 test("explicit INGEST_BASE_URL overrides the port-derived default", () => {
@@ -52,12 +70,26 @@ test("config file overrides defaults; env overrides config file", () => {
     const file = join(dir, "chat-scrobbler.config.json");
     writeFileSync(
       file,
-      JSON.stringify({ canonicalDir: "/from/file/canon", indexPath: "/from/file/idx.db", ingestPort: 6000 }),
+      JSON.stringify({
+        canonicalDir: "/from/file/canon",
+        indexPath: "/from/file/idx.db",
+        ingestPort: 6000,
+        mcpAuthToken: "from-file-token",
+        mcpPublicBaseUrl: "https://from-file.example.com",
+      }),
     );
-    const cfg = loadConfig({ env: { INDEX_PATH: "/from/env/idx.db" }, configPath: file });
+    const cfg = loadConfig({
+      env: {
+        INDEX_PATH: "/from/env/idx.db",
+        MCP_AUTH_TOKEN: "from-env-token",
+      },
+      configPath: file,
+    });
     expect(cfg.canonicalDir).toBe("/from/file/canon"); // file wins over default
     expect(cfg.ingestPort).toBe(6000); // file wins over default
     expect(cfg.indexPath).toBe("/from/env/idx.db"); // env wins over file
+    expect(cfg.mcpAuthToken).toBe("from-env-token"); // env wins over file
+    expect(cfg.mcpPublicBaseUrl).toBe("https://from-file.example.com"); // file wins over default
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

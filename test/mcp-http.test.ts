@@ -3,7 +3,7 @@ import { test, expect, afterAll } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { Client } from "@modelcontextprotocol/sdk/client";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { writeSession } from "../src/store/sessions";
 import { openIndex, indexSession } from "../src/indexer/sqlite";
@@ -57,10 +57,20 @@ const bunServer = await startHttpServer({
   canonicalDir: tmpCanonical,
 });
 
+const AUTH_PORT = 14320;
+const AUTH_TOKEN = "test-public-token";
+const authServer = await startHttpServer({
+  port: AUTH_PORT,
+  indexPath,
+  canonicalDir: tmpCanonical,
+  mcpAuthToken: AUTH_TOKEN,
+});
+
 // ---- cleanup ----
 
 afterAll(() => {
   bunServer.stop(true);
+  authServer.stop(true);
   rmSync(tmpCanonical, { recursive: true, force: true });
   rmSync(tmpIndex, { recursive: true, force: true });
 });
@@ -74,6 +84,28 @@ async function makeClient(): Promise<Client> {
   );
   await client.connect(transport);
   return client;
+}
+
+async function makeTokenPathClient(): Promise<Client> {
+  const client = new Client({ name: "test-client", version: "1.0.0" });
+  const transport = new StreamableHTTPClientTransport(
+    new URL(`http://127.0.0.1:${AUTH_PORT}/mcp/${AUTH_TOKEN}`)
+  );
+  await client.connect(transport);
+  return client;
+}
+
+function initializePayload(id: number): Record<string, unknown> {
+  return {
+    jsonrpc: "2.0",
+    id,
+    method: "initialize",
+    params: {
+      protocolVersion: "2024-11-05",
+      capabilities: {},
+      clientInfo: { name: "fetch-test-client", version: "1.0.0" },
+    },
+  };
 }
 
 // ---- tests ----
@@ -138,4 +170,48 @@ test("get_session returns the fixture session content", async () => {
   } finally {
     await client.close();
   }
+});
+
+test("authorized /mcp/<token> path connects when an MCP auth token is configured", async () => {
+  const client = await makeTokenPathClient();
+  try {
+    const result = await client.listTools();
+    const names = result.tools.map((t) => t.name).sort();
+    expect(names).toEqual(["get_session", "list_sessions", "search"]);
+  } finally {
+    await client.close();
+  }
+});
+
+test("anonymous /mcp is rejected when an MCP auth token is configured", async () => {
+  const res = await fetch(`http://127.0.0.1:${AUTH_PORT}/mcp`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(initializePayload(1)),
+  });
+  expect(res.status).toBe(401);
+  expect(await res.text()).toContain("Unauthorized");
+});
+
+test("Authorization: Bearer token authorizes /mcp when an MCP auth token is configured", async () => {
+  const res = await fetch(`http://127.0.0.1:${AUTH_PORT}/mcp`, {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${AUTH_TOKEN}`,
+      accept: "application/json, text/event-stream",
+      "content-type": "application/json",
+    },
+    body: JSON.stringify(initializePayload(2)),
+  });
+  expect(res.status).toBe(200);
+  const body = await res.json() as { result?: { serverInfo?: { name?: string } } };
+  expect(body.result?.serverInfo?.name).toBe("unified-sessions");
+});
+
+test("OPTIONS preflight still works without auth when an MCP auth token is configured", async () => {
+  const res = await fetch(`http://127.0.0.1:${AUTH_PORT}/mcp`, {
+    method: "OPTIONS",
+  });
+  expect(res.status).toBe(200);
+  expect(res.headers.get("access-control-allow-origin")).toBe("*");
 });
