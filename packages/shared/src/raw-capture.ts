@@ -15,6 +15,17 @@ export interface RawCapture<TPayload = unknown> {
   conversation_updated_at?: string | null;
   cursor?: string | null;
   raw_url?: string | null;
+  assets?: UploadedAsset[];
+}
+
+export interface UploadedAsset {
+  pointer: string;
+  local_path: string;
+  message_id?: string | null;
+  filename?: string | null;
+  content_type?: string | null;
+  size_bytes?: number | null;
+  sha256?: string | null;
 }
 
 export interface BuildRawCaptureInput<TPayload = unknown> {
@@ -27,6 +38,7 @@ export interface BuildRawCaptureInput<TPayload = unknown> {
   conversationUpdatedAt?: string | null;
   cursor?: string | null;
   rawUrl?: string | null;
+  assets?: UploadedAsset[];
 }
 
 export function buildRawCapture<TPayload>(input: BuildRawCaptureInput<TPayload>): RawCapture<TPayload> {
@@ -42,6 +54,7 @@ export function buildRawCapture<TPayload>(input: BuildRawCaptureInput<TPayload>)
     conversation_updated_at: input.conversationUpdatedAt ?? null,
     cursor: input.cursor ?? null,
     raw_url: input.rawUrl ?? null,
+    assets: input.assets ?? [],
   };
 }
 

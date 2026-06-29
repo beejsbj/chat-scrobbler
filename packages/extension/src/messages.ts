@@ -13,6 +13,20 @@ export interface CaptureReadyMessage {
   capture: RawCapture;
 }
 
+export interface AssetUploadRequest {
+  source: ProviderSource;
+  sourceId: string;
+  pointer: string;
+  filename?: string | null;
+  contentType?: string | null;
+  bytes: number[];
+}
+
+export interface AssetUploadMessage {
+  type: "SCROBBLER_ASSET_UPLOAD";
+  asset: AssetUploadRequest;
+}
+
 export interface ProviderReadyMessage {
   type: "SCROBBLER_PROVIDER_READY";
   provider: ProviderSource;
@@ -83,6 +97,7 @@ export interface CaptureLoggedMessage {
 export type RuntimeMessage =
   | SyncRequest
   | CaptureReadyMessage
+  | AssetUploadMessage
   | ProviderReadyMessage
   | SyncActiveTabMessage
   | SyncAllMessage

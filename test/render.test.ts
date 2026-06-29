@@ -32,3 +32,13 @@ test("tool_result with null output is skipped", () => {
 test("attachment with null filename omits the colon", () => {
   expect(renderText([{ type: "attachment", kind: "image", filename: null, pointer: "p", local_path: null }])).toBe("[image]");
 });
+
+test("attachment with local_path renders a canonical-relative asset link hint", () => {
+  expect(renderText([{
+    type: "attachment",
+    kind: "image",
+    filename: "pic.png",
+    pointer: "p",
+    local_path: "assets/chatgpt/conv/hash.png",
+  }])).toBe("[image: pic.png -> assets/chatgpt/conv/hash.png]");
+});

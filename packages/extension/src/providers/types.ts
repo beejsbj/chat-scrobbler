@@ -1,9 +1,11 @@
-import type { ProviderSource, RawCapture } from "../../../shared/src";
+import type { ProviderSource, RawCapture, UploadedAsset } from "../../../shared/src";
+import type { AssetUploadRequest } from "../messages";
 
 export interface ProviderSyncOptions {
   lastSync?: string | null;
   emitCapture: (capture: RawCapture) => Promise<void>;
   shouldIgnore?: (source: ProviderSource, sourceId: string) => boolean;
+  uploadAsset?: (asset: AssetUploadRequest) => Promise<UploadedAsset>;
 }
 
 export interface ProviderSyncResult {

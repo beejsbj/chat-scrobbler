@@ -1,4 +1,5 @@
 import { buildRawCapture } from "../../../shared/src";
+import { uploadProviderAssets, type ProviderAssetCandidate } from "./assets";
 import {
   asArray,
   asObject,
@@ -96,11 +97,17 @@ async function syncChatgpt(fetcher: FetchLike, options: ProviderSyncOptions): Pr
 
       const detailEndpoint = `/backend-api/conversation/${encodeURIComponent(item.id)}`;
       const payload = await fetchJson(fetcher, detailEndpoint, { headers });
+      const assets = await uploadProviderAssets(
+        fetcher,
+        options.uploadAsset,
+        chatgptAssetCandidates(payload, item.id),
+      );
       await options.emitCapture(buildRawCapture({
         source: "chatgpt",
         sourceId: item.id,
         endpoint: detailEndpoint,
         payload,
+        assets,
         conversationUpdatedAt: item.updatedAt,
         rawUrl: `${currentOrigin()}${detailEndpoint}`,
       }));
@@ -113,6 +120,47 @@ async function syncChatgpt(fetcher: FetchLike, options: ProviderSyncOptions): Pr
   }
 
   return { source: "chatgpt", scanned, captured, skipped, maxConversationUpdatedAt, account: null };
+}
+
+function chatgptAssetCandidates(payload: unknown, sourceId: string): ProviderAssetCandidate[] {
+  const out: ProviderAssetCandidate[] = [];
+  const mapping = asObject(payload).mapping;
+  if (!mapping || typeof mapping !== "object" || Array.isArray(mapping)) return out;
+  for (const node of Object.values(mapping)) {
+    const message = asObject(asObject(node).message);
+    const messageId = typeof message.id === "string" ? message.id : null;
+    const content = asObject(message.content);
+    if (content.content_type !== "multimodal_text") continue;
+    for (const part of asArray(content.parts)) {
+      const item = asObject(part);
+      const pointer = readChatgptPointer(item);
+      if (!pointer) continue;
+      const url = chatgptAssetUrl(pointer);
+      if (!url) continue;
+      out.push({
+        source: "chatgpt",
+        sourceId,
+        pointer,
+        url,
+        messageId,
+        contentType: item.content_type === "image_asset_pointer" ? "image/png" : null,
+      });
+    }
+  }
+  return out;
+}
+
+function readChatgptPointer(part: Record<string, unknown>): string | null {
+  if (typeof part.asset_pointer === "string") return part.asset_pointer;
+  const audio = asObject(part.audio_asset_pointer);
+  return typeof audio.asset_pointer === "string" ? audio.asset_pointer : null;
+}
+
+function chatgptAssetUrl(pointer: string): string | null {
+  if (/^https?:\/\//.test(pointer) || pointer.startsWith("/")) return pointer;
+  const fileService = pointer.match(/^file-service:\/\/(.+)$/);
+  if (fileService) return `/backend-api/files/${encodeURIComponent(fileService[1])}/download`;
+  return null;
 }
 
 function currentOrigin(): string | null {

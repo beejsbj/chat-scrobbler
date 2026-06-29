@@ -33,6 +33,7 @@
 
 import type { Session, Message, Block } from "../schema/types";
 import { makeSessionId } from "../schema/types";
+import { assetLookupFromRaw, kindFromContentType } from "./assets";
 import { renderText } from "./render";
 
 // Epoch seconds + nanoseconds [s, ns] array -- the timestamp type Gemini uses.
@@ -147,6 +148,7 @@ export function parseGemini(raw: unknown): Session[] {
   const turns = turnsRaw as Turn[];
 
   const messages: Message[] = [];
+  const assets = assetLookupFromRaw(raw).all();
   let firstTimestamp: string | null = null;
   let lastTimestamp: string | null = null;
   let defaultModel: string | null = null;
@@ -208,6 +210,24 @@ export function parseGemini(raw: unknown): Session[] {
       // Advance chain to the selected candidate for the next turn.
       prevSelectedAssistantId = selectedId ?? candidates[0].id;
       lastActiveTipId = prevSelectedAssistantId;
+    }
+  }
+
+  if (assets.length > 0 && messages.length > 0) {
+    const byId = new Map(messages.map((message) => [message.id, message]));
+    for (const asset of assets) {
+      const target = (asset.message_id ? byId.get(asset.message_id) : null)
+        ?? (lastActiveTipId ? byId.get(lastActiveTipId) : null)
+        ?? messages[messages.length - 1];
+      const block: Block = {
+        type: "attachment",
+        kind: kindFromContentType(asset.content_type),
+        filename: asset.filename ?? null,
+        pointer: asset.pointer,
+        local_path: asset.local_path,
+      };
+      target.blocks.push(block);
+      target.text = renderText(target.blocks);
     }
   }
 

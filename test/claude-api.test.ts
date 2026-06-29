@@ -49,6 +49,46 @@ test("selects the active branch via active_leaf_id + activePath (full tree retai
   expect(path[1].text).toBe("answer B");
 });
 
+test("hydrates Claude files and legacy attachments from uploaded asset sidecar", () => {
+  const payload = {
+    uuid: "cl-assets",
+    name: "Assets",
+    created_at: "2025-01-01T00:00:00Z",
+    updated_at: "2025-01-01T00:01:00Z",
+    chat_messages: [
+      {
+        uuid: "m1",
+        sender: "human",
+        content: [{ type: "text", text: "see attached" }],
+        files: [{ file_uuid: "file-1", file_name: "one.pdf" }],
+        attachments: [{ id: "legacy-1", filename: "legacy.txt" }],
+      },
+    ],
+  };
+  const [s] = parseClaude({
+    source: "claude", capture_method: "api", schema_version: 1,
+    fetched_at: "2026-06-05T10:00:00.000Z", source_id: "cl-assets",
+    endpoint: "/api/organizations/org-1/chat_conversations/cl-assets", account: "org-1", payload,
+    assets: [
+      { pointer: "file-1", local_path: "assets/claude/cl-assets/file.pdf" },
+      { pointer: "legacy-1", local_path: "assets/claude/cl-assets/legacy.txt" },
+    ],
+  });
+
+  expect(s.messages[0].blocks).toContainEqual(expect.objectContaining({
+    type: "attachment",
+    filename: "one.pdf",
+    pointer: "file-1",
+    local_path: "assets/claude/cl-assets/file.pdf",
+  }));
+  expect(s.messages[0].blocks).toContainEqual(expect.objectContaining({
+    type: "attachment",
+    filename: "legacy.txt",
+    pointer: "legacy-1",
+    local_path: "assets/claude/cl-assets/legacy.txt",
+  }));
+});
+
 test("returns [] for empty or malformed input", () => {
   expect(parseClaude(null)).toEqual([]);
   expect(parseClaude({})).toEqual([]);

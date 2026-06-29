@@ -3,8 +3,17 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { foldCaptureIntoSpine, type SpineResult } from "./pipeline";
 import { conversationStatuses } from "./status";
-import { CAPTURE_INGEST_PATH, STATUS_PATH, HEALTH_PATH, toCaptureArray, type RawCapture } from "../../shared/src";
+import {
+  ASSET_INGEST_PATH,
+  CAPTURE_INGEST_PATH,
+  STATUS_PATH,
+  HEALTH_PATH,
+  toCaptureArray,
+  type ProviderSource,
+  type RawCapture,
+} from "../../shared/src";
 import { openIndex } from "../../../src/indexer/sqlite";
+import { MAX_ASSET_BYTES, storeCanonicalAsset } from "../../../src/store/assets";
 
 export interface IngestServerOptions {
   /**
@@ -28,6 +37,14 @@ export interface IngestResponse {
   ok: true;
   count: number;
   spine: SpineResult[];
+}
+
+export interface AssetUploadResponse {
+  ok: true;
+  pointer: string;
+  local_path: string;
+  sha256: string;
+  size_bytes: number;
 }
 
 const corsHeaders = {
@@ -67,8 +84,9 @@ export async function handleIngestRequest(req: Request, opts: IngestServerOption
   }
 
   const isCapture = req.method === "POST" && url.pathname === CAPTURE_INGEST_PATH;
+  const isAsset = req.method === "POST" && url.pathname === ASSET_INGEST_PATH;
   const isStatus = req.method === "POST" && url.pathname === STATUS_PATH;
-  if (!isCapture && !isStatus) {
+  if (!isCapture && !isAsset && !isStatus) {
     return json({ ok: false, error: "Not found" }, 404);
   }
 
@@ -81,6 +99,38 @@ export async function handleIngestRequest(req: Request, opts: IngestServerOption
   }
 
   const fat = fatMode(opts);
+
+  if (isAsset) {
+    if (!fat) return json({ ok: false, error: "asset endpoint requires canonicalDir + indexPath" }, 400);
+    try {
+      const source = readSource(url.searchParams.get("source"));
+      const sourceId = requiredParam(url, "source_id");
+      const pointer = requiredParam(url, "pointer");
+      const filename = url.searchParams.get("filename");
+      const contentType = req.headers.get("content-type") ?? url.searchParams.get("content_type");
+      const contentLength = req.headers.get("content-length");
+      if (contentLength && Number(contentLength) > MAX_ASSET_BYTES) {
+        return json({ ok: false, error: `asset exceeds ${MAX_ASSET_BYTES} byte limit` }, 413);
+      }
+      const bytes = new Uint8Array(await req.arrayBuffer());
+      const stored = storeCanonicalAsset({
+        canonicalDir: fat.canonicalDir,
+        source,
+        sourceId,
+        pointer,
+        filename,
+        contentType,
+        bytes,
+      });
+      return json({
+        ok: true,
+        pointer,
+        ...stored,
+      } satisfies AssetUploadResponse);
+    } catch (error) {
+      return json({ ok: false, error: error instanceof Error ? error.message : String(error) }, 400);
+    }
+  }
 
   if (isStatus) {
     if (!fat) return json({ ok: false, error: "status endpoint requires canonicalDir + indexPath" }, 400);
@@ -115,6 +165,19 @@ export async function handleIngestRequest(req: Request, opts: IngestServerOption
   } catch (error) {
     return json({ ok: false, error: error instanceof Error ? error.message : String(error) }, 400);
   }
+}
+
+function requiredParam(url: URL, name: string): string;
+function requiredParam(params: URLSearchParams, name: string): string;
+function requiredParam(input: URL | URLSearchParams, name: string): string {
+  const value = input instanceof URL ? input.searchParams.get(name) : input.get(name);
+  if (!value || !value.trim()) throw new Error(`${name} is required`);
+  return value;
+}
+
+function readSource(value: string | null): ProviderSource {
+  if (value === "chatgpt" || value === "claude" || value === "gemini") return value;
+  throw new Error("source is invalid");
 }
 
 function json(body: unknown, status = 200): Response {

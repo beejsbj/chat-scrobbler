@@ -3,7 +3,8 @@ import { detectProvider } from "./providers";
 import { runSidebarBadges } from "./sidebar";
 import type { ConversationState } from "./sidebar/reconcile";
 import type { RuntimeMessage, SyncRequest, SyncResponse } from "./messages";
-import type { RawCapture } from "../../shared/src";
+import type { RawCapture, UploadedAsset } from "../../shared/src";
+import type { AssetUploadRequest } from "./messages";
 
 const provider = detectProvider();
 
@@ -59,8 +60,15 @@ async function syncProvider(message: SyncRequest): Promise<SyncResponse> {
     lastSync: message.lastSync ?? null,
     emitCapture,
     shouldIgnore: (_source, sourceId) => ignoredIds.has(sourceId),
+    uploadAsset,
   });
   return { ok: true, ...result };
+}
+
+async function uploadAsset(asset: AssetUploadRequest): Promise<UploadedAsset> {
+  const response = await sendRuntimeMessage({ type: "SCROBBLER_ASSET_UPLOAD", asset });
+  if (!response?.ok) throw new Error(response?.error ?? "Background asset upload failed");
+  return response.asset as UploadedAsset;
 }
 
 async function emitCapture(capture: RawCapture): Promise<void> {

@@ -19,7 +19,7 @@ export function renderText(blocks: Block[]): string {
         parts.push(typeof b.output === "string" ? b.output : JSON.stringify(b.output));
         break;
       case "attachment":
-        parts.push(`[${b.kind}${b.filename ? ": " + b.filename : ""}]`);
+        parts.push(`[${b.kind}${b.filename ? ": " + b.filename : ""}${b.local_path ? " -> " + b.local_path : ""}]`);
         break;
       default: {
         const _exhaustive: never = b;

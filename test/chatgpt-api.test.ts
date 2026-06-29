@@ -45,6 +45,27 @@ test("handles API-only system/tool roles and code/execution_output content", () 
   expect(s.messages[2].text).toContain("1");
 });
 
+test("hydrates ChatGPT attachment local_path from uploaded asset sidecar", () => {
+  const capture = {
+    ...sample,
+    assets: [{
+      pointer: "file-service://file-IMG1",
+      local_path: "assets/chatgpt/conv-1/hash.png",
+      filename: "hash.png",
+      content_type: "image/png",
+      size_bytes: 3,
+      sha256: "hash",
+    }],
+  };
+  const [s] = parseChatgpt(capture);
+  expect(s.messages[2].blocks[1]).toMatchObject({
+    type: "attachment",
+    pointer: "file-service://file-IMG1",
+    local_path: "assets/chatgpt/conv-1/hash.png",
+  });
+  expect(s.messages[2].text).toContain("assets/chatgpt/conv-1/hash.png");
+});
+
 test("returns [] for empty or malformed input", () => {
   expect(parseChatgpt(null)).toEqual([]);
   expect(parseChatgpt({})).toEqual([]);

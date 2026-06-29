@@ -34,6 +34,7 @@
  */
 
 import { buildRawCapture } from "../../../shared/src";
+import { uploadProviderAssets, type ProviderAssetCandidate } from "./assets";
 import {
   maxIso,
   shouldCapture,
@@ -65,6 +66,8 @@ export interface GeminiPageContext {
   readWizData(): WizData | null;
   /** Optionally reads rendered conversation text from the current page DOM. */
   readConversationDom(id: string): string | null;
+  /** Best-effort rendered asset URLs from the current page DOM. */
+  readConversationAssets?(id: string): Array<{ pointer: string; url: string; filename?: string | null; contentType?: string | null }>;
 }
 
 export interface WizData {
@@ -136,6 +139,17 @@ export function createBrowserPageContext(): GeminiPageContext {
         ?? document.querySelector("main");
       return (conversationEl as HTMLElement | null)?.innerText ?? null;
     },
+    readConversationAssets(id: string) {
+      if (typeof document === "undefined") return [];
+      const conversationEl = document.querySelector(`[data-conversation-id="${id}"]`)
+        ?? document.querySelector("main");
+      if (!conversationEl) return [];
+      return Array.from(conversationEl.querySelectorAll<HTMLImageElement>("img[src]")).flatMap((img) => {
+        const url = img.getAttribute("src");
+        if (!url || url.startsWith("data:")) return [];
+        return [{ pointer: url, url, filename: null, contentType: "image/png" }];
+      });
+    },
   };
 }
 
@@ -172,6 +186,7 @@ async function captureGeminiOne(
   id: string,
   updatedAt: string | null,
   emitCapture: ProviderSyncOptions["emitCapture"],
+  uploadAsset?: ProviderSyncOptions["uploadAsset"],
 ): Promise<void> {
   const wizData = pageCtx.readWizData();
   const fetchedAt = new Date().toISOString();
@@ -180,12 +195,18 @@ async function captureGeminiOne(
   if (wizData) {
     try {
       const payload = await fetchConversationRpc(fetcher, id, wizData);
+      const assets = await uploadProviderAssets(
+        fetcher,
+        uploadAsset,
+        geminiAssetCandidates(pageCtx, id),
+      );
       await emitCapture(buildRawCapture({
         source: "gemini",
         sourceId: id,
         // endpoint includes the RPC id so the spine parser knows which RPC
         endpoint: `${BATCHEXECUTE_PATH}?rpcids=${CONVERSATION_RPC_ID}`,
         payload,
+        assets,
         fetchedAt,
         conversationUpdatedAt: updatedAt,
         rawUrl: `https://gemini.google.com/app/${id}`,
@@ -201,14 +222,27 @@ async function captureGeminiOne(
   // conversation is the currently rendered page. The gemini:api parser ignores
   // dom_fallback payloads.
   const domText = pageCtx.readConversationDom(id);
+  const assets = await uploadProviderAssets(fetcher, uploadAsset, geminiAssetCandidates(pageCtx, id));
   await emitCapture(buildRawCapture({
     source: "gemini",
     sourceId: id,
     endpoint: `dom://gemini.google.com/app/${id}`,
     payload: { dom_fallback: true, text: domText ?? "" },
+    assets,
     fetchedAt,
     conversationUpdatedAt: updatedAt,
     rawUrl: `https://gemini.google.com/app/${id}`,
+  }));
+}
+
+function geminiAssetCandidates(pageCtx: GeminiPageContext, sourceId: string): ProviderAssetCandidate[] {
+  return (pageCtx.readConversationAssets?.(sourceId) ?? []).map((asset) => ({
+    source: "gemini",
+    sourceId,
+    pointer: asset.pointer,
+    url: asset.url,
+    filename: asset.filename ?? null,
+    contentType: asset.contentType ?? null,
   }));
 }
 
@@ -255,7 +289,7 @@ async function syncGemini(
     // sidebar exposes no timestamps. captureGeminiOne handles the RPC primary
     // path + DOM fallback; the cursor watermark advances using fetch time.
     const fetchedAt = new Date().toISOString();
-    await captureGeminiOne(fetcher, pageCtx, id, null, options.emitCapture);
+    await captureGeminiOne(fetcher, pageCtx, id, null, options.emitCapture, options.uploadAsset);
     captured += 1;
     maxConversationUpdatedAt = maxIso(maxConversationUpdatedAt, fetchedAt);
   }

@@ -4,6 +4,7 @@
 // WRITES capture_method "api" for new captures.
 import type { Session, Message, Block } from "../schema/types";
 import { makeSessionId } from "../schema/types";
+import { assetLookupFromRaw, type AssetLookup } from "./assets";
 import { renderText } from "./render";
 
 export function toIso(s?: string | null): string | null {
@@ -16,7 +17,6 @@ export interface RawClaudeMsg {
   uuid: string; sender: "human" | "assistant";
   created_at?: string | null; parent_message_uuid?: string | null;
   text?: string; content?: any[];
-  /** legacy; not processed -- files[] is the current attachment channel */
   attachments?: any[];
   files?: any[];
 }
@@ -26,7 +26,7 @@ export interface RawClaudeConv {
   chat_messages?: RawClaudeMsg[];
 }
 
-export function blocksFromClaude(m: RawClaudeMsg): Block[] {
+export function blocksFromClaude(m: RawClaudeMsg, assets: AssetLookup = assetLookupFromRaw(null)): Block[] {
   const blocks: Block[] = [];
   for (const c of m.content ?? []) {
     switch (c?.type) {
@@ -56,17 +56,35 @@ export function blocksFromClaude(m: RawClaudeMsg): Block[] {
   }
   if (blocks.length === 0 && m.text?.trim()) blocks.push({ type: "text", text: m.text });
   for (const f of m.files ?? []) {
-    blocks.push({ type: "attachment", kind: "file", filename: f.file_name ?? null, pointer: f.file_uuid ?? "", local_path: null });
+    const pointer = f.file_uuid ?? f.uuid ?? f.id ?? "";
+    blocks.push({
+      type: "attachment",
+      kind: "file",
+      filename: f.file_name ?? f.filename ?? null,
+      pointer,
+      local_path: assets.byPointer(pointer)?.local_path ?? null,
+    });
+  }
+  for (const a of m.attachments ?? []) {
+    const pointer = a.file_uuid ?? a.uuid ?? a.id ?? a.attachment_uuid ?? "";
+    if (!pointer) continue;
+    blocks.push({
+      type: "attachment",
+      kind: "file",
+      filename: a.file_name ?? a.filename ?? a.name ?? null,
+      pointer,
+      local_path: assets.byPointer(pointer)?.local_path ?? null,
+    });
   }
   return blocks;
 }
 
 /** Map one Claude `chat_messages[]` entry to a canonical Message, or null if it
  *  yields no blocks. */
-export function claudeMessageToCanonical(m: RawClaudeMsg): Message | null {
+export function claudeMessageToCanonical(m: RawClaudeMsg, assets: AssetLookup = assetLookupFromRaw(null)): Message | null {
   if (!m.uuid) return null;
   const role = m.sender === "human" ? "user" : "assistant";
-  const blocks = blocksFromClaude(m);
+  const blocks = blocksFromClaude(m, assets);
   if (blocks.length === 0) return null;
   return {
     id: m.uuid,
@@ -97,6 +115,7 @@ export function parseClaude(raw: unknown): Session[] {
   const payload = "payload" in env && env.payload ? env.payload : raw;
   const conversations = Array.isArray(payload) ? payload : [payload];
   const sessions: Session[] = [];
+  const assets = assetLookupFromRaw(raw);
   for (const conv of conversations as ApiClaudeConv[]) {
     if (!conv?.uuid) continue;
     const rawMsgs = conv.chat_messages ?? [];
@@ -109,7 +128,7 @@ export function parseClaude(raw: unknown): Session[] {
     const messages: Message[] = [];
 
     for (const m of rawMsgs) {
-      const canonical = claudeMessageToCanonical(m);
+      const canonical = claudeMessageToCanonical(m, assets);
       if (!canonical) continue;
       emittedUuids.add(m.uuid);
       // Normalize parent_id: walk parent_message_uuid chain until we find an

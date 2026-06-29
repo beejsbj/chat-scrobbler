@@ -4,6 +4,7 @@
 // WRITES capture_method "api" for new captures.
 import type { Session, Message, Block, CaptureMethod } from "../schema/types";
 import { makeSessionId } from "../schema/types";
+import { assetLookupFromRaw, type AssetLookup } from "./assets";
 import { renderText } from "./render";
 
 export interface RawNode { id: string; message: any | null; parent: string | null; children?: string[]; }
@@ -17,7 +18,7 @@ export interface RawConversation {
 export const epochToIso = (t?: number | null): string | null =>
   typeof t === "number" ? new Date(t * 1000).toISOString() : null;
 
-export function blocksFromContent(content: any): Block[] {
+export function blocksFromContent(content: any, assets: AssetLookup = assetLookupFromRaw(null)): Block[] {
   if (!content) return [];
   const ct = content.content_type;
   if (ct === "text") {
@@ -32,10 +33,11 @@ export function blocksFromContent(content: any): Block[] {
       } else if (part?.content_type === "audio_transcription" && part.text) {
         blocks.push({ type: "text", text: part.text });
       } else if (part?.content_type === "image_asset_pointer") {
-        blocks.push({ type: "attachment", kind: "image", filename: null, pointer: part.asset_pointer ?? "", local_path: null });
+        const pointer = part.asset_pointer ?? "";
+        blocks.push({ type: "attachment", kind: "image", filename: null, pointer, local_path: assets.byPointer(pointer)?.local_path ?? null });
       } else if (part?.asset_pointer || part?.audio_asset_pointer) {
         const ptr = part.asset_pointer ?? part.audio_asset_pointer?.asset_pointer ?? "";
-        blocks.push({ type: "attachment", kind: "audio", filename: null, pointer: ptr, local_path: null });
+        blocks.push({ type: "attachment", kind: "audio", filename: null, pointer: ptr, local_path: assets.byPointer(ptr)?.local_path ?? null });
       }
     }
     return blocks;
@@ -118,6 +120,7 @@ export interface ChatgptSessionOptions {
   capture_method: CaptureMethod;
   raw_ref: string;
   account?: string | null;
+  assets?: AssetLookup;
 }
 
 /** Build one canonical Session from a single ChatGPT `mapping`-tree conversation.
@@ -127,6 +130,7 @@ export interface ChatgptSessionOptions {
 export function sessionFromChatgptConversation(conv: RawConversation, opts: ChatgptSessionOptions): Session | null {
   const sourceId = conv.conversation_id ?? conv.id;
   if (!sourceId || !conv.mapping) return null;
+  const assets = opts.assets ?? assetLookupFromRaw(null);
 
   // Pass 1: collect all emitted messages in DFS order.
   // Track which raw node ids were emitted and what message id each maps to.
@@ -138,7 +142,7 @@ export function sessionFromChatgptConversation(conv: RawConversation, opts: Chat
     if (!m) continue;
     const role = m.author?.role;
     if (role !== "user" && role !== "assistant" && role !== "tool" && role !== "system") continue;
-    const blocks = blocksFromContent(m.content);
+    const blocks = blocksFromContent(m.content, assets);
     if (blocks.length === 0) continue;
     const msgId = m.id ?? node.id;
     rawToEmittedId.set(node.id, msgId);
@@ -208,12 +212,14 @@ export function parseChatgpt(raw: unknown): Session[] {
   const payload = "payload" in env && env.payload ? env.payload : raw;
   const conversations = Array.isArray(payload) ? payload : [payload];
   const sessions: Session[] = [];
+  const assets = assetLookupFromRaw(raw);
   for (const conv of conversations as RawConversation[]) {
     const sourceId = conv?.conversation_id ?? conv?.id;
     const session = sessionFromChatgptConversation(conv, {
       capture_method: "api",
       raw_ref: `raw/api/chatgpt:${sourceId}`,
       account,
+      assets,
     });
     if (session) sessions.push(session);
   }
