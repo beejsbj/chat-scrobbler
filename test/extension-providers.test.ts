@@ -81,6 +81,117 @@ test("ChatGPT adapter does not advance cursor from ignored conversations", async
   expect(result.maxConversationUpdatedAt).toBe("2026-06-05T11:00:00.000Z");
 });
 
+test("ChatGPT adapter uploads discovered attachment bytes into raw capture assets", async () => {
+  const fetcher: FetchLike = async (input) => {
+    if (input === "/api/auth/session") return json({ accessToken: "tok" });
+    if (String(input).startsWith("/backend-api/conversations")) {
+      return json({ items: [{ id: "with-asset", update_time: "2026-06-05T11:00:00.000Z" }] });
+    }
+    if (input === "/backend-api/conversation/with-asset") {
+      return json({
+        conversation_id: "with-asset",
+        mapping: {
+          root: { id: "root", message: null, parent: null, children: ["m1"] },
+          m1: {
+            id: "m1",
+            parent: "root",
+            children: [],
+            message: {
+              id: "m1",
+              author: { role: "user" },
+              content: {
+                content_type: "multimodal_text",
+                parts: [{ content_type: "image_asset_pointer", asset_pointer: "file-service://file-1" }],
+              },
+              metadata: {},
+            },
+          },
+        },
+      });
+    }
+    if (input === "/backend-api/files/file-1/download") {
+      return new Response(new Uint8Array([1, 2, 3]), { headers: { "content-type": "image/png" } });
+    }
+    throw new Error(`unexpected fetch ${input}`);
+  };
+  const captures: Array<{ assets?: unknown[] }> = [];
+
+  await createChatgptAdapter(fetcher).sync({
+    lastSync: null,
+    emitCapture: async (capture) => { captures.push(capture); },
+    uploadAsset: async (asset) => ({
+      pointer: asset.pointer,
+      local_path: "assets/chatgpt/with-asset/hash.png",
+      filename: asset.filename ?? null,
+      content_type: asset.contentType ?? null,
+      size_bytes: asset.bytes.length,
+      sha256: "hash",
+    }),
+  });
+
+  expect(captures[0].assets).toEqual([expect.objectContaining({
+    pointer: "file-service://file-1",
+    local_path: "assets/chatgpt/with-asset/hash.png",
+    content_type: "image/png",
+  })]);
+});
+
+test("ChatGPT captureOne uploads discovered attachment bytes into raw capture assets", async () => {
+  const uploadedPointers: string[] = [];
+  const fetcher: FetchLike = async (input) => {
+    if (input === "/api/auth/session") return json({ accessToken: "tok" });
+    if (input === "/backend-api/conversation/with-asset") {
+      return json({
+        conversation_id: "with-asset",
+        mapping: {
+          root: { id: "root", message: null, parent: null, children: ["m1"] },
+          m1: {
+            id: "m1",
+            parent: "root",
+            children: [],
+            message: {
+              id: "m1",
+              author: { role: "user" },
+              content: {
+                content_type: "multimodal_text",
+                parts: [{ content_type: "image_asset_pointer", asset_pointer: "file-service://file-1" }],
+              },
+              metadata: {},
+            },
+          },
+        },
+      });
+    }
+    if (input === "/backend-api/files/file-1/download") {
+      return new Response(new Uint8Array([1, 2, 3]), { headers: { "content-type": "image/png" } });
+    }
+    throw new Error(`unexpected fetch ${input}`);
+  };
+  const captures: Array<{ assets?: unknown[] }> = [];
+
+  await createChatgptAdapter(fetcher).captureOne?.("with-asset", "2026-06-05T11:00:00.000Z", {
+    emitCapture: async (capture) => { captures.push(capture); },
+    uploadAsset: async (asset) => {
+      uploadedPointers.push(asset.pointer);
+      return {
+        pointer: asset.pointer,
+        local_path: "assets/chatgpt/with-asset/hash.png",
+        filename: asset.filename ?? null,
+        content_type: asset.contentType ?? null,
+        size_bytes: asset.bytes.length,
+        sha256: "hash",
+      };
+    },
+  });
+
+  expect(uploadedPointers).toEqual(["file-service://file-1"]);
+  expect(captures[0].assets).toEqual([expect.objectContaining({
+    pointer: "file-service://file-1",
+    local_path: "assets/chatgpt/with-asset/hash.png",
+    content_type: "image/png",
+  })]);
+});
+
 test("ChatGPT adapter stops paginating early when cursor page is all old", async () => {
   const pageRequests: string[] = [];
   const fetcher: FetchLike = async (input) => {
@@ -186,7 +297,7 @@ test("ChatGPT captureOne throws a recognizable rate-limit error", async () => {
     throw new Error(`unexpected fetch ${input}`);
   };
 
-  const error = await createChatgptAdapter(fetcher).captureOne?.("limited", null, async () => {})
+  const error = await createChatgptAdapter(fetcher).captureOne?.("limited", null, { emitCapture: async () => {} })
     .then(() => null, (caught) => caught);
 
   expect(isRateLimitError(error)).toBe(true);
@@ -269,6 +380,91 @@ test("Claude adapter does not advance cursor from ignored conversations", async 
   expect(result.maxConversationUpdatedAt).toBe("2026-06-05T11:00:00.000Z");
 });
 
+test("Claude adapter uploads discovered file bytes into raw capture assets", async () => {
+  const fetcher: FetchLike = async (input) => {
+    if (input === "/api/organizations") return json([{ uuid: "org-1" }]);
+    if (String(input).startsWith("/api/organizations/org-1/chat_conversations?")) {
+      return json([{ uuid: "cl-asset", updated_at: "2026-06-05T11:00:00.000Z" }]);
+    }
+    if (String(input).startsWith("/api/organizations/org-1/chat_conversations/cl-asset")) {
+      return json({
+        uuid: "cl-asset",
+        chat_messages: [
+          { uuid: "m1", sender: "human", files: [{ file_uuid: "file-1", file_name: "paper.pdf", content_type: "application/pdf" }] },
+        ],
+      });
+    }
+    if (input === "/api/organizations/org-1/files/file-1/download") {
+      return new Response(new Uint8Array([4, 5, 6]), { headers: { "content-type": "application/pdf" } });
+    }
+    throw new Error(`unexpected fetch ${input}`);
+  };
+  const captures: Array<{ assets?: unknown[] }> = [];
+
+  await createClaudeAdapter(fetcher).sync({
+    lastSync: null,
+    emitCapture: async (capture) => { captures.push(capture); },
+    uploadAsset: async (asset) => ({
+      pointer: asset.pointer,
+      local_path: "assets/claude/cl-asset/hash.pdf",
+      filename: asset.filename ?? null,
+      content_type: asset.contentType ?? null,
+      size_bytes: asset.bytes.length,
+      sha256: "hash",
+    }),
+  });
+
+  expect(captures[0].assets).toEqual([expect.objectContaining({
+    pointer: "file-1",
+    filename: "paper.pdf",
+    local_path: "assets/claude/cl-asset/hash.pdf",
+    content_type: "application/pdf",
+  })]);
+});
+
+test("Claude captureOne uploads discovered file bytes into raw capture assets", async () => {
+  const uploadedPointers: string[] = [];
+  const fetcher: FetchLike = async (input) => {
+    if (input === "/api/organizations") return json([{ uuid: "org-1" }]);
+    if (String(input).startsWith("/api/organizations/org-1/chat_conversations/cl-asset")) {
+      return json({
+        uuid: "cl-asset",
+        chat_messages: [
+          { uuid: "m1", sender: "human", files: [{ file_uuid: "file-1", file_name: "paper.pdf", content_type: "application/pdf" }] },
+        ],
+      });
+    }
+    if (input === "/api/organizations/org-1/files/file-1/download") {
+      return new Response(new Uint8Array([4, 5, 6]), { headers: { "content-type": "application/pdf" } });
+    }
+    throw new Error(`unexpected fetch ${input}`);
+  };
+  const captures: Array<{ assets?: unknown[] }> = [];
+
+  await createClaudeAdapter(fetcher).captureOne?.("cl-asset", "2026-06-05T11:00:00.000Z", {
+    emitCapture: async (capture) => { captures.push(capture); },
+    uploadAsset: async (asset) => {
+      uploadedPointers.push(asset.pointer);
+      return {
+        pointer: asset.pointer,
+        local_path: "assets/claude/cl-asset/hash.pdf",
+        filename: asset.filename ?? null,
+        content_type: asset.contentType ?? null,
+        size_bytes: asset.bytes.length,
+        sha256: "hash",
+      };
+    },
+  });
+
+  expect(uploadedPointers).toEqual(["file-1"]);
+  expect(captures[0].assets).toEqual([expect.objectContaining({
+    pointer: "file-1",
+    filename: "paper.pdf",
+    local_path: "assets/claude/cl-asset/hash.pdf",
+    content_type: "application/pdf",
+  })]);
+});
+
 test("Claude adapter normalizes numeric string timestamps to ISO", async () => {
   const fetcher: FetchLike = async (input) => {
     if (input === "/api/organizations") return json([{ uuid: "org-1" }]);
@@ -295,7 +491,7 @@ test("Claude captureOne throws a recognizable rate-limit error", async () => {
     throw new Error(`unexpected fetch ${input}`);
   };
 
-  const error = await createClaudeAdapter(fetcher).captureOne?.("limited", null, async () => {})
+  const error = await createClaudeAdapter(fetcher).captureOne?.("limited", null, { emitCapture: async () => {} })
     .then(() => null, (caught) => caught);
 
   expect(isRateLimitError(error)).toBe(true);

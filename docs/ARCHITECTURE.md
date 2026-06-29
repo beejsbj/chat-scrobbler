@@ -55,6 +55,7 @@ Endpoints:
 |--------|------|------|---------|
 | GET | /health | none | liveness check |
 | POST | /captures | optional bearer | receive raw captures, parse, store, index |
+| POST | /assets | optional bearer | receive provider-authenticated attachment bytes |
 | POST | /status | optional bearer | return synced/stale/missing for a list of conversation ids |
 
 `pipeline.ts` (`foldCaptureIntoSpine`) is the hot path for POST /captures: it picks
@@ -73,18 +74,47 @@ Parse failures are logged as one structured JSON line to stderr (`event:
 Layout under `canonicalDir` (default `~/.local/share/chat-scrobbler/canonical/sessions`):
 
 ```
-canonical/sessions/
-  chatgpt/
-    <source_id>.json
-  claude/
-    <source_id>.json
-  gemini/
-    <source_id>.json
+canonical/
+  assets/
+    chatgpt/
+      <source_id>/<sha256>.<ext>
+    claude/
+      <source_id>/<sha256>.<ext>
+    gemini/
+      <source_id>/<sha256>.<ext>
+  sessions/
+    chatgpt/
+      <source_id>.json
+    claude/
+      <source_id>.json
+    gemini/
+      <source_id>.json
 ```
 
 One JSON file per session, keyed by `source_id`. `writeSession` uses `INSERT OR REPLACE`
 semantics at the file level: it overwrites the file on every capture, so re-capturing
 the same conversation is idempotent.
+
+Attachment assets live beside sessions under `canonical/assets`, derived from
+`dirname(canonicalDir)/assets`. `POST /assets` stores bytes by content hash and returns
+a canonical-relative `local_path` such as `assets/chatgpt/<source_id>/<sha>.png`.
+Canonical session JSON keeps the provider `pointer` and stores this relative
+`local_path` when upload succeeds. Absolute paths are not written into session JSON.
+
+Asset capture is best-effort and local-only. The browser extension fetches provider
+asset URLs in the authenticated page context, then uploads bytes to the local ingest
+server. If a provider rejects or expires an asset URL, text capture continues and the
+attachment block keeps `local_path: null`.
+
+Provider limits:
+
+- ChatGPT: maps known `file-service://...` pointers to the backend file download route
+  and also accepts direct URL/path pointers.
+- Claude: maps `files[]` and legacy `attachments[]` UUIDs to the organization file
+  download route.
+- Gemini: the verified `hNvQHb` conversation RPC remains text-first. The extension only
+  uploads rendered DOM image URLs when visible; otherwise Gemini attachments stay as
+  provider metadata until a stable API attachment shape is verified.
 
 ---
 
@@ -127,8 +157,8 @@ interface Message {
 ```
 
 **Block** (union): `text`, `reasoning`, `tool_call`, `tool_result`, `artifact`,
-`attachment`. Attachment bytes are not resolved (`local_path` is null); only the
-`pointer` string is kept.
+`attachment`. Attachment blocks preserve the provider `pointer`; `local_path` is a
+canonical-relative asset path when bytes were captured successfully, otherwise null.
 
 ### Fork/branch trees
 

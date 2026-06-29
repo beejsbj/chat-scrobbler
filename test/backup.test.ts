@@ -1,12 +1,13 @@
 // test/backup.test.ts
 import { test, expect, afterEach } from "bun:test";
-import { mkdtempSync, rmSync, existsSync, mkdirSync, readdirSync } from "node:fs";
+import { mkdtempSync, rmSync, existsSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { writeSession, readSession, listSessionFiles } from "../src/store/sessions";
 import { resolveTarget } from "../src/backup/target";
 import { LocalDirTarget } from "../src/backup/local";
 import { createBackup, listBackups, restoreBackup } from "../src/backup/backup";
+import { assetsDirForCanonicalDir } from "../src/store/assets";
 import type { Session } from "../src/schema/types";
 
 // ---------------------------------------------------------------------------
@@ -133,6 +134,32 @@ test("round-trip: backup 3 sessions across 2 sources then restore into wiped can
   expect(readSession(canonicalDir, "chatgpt", "gpt-001")).toEqual(s1);
   expect(readSession(canonicalDir, "chatgpt", "gpt-002")).toEqual(s2);
   expect(readSession(canonicalDir, "claude", "cl-001")).toEqual(s3);
+});
+
+test("round-trip includes canonical asset files beside sessions", async () => {
+  const root = makeTmp("canonical-assets-root-");
+  const canonicalDir = join(root, "canonical", "sessions");
+  const backupDir = makeTmp("backup-assets-");
+  const assetPath = join(assetsDirForCanonicalDir(canonicalDir), "chatgpt", "gpt-asset", "hash.png");
+
+  writeSession(canonicalDir, makeSession("chatgpt", "gpt-asset"));
+  mkdirSync(join(assetPath, ".."), { recursive: true });
+  writeFileSync(assetPath, new Uint8Array([1, 2, 3, 4]));
+
+  const target = new LocalDirTarget(backupDir);
+  const { snapshot, manifest } = await createBackup({ canonicalDir, target });
+
+  expect(manifest.session_file_count).toBe(1);
+  expect(manifest.asset_file_count).toBe(1);
+  expect(manifest.asset_total_bytes).toBe(4);
+  expect(target.listFiles(snapshot)).toContain("canonical/assets/chatgpt/gpt-asset/hash.png");
+
+  rmSync(root, { recursive: true, force: true });
+  const restoreResult = await restoreBackup({ target, snapshot, canonicalDir });
+
+  expect(restoreResult.restored_count).toBe(1);
+  expect(restoreResult.restored_asset_count).toBe(1);
+  expect(existsSync(assetPath)).toBe(true);
 });
 
 // ---------------------------------------------------------------------------

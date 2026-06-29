@@ -1,4 +1,5 @@
 import { buildRawCapture } from "../../../shared/src";
+import { uploadProviderAssets, type ProviderAssetCandidate } from "./assets";
 import {
   asArray,
   asObject,
@@ -8,6 +9,7 @@ import {
   type ConversationSummary,
   type FetchLike,
   type ProviderAdapter,
+  type ProviderCaptureOneOptions,
   type ProviderSyncOptions,
   type ProviderSyncResult,
 } from "./types";
@@ -19,7 +21,7 @@ export function createClaudeAdapter(fetcher: FetchLike = fetch.bind(globalThis))
     source: "claude",
     sync: (options) => syncClaude(fetcher, options),
     listConversations: (pages = 1) => listClaude(fetcher, pages),
-    captureOne: (id, updatedAt, emitCapture) => captureClaudeOne(fetcher, id, updatedAt, emitCapture),
+    captureOne: (id, updatedAt, options) => captureClaudeOne(fetcher, id, updatedAt, options),
   };
 }
 
@@ -40,17 +42,23 @@ async function captureClaudeOne(
   fetcher: FetchLike,
   id: string,
   updatedAt: string | null,
-  emitCapture: ProviderSyncOptions["emitCapture"],
+  options: ProviderCaptureOneOptions,
 ): Promise<void> {
   const org = await getOrganization(fetcher);
   const detailEndpoint = `/api/organizations/${encodeURIComponent(org.uuid)}/chat_conversations/${encodeURIComponent(id)}?tree=True&rendering_mode=messages&render_all_tools=true`;
   const payload = await fetchJson(fetcher, detailEndpoint);
-  await emitCapture(buildRawCapture({
+  const assets = await uploadProviderAssets(
+    fetcher,
+    options.uploadAsset,
+    claudeAssetCandidates(payload, id, org.uuid),
+  );
+  await options.emitCapture(buildRawCapture({
     source: "claude",
     sourceId: id,
     endpoint: detailEndpoint,
     account: org.uuid,
     payload,
+    assets,
     conversationUpdatedAt: updatedAt,
     rawUrl: `${currentOrigin()}${detailEndpoint}`,
   }));
@@ -87,12 +95,18 @@ async function syncClaude(fetcher: FetchLike, options: ProviderSyncOptions): Pro
       // (see docs/superpowers/specs/2026-06-05-api-vs-export-validation-diff.md).
       const detailEndpoint = `/api/organizations/${encodeURIComponent(org.uuid)}/chat_conversations/${encodeURIComponent(item.id)}?tree=True&rendering_mode=messages&render_all_tools=true`;
       const payload = await fetchJson(fetcher, detailEndpoint);
+      const assets = await uploadProviderAssets(
+        fetcher,
+        options.uploadAsset,
+        claudeAssetCandidates(payload, item.id, org.uuid),
+      );
       await options.emitCapture(buildRawCapture({
         source: "claude",
         sourceId: item.id,
         endpoint: detailEndpoint,
         account: org.uuid,
         payload,
+        assets,
         conversationUpdatedAt: item.updatedAt,
         rawUrl: `${currentOrigin()}${detailEndpoint}`,
       }));
@@ -112,6 +126,48 @@ async function syncClaude(fetcher: FetchLike, options: ProviderSyncOptions): Pro
     maxConversationUpdatedAt,
     account: org.uuid,
   };
+}
+
+function claudeAssetCandidates(payload: unknown, sourceId: string, orgId: string): ProviderAssetCandidate[] {
+  const out: ProviderAssetCandidate[] = [];
+  const messages = asArray(asObject(payload).chat_messages);
+  for (const rawMessage of messages) {
+    const message = asObject(rawMessage);
+    const messageId = typeof message.uuid === "string" ? message.uuid : null;
+    for (const rawFile of [...asArray(message.files), ...asArray(message.attachments)]) {
+      const file = asObject(rawFile);
+      const pointer = readClaudeFilePointer(file);
+      if (!pointer) continue;
+      out.push({
+        source: "claude",
+        sourceId,
+        pointer,
+        url: claudeAssetUrl(orgId, pointer),
+        filename: readClaudeFilename(file),
+        contentType: typeof file.content_type === "string" ? file.content_type : null,
+        messageId,
+      });
+    }
+  }
+  return out;
+}
+
+function readClaudeFilePointer(file: Record<string, unknown>): string | null {
+  for (const key of ["file_uuid", "uuid", "id", "attachment_uuid"]) {
+    if (typeof file[key] === "string" && file[key] !== "") return file[key];
+  }
+  return null;
+}
+
+function readClaudeFilename(file: Record<string, unknown>): string | null {
+  for (const key of ["file_name", "filename", "name"]) {
+    if (typeof file[key] === "string" && file[key] !== "") return file[key];
+  }
+  return null;
+}
+
+function claudeAssetUrl(orgId: string, pointer: string): string {
+  return `/api/organizations/${encodeURIComponent(orgId)}/files/${encodeURIComponent(pointer)}/download`;
 }
 
 function currentOrigin(): string | null {

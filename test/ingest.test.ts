@@ -1,9 +1,10 @@
 import { expect, spyOn, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { handleIngestRequest } from "../packages/ingest/src";
 import { buildRawCapture } from "../packages/shared/src";
+import { resolveLocalAssetPath } from "../src/store/assets";
 
 interface IngestTestResponse {
   ok: boolean;
@@ -36,6 +37,33 @@ test("capture endpoint accepts a single raw capture and returns count", async ()
 
   expect(res.status).toBe(200);
   expect(body).toMatchObject({ ok: true, count: 1 });
+});
+
+test("asset endpoint stores content-addressed files beside canonical sessions", async () => {
+  const root = mkdtempSync(join(tmpdir(), "ingest-asset-"));
+  const canonicalDir = join(root, "canonical", "sessions");
+  const opts = { canonicalDir, indexPath: join(root, "index", "sessions.db"), ingestToken: "secret-token" };
+  try {
+    const makeReq = () => new Request("http://local/assets?source=chatgpt&source_id=conv-1&pointer=file-service%3A%2F%2Ffile-1&filename=pic.png", {
+      method: "POST",
+      headers: { authorization: "Bearer secret-token", "content-type": "image/png" },
+      body: new Uint8Array([1, 2, 3]),
+    });
+    const res = await handleIngestRequest(makeReq(), opts);
+    const body = await res.json() as { ok: boolean; local_path: string; size_bytes: number };
+
+    expect(res.status).toBe(200);
+    expect(body.ok).toBe(true);
+    expect(body.local_path).toMatch(/^assets\/chatgpt\/conv-1\/[a-f0-9]+\.png$/);
+    expect(body.size_bytes).toBe(3);
+    expect(existsSync(resolveLocalAssetPath(canonicalDir, body.local_path))).toBe(true);
+
+    const res2 = await handleIngestRequest(makeReq(), opts);
+    const body2 = await res2.json() as { local_path: string };
+    expect(body2.local_path).toBe(body.local_path);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("capture endpoint rejects malformed captures", async () => {

@@ -116,6 +116,28 @@ test("skips turns with no user text or no assistant candidates", () => {
   expect(s.messages.length).toBeGreaterThanOrEqual(2);
 });
 
+test("adds Gemini uploaded asset sidecar records as attachment blocks", () => {
+  const [s] = parseGemini({
+    ...sample,
+    assets: [{
+      pointer: "https://gemini.google.com/blob/asset-1",
+      local_path: "assets/gemini/98a3d78ec6ddbe15/hash.png",
+      filename: "image.png",
+      content_type: "image/png",
+      message_id: "r_0336cee8638641d7",
+    }],
+  });
+
+  expect(s.messages[0].blocks).toContainEqual(expect.objectContaining({
+    type: "attachment",
+    kind: "image",
+    filename: "image.png",
+    pointer: "https://gemini.google.com/blob/asset-1",
+    local_path: "assets/gemini/98a3d78ec6ddbe15/hash.png",
+  }));
+  expect(s.messages[0].text).toContain("assets/gemini/98a3d78ec6ddbe15/hash.png");
+});
+
 // ---------------------------------------------------------------------------
 // Integration test: fold into spine + assert searchable
 // ---------------------------------------------------------------------------

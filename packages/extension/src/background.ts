@@ -1,5 +1,5 @@
 import "./chrome-api";
-import { capturesUrl, statusUrl, DEFAULT_INGEST_BASE_URL, DEFAULT_SYNC_PERIOD_MINUTES, type ProviderSource } from "../../shared/src";
+import { assetsUrl, capturesUrl, statusUrl, DEFAULT_INGEST_BASE_URL, DEFAULT_SYNC_PERIOD_MINUTES, type ProviderSource } from "../../shared/src";
 import { collectCredentialSnapshot } from "./credentials";
 import { toolbarProgressView, aggregateTabProgress, type ToolbarProgressInput } from "./toolbar-progress";
 import { appendRecentCapture, RECENT_CAPTURES_KEY, type RecentCapture } from "./recent-captures";
@@ -11,6 +11,7 @@ import type {
   RuntimeMessage,
   SaveSettingsMessage,
   SyncResponse,
+  AssetUploadRequest,
 } from "./messages";
 
 interface Settings {
@@ -85,6 +86,7 @@ chrome.runtime.onMessage.addListener((message: RuntimeMessage, sender: any, send
 
 async function handleRuntimeMessage(message: RuntimeMessage, sender: any): Promise<unknown> {
   if (message.type === "SCROBBLER_CAPTURE_READY") return postCapture(message);
+  if (message.type === "SCROBBLER_ASSET_UPLOAD") return postAsset(message.asset);
   if (message.type === "SCROBBLER_PROVIDER_READY" && sender.tab?.id) {
     maybeSyncVisitedTab(sender.tab, message.provider).catch(console.error);
     return { ok: true };
@@ -109,6 +111,26 @@ async function handleRuntimeMessage(message: RuntimeMessage, sender: any): Promi
   }
   if (message.type === "SCROBBLER_CAPTURE_LOGGED") return logRecentCapture(message);
   return { ok: false, error: "Unknown message" };
+}
+
+async function postAsset(asset: AssetUploadRequest): Promise<unknown> {
+  const settings = await getSettings();
+  const headers: Record<string, string> = {};
+  if (asset.contentType) headers["content-type"] = asset.contentType;
+  if (settings.ingestToken) headers["authorization"] = `Bearer ${settings.ingestToken}`;
+  const url = new URL(assetsUrl(settings.ingestBaseUrl));
+  url.searchParams.set("source", asset.source);
+  url.searchParams.set("source_id", asset.sourceId);
+  url.searchParams.set("pointer", asset.pointer);
+  if (asset.filename) url.searchParams.set("filename", asset.filename);
+  if (asset.contentType) url.searchParams.set("content_type", asset.contentType);
+  const res = await fetch(url.toString(), {
+    method: "POST",
+    headers,
+    body: new Uint8Array(asset.bytes),
+  });
+  if (!res.ok) throw new Error(`Ingest rejected asset with HTTP ${res.status}: ${await res.text()}`);
+  return { ok: true, asset: await res.json() };
 }
 
 function updateToolbarProgress(message: CaptureProgressMessage, sender: any): unknown {

@@ -1,10 +1,14 @@
-import type { ProviderSource, RawCapture } from "../../../shared/src";
+import type { ProviderSource, RawCapture, UploadedAsset } from "../../../shared/src";
+import type { AssetUploadRequest } from "../messages";
 
 export interface ProviderSyncOptions {
   lastSync?: string | null;
   emitCapture: (capture: RawCapture) => Promise<void>;
   shouldIgnore?: (source: ProviderSource, sourceId: string) => boolean;
+  uploadAsset?: (asset: AssetUploadRequest) => Promise<UploadedAsset>;
 }
+
+export type ProviderCaptureOneOptions = Pick<ProviderSyncOptions, "emitCapture" | "uploadAsset">;
 
 export interface ProviderSyncResult {
   source: ProviderSource;
@@ -22,7 +26,7 @@ export interface ProviderAdapter {
    *  `pages` caps pagination (default 1 = the most-recent page). */
   listConversations?(pages?: number): Promise<ConversationSummary[]>;
   /** Capture a single conversation by id (fetch detail + emit one RawCapture). */
-  captureOne?(id: string, updatedAt: string | null, emitCapture: ProviderSyncOptions["emitCapture"]): Promise<void>;
+  captureOne?(id: string, updatedAt: string | null, options: ProviderCaptureOneOptions): Promise<void>;
 }
 
 export type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;

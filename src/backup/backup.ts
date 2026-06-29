@@ -3,10 +3,11 @@
 // Orchestration: createBackup, listBackups, restoreBackup.
 // Works over any BackupTarget so the storage layer is fully swappable.
 
-import { existsSync, statSync, readFileSync, mkdtempSync, writeFileSync as fsWrite, rmSync } from "node:fs";
+import { existsSync, statSync, readFileSync, mkdtempSync, writeFileSync as fsWrite, rmSync, readdirSync } from "node:fs";
 import { join, relative, basename, sep } from "node:path";
 import { tmpdir } from "node:os";
 import { listSessionFiles } from "../store/sessions";
+import { assetsDirForCanonicalDir } from "../store/assets";
 import type { BackupTarget } from "./target";
 
 // ---------------------------------------------------------------------------
@@ -20,6 +21,10 @@ export interface BackupManifest {
   session_file_count: number;
   /** Total bytes of all session files. */
   total_bytes: number;
+  /** Number of canonical asset files copied. */
+  asset_file_count?: number;
+  /** Total bytes of all asset files. */
+  asset_total_bytes?: number;
   /** Absolute path to the canonical dir at backup time. */
   canonical_dir: string;
   /** Schema version for forward-compat. Always 1. */
@@ -64,7 +69,10 @@ export async function createBackup(opts: CreateBackupOptions): Promise<CreateBac
 
   // Gather canonical session files
   const sessionFiles = listSessionFiles(canonicalDir);
+  const assetsDir = assetsDirForCanonicalDir(canonicalDir);
+  const assetFiles = listFilesRecursive(assetsDir);
   let totalBytes = 0;
+  let assetTotalBytes = 0;
 
   for (const absPath of sessionFiles) {
     // rel is e.g. "chatgpt/abc123.json"
@@ -72,6 +80,14 @@ export async function createBackup(opts: CreateBackupOptions): Promise<CreateBac
     const relInSnapshot = `canonical/${rel}`;
     const bytes = statSync(absPath).size;
     totalBytes += bytes;
+    await target.putFile(snapshot, relInSnapshot, absPath);
+  }
+
+  for (const absPath of assetFiles) {
+    const rel = relative(assetsDir, absPath).split(sep).join("/");
+    const relInSnapshot = `canonical/assets/${rel}`;
+    const bytes = statSync(absPath).size;
+    assetTotalBytes += bytes;
     await target.putFile(snapshot, relInSnapshot, absPath);
   }
 
@@ -86,6 +102,8 @@ export async function createBackup(opts: CreateBackupOptions): Promise<CreateBac
     created_at: createdAt,
     session_file_count: sessionFiles.length,
     total_bytes: totalBytes,
+    asset_file_count: assetFiles.length,
+    asset_total_bytes: assetTotalBytes,
     canonical_dir: canonicalDir,
     schema: 1,
   };
@@ -162,6 +180,8 @@ export interface RestoreBackupOptions {
 export interface RestoreBackupResult {
   /** Number of session files restored. */
   restored_count: number;
+  /** Number of asset files restored. */
+  restored_asset_count?: number;
 }
 
 export async function restoreBackup(opts: RestoreBackupOptions): Promise<RestoreBackupResult> {
@@ -170,9 +190,10 @@ export async function restoreBackup(opts: RestoreBackupOptions): Promise<Restore
   // Refusal guard: check if canonical dir has existing session files
   if (!force) {
     const existing = listSessionFiles(canonicalDir);
-    if (existing.length > 0) {
+    const existingAssets = listFilesRecursive(assetsDirForCanonicalDir(canonicalDir));
+    if (existing.length > 0 || existingAssets.length > 0) {
       throw new Error(
-        `canonicalDir "${canonicalDir}" is not empty (${existing.length} session file(s) found). ` +
+        `canonicalDir "${canonicalDir}" is not empty (${existing.length} session file(s), ${existingAssets.length} asset file(s) found). ` +
           `Pass force: true to overwrite.`,
       );
     }
@@ -182,8 +203,11 @@ export async function restoreBackup(opts: RestoreBackupOptions): Promise<Restore
   const sessionRelPaths = files.filter(
     f => f.startsWith("canonical/") && f.endsWith(".json"),
   );
+  const assetRelPaths = files.filter(
+    f => f.startsWith("canonical/assets/") && !f.endsWith("/"),
+  );
 
-  for (const relPath of sessionRelPaths) {
+  for (const relPath of sessionRelPaths.filter(f => !f.startsWith("canonical/assets/"))) {
     // relPath is e.g. "canonical/chatgpt/abc.json"
     // Strip the "canonical/" prefix to get the path relative to canonicalDir
     const relInCanonical = relPath.slice("canonical/".length);
@@ -191,7 +215,14 @@ export async function restoreBackup(opts: RestoreBackupOptions): Promise<Restore
     await target.getFile(snapshot, relPath, destAbs);
   }
 
-  return { restored_count: sessionRelPaths.length };
+  const assetsDir = assetsDirForCanonicalDir(canonicalDir);
+  for (const relPath of assetRelPaths) {
+    const relInAssets = relPath.slice("canonical/assets/".length);
+    const destAbs = join(assetsDir, relInAssets);
+    await target.getFile(snapshot, relPath, destAbs);
+  }
+
+  return { restored_count: sessionRelPaths.filter(f => !f.startsWith("canonical/assets/")).length, restored_asset_count: assetRelPaths.length };
 }
 
 // ---------------------------------------------------------------------------
@@ -206,4 +237,15 @@ export function generateSnapshotName(): string {
   const time =
     `${pad(now.getUTCHours())}${pad(now.getUTCMinutes())}${pad(now.getUTCSeconds())}`;
   return `snapshot-${date}-${time}`;
+}
+
+function listFilesRecursive(dir: string): string[] {
+  const out: string[] = [];
+  if (!existsSync(dir)) return out;
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const abs = join(dir, entry.name);
+    if (entry.isDirectory()) out.push(...listFilesRecursive(abs));
+    else if (entry.isFile()) out.push(abs);
+  }
+  return out;
 }

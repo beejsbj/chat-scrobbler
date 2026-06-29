@@ -18,7 +18,7 @@ import {
   type ConversationState,
 } from "./reconcile";
 import { ensureBadgeStyles, setBadge } from "./badges";
-import { isRateLimitError, type ProviderAdapter } from "../providers";
+import { isRateLimitError, type ProviderAdapter, type ProviderSyncOptions } from "../providers";
 import type { RawCapture } from "../../../shared/src";
 import { cleanTitle, type CaptureKind } from "../recent-captures";
 
@@ -30,6 +30,7 @@ export interface SidebarDeps {
   getIgnoredIds: () => Promise<Set<string>>;
   toggleIgnored: (id: string) => Promise<boolean>;
   emitCapture: (capture: RawCapture) => Promise<void>;
+  uploadAsset?: ProviderSyncOptions["uploadAsset"];
   reportCaptureProgress?: (remaining: number, total: number) => Promise<void> | void;
   /** Called after each successful capture with the id, human-readable title, and capture kind. */
   onCaptured?: (id: string, title: string, kind: CaptureKind) => void;
@@ -150,7 +151,10 @@ export function runSidebarBadges(provider: ProviderAdapter, deps: SidebarDeps): 
         if (anchor) paintBadge(anchor, id, "syncing");
         try {
           await captureWithRetry(
-            () => provider.captureOne!(id, updatedById.get(id) ?? null, deps.emitCapture),
+            () => provider.captureOne!(id, updatedById.get(id) ?? null, {
+              emitCapture: deps.emitCapture,
+              uploadAsset: deps.uploadAsset,
+            }),
             { isRateLimit: isRateLimitError, wait, delayMs: CAPTURE_RETRY_DELAY_MS },
           );
           // Record the updatedAt we just captured so we don't re-capture this same
@@ -236,7 +240,10 @@ export function runSidebarBadges(provider: ProviderAdapter, deps: SidebarDeps): 
 
       try {
         await captureWithRetry(
-          () => provider.captureOne!(activeId, liveUpdatedAt, deps.emitCapture),
+          () => provider.captureOne!(activeId, liveUpdatedAt, {
+            emitCapture: deps.emitCapture,
+            uploadAsset: deps.uploadAsset,
+          }),
           { isRateLimit: isRateLimitError, wait, delayMs: CAPTURE_RETRY_DELAY_MS },
         );
         lastCapturedAt.set(activeId, liveMs);
