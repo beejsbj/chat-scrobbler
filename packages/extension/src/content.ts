@@ -39,6 +39,7 @@ if (provider) {
       return !!res.ignored;
     },
     emitCapture,
+    uploadAsset,
     reportCaptureProgress: async (remaining, total) => {
       await sendRuntimeMessage({ type: "SCROBBLER_CAPTURE_PROGRESS", remaining, total });
     },

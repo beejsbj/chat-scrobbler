@@ -9,6 +9,7 @@ import {
   type ConversationSummary,
   type FetchLike,
   type ProviderAdapter,
+  type ProviderCaptureOneOptions,
   type ProviderSyncOptions,
   type ProviderSyncResult,
 } from "./types";
@@ -20,7 +21,7 @@ export function createChatgptAdapter(fetcher: FetchLike = fetch.bind(globalThis)
     source: "chatgpt",
     sync: (options) => syncChatgpt(fetcher, options),
     listConversations: (pages = 1) => listChatgpt(fetcher, pages),
-    captureOne: (id, updatedAt, emitCapture) => captureChatgptOne(fetcher, id, updatedAt, emitCapture),
+    captureOne: (id, updatedAt, options) => captureChatgptOne(fetcher, id, updatedAt, options),
   };
 }
 
@@ -42,17 +43,23 @@ async function captureChatgptOne(
   fetcher: FetchLike,
   id: string,
   updatedAt: string | null,
-  emitCapture: ProviderSyncOptions["emitCapture"],
+  options: ProviderCaptureOneOptions,
 ): Promise<void> {
   const token = await getAccessToken(fetcher);
   const headers = token ? { authorization: `Bearer ${token}` } : undefined;
   const detailEndpoint = `/backend-api/conversation/${encodeURIComponent(id)}`;
   const payload = await fetchJson(fetcher, detailEndpoint, { headers });
-  await emitCapture(buildRawCapture({
+  const assets = await uploadProviderAssets(
+    fetcher,
+    options.uploadAsset,
+    chatgptAssetCandidates(payload, id),
+  );
+  await options.emitCapture(buildRawCapture({
     source: "chatgpt",
     sourceId: id,
     endpoint: detailEndpoint,
     payload,
+    assets,
     conversationUpdatedAt: updatedAt,
     rawUrl: `${currentOrigin()}${detailEndpoint}`,
   }));

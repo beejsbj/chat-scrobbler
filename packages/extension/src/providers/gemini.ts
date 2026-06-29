@@ -41,6 +41,7 @@ import {
   type ConversationSummary,
   type FetchLike,
   type ProviderAdapter,
+  type ProviderCaptureOneOptions,
   type ProviderSyncOptions,
   type ProviderSyncResult,
 } from "./types";
@@ -161,7 +162,7 @@ export function createGeminiAdapter(
     source: "gemini",
     sync: (options) => syncGemini(fetcher, pageCtx, options),
     listConversations: (pages = 1) => listGemini(pageCtx, pages),
-    captureOne: (id, updatedAt, emitCapture) => captureGeminiOne(fetcher, pageCtx, id, updatedAt, emitCapture),
+    captureOne: (id, updatedAt, options) => captureGeminiOne(fetcher, pageCtx, id, updatedAt, options),
   };
 }
 
@@ -185,8 +186,7 @@ async function captureGeminiOne(
   pageCtx: GeminiPageContext,
   id: string,
   updatedAt: string | null,
-  emitCapture: ProviderSyncOptions["emitCapture"],
-  uploadAsset?: ProviderSyncOptions["uploadAsset"],
+  options: ProviderCaptureOneOptions,
 ): Promise<void> {
   const wizData = pageCtx.readWizData();
   const fetchedAt = new Date().toISOString();
@@ -197,10 +197,10 @@ async function captureGeminiOne(
       const payload = await fetchConversationRpc(fetcher, id, wizData);
       const assets = await uploadProviderAssets(
         fetcher,
-        uploadAsset,
+        options.uploadAsset,
         geminiAssetCandidates(pageCtx, id),
       );
-      await emitCapture(buildRawCapture({
+      await options.emitCapture(buildRawCapture({
         source: "gemini",
         sourceId: id,
         // endpoint includes the RPC id so the spine parser knows which RPC
@@ -222,8 +222,8 @@ async function captureGeminiOne(
   // conversation is the currently rendered page. The gemini:api parser ignores
   // dom_fallback payloads.
   const domText = pageCtx.readConversationDom(id);
-  const assets = await uploadProviderAssets(fetcher, uploadAsset, geminiAssetCandidates(pageCtx, id));
-  await emitCapture(buildRawCapture({
+  const assets = await uploadProviderAssets(fetcher, options.uploadAsset, geminiAssetCandidates(pageCtx, id));
+  await options.emitCapture(buildRawCapture({
     source: "gemini",
     sourceId: id,
     endpoint: `dom://gemini.google.com/app/${id}`,
@@ -289,7 +289,10 @@ async function syncGemini(
     // sidebar exposes no timestamps. captureGeminiOne handles the RPC primary
     // path + DOM fallback; the cursor watermark advances using fetch time.
     const fetchedAt = new Date().toISOString();
-    await captureGeminiOne(fetcher, pageCtx, id, null, options.emitCapture, options.uploadAsset);
+    await captureGeminiOne(fetcher, pageCtx, id, null, {
+      emitCapture: options.emitCapture,
+      uploadAsset: options.uploadAsset,
+    });
     captured += 1;
     maxConversationUpdatedAt = maxIso(maxConversationUpdatedAt, fetchedAt);
   }

@@ -9,6 +9,7 @@ import {
   type ConversationSummary,
   type FetchLike,
   type ProviderAdapter,
+  type ProviderCaptureOneOptions,
   type ProviderSyncOptions,
   type ProviderSyncResult,
 } from "./types";
@@ -20,7 +21,7 @@ export function createClaudeAdapter(fetcher: FetchLike = fetch.bind(globalThis))
     source: "claude",
     sync: (options) => syncClaude(fetcher, options),
     listConversations: (pages = 1) => listClaude(fetcher, pages),
-    captureOne: (id, updatedAt, emitCapture) => captureClaudeOne(fetcher, id, updatedAt, emitCapture),
+    captureOne: (id, updatedAt, options) => captureClaudeOne(fetcher, id, updatedAt, options),
   };
 }
 
@@ -41,17 +42,23 @@ async function captureClaudeOne(
   fetcher: FetchLike,
   id: string,
   updatedAt: string | null,
-  emitCapture: ProviderSyncOptions["emitCapture"],
+  options: ProviderCaptureOneOptions,
 ): Promise<void> {
   const org = await getOrganization(fetcher);
   const detailEndpoint = `/api/organizations/${encodeURIComponent(org.uuid)}/chat_conversations/${encodeURIComponent(id)}?tree=True&rendering_mode=messages&render_all_tools=true`;
   const payload = await fetchJson(fetcher, detailEndpoint);
-  await emitCapture(buildRawCapture({
+  const assets = await uploadProviderAssets(
+    fetcher,
+    options.uploadAsset,
+    claudeAssetCandidates(payload, id, org.uuid),
+  );
+  await options.emitCapture(buildRawCapture({
     source: "claude",
     sourceId: id,
     endpoint: detailEndpoint,
     account: org.uuid,
     payload,
+    assets,
     conversationUpdatedAt: updatedAt,
     rawUrl: `${currentOrigin()}${detailEndpoint}`,
   }));

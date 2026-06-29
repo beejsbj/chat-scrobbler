@@ -20,11 +20,16 @@ const FAKE_WIZ: WizData = {
   fSid: "abcdef0123456789",
 };
 
-function makeFakePageCtx(ids: string[], wiz: WizData | null = FAKE_WIZ): GeminiPageContext {
+function makeFakePageCtx(
+  ids: string[],
+  wiz: WizData | null = FAKE_WIZ,
+  assets: GeminiPageContext["readConversationAssets"] = undefined,
+): GeminiPageContext {
   return {
     listConversationIds: () => ids,
     readWizData: () => wiz,
     readConversationDom: (id) => `Conversation content for ${id}`,
+    readConversationAssets: assets,
   };
 }
 
@@ -320,7 +325,9 @@ test("Gemini captureOne emits a single capture via the RPC path", async () => {
   await createGeminiAdapter(fetcher, pageCtx).captureOne?.(
     "aaaa0000bbbb1111",
     null,
-    async (c) => { captures.push({ source: c.source, source_id: c.source_id, endpoint: c.endpoint, payload: c.payload }); },
+    {
+      emitCapture: async (c) => { captures.push({ source: c.source, source_id: c.source_id, endpoint: c.endpoint, payload: c.payload }); },
+    },
   );
 
   expect(captures).toHaveLength(1);
@@ -338,12 +345,55 @@ test("Gemini captureOne falls back to DOM capture when the RPC fails", async () 
   await createGeminiAdapter(fetcher, pageCtx).captureOne?.(
     "failconv1234abcd",
     null,
-    async (c) => { captures.push({ source_id: c.source_id, payload: c.payload }); },
+    {
+      emitCapture: async (c) => { captures.push({ source_id: c.source_id, payload: c.payload }); },
+    },
   );
 
   expect(captures).toHaveLength(1);
   expect(captures[0].source_id).toBe("failconv1234abcd");
   expect((captures[0].payload as Record<string, unknown>).dom_fallback).toBe(true);
+});
+
+test("Gemini captureOne uploads discovered attachment bytes into raw capture assets", async () => {
+  const uploadedPointers: string[] = [];
+  const captures: Array<{ assets?: unknown[] }> = [];
+  const fetcher: FetchLike = async (input) => {
+    if (String(input).includes("batchexecute")) {
+      return new Response(makeBatchExecuteResponse("hNvQHb", [["conversation-data"]]), { status: 200 });
+    }
+    if (input === "https://lh3.googleusercontent.com/asset") {
+      return new Response(new Uint8Array([7, 8, 9]), { headers: { "content-type": "image/png" } });
+    }
+    throw new Error(`Unexpected fetch: ${input}`);
+  };
+  const pageCtx = makeFakePageCtx(
+    ["aaaa0000bbbb1111"],
+    FAKE_WIZ,
+    () => [{ pointer: "https://lh3.googleusercontent.com/asset", url: "https://lh3.googleusercontent.com/asset", contentType: "image/png" }],
+  );
+
+  await createGeminiAdapter(fetcher, pageCtx).captureOne?.("aaaa0000bbbb1111", null, {
+    emitCapture: async (c) => { captures.push({ assets: c.assets }); },
+    uploadAsset: async (asset) => {
+      uploadedPointers.push(asset.pointer);
+      return {
+        pointer: asset.pointer,
+        local_path: "assets/gemini/aaaa0000bbbb1111/hash.png",
+        filename: asset.filename ?? null,
+        content_type: asset.contentType ?? null,
+        size_bytes: asset.bytes.length,
+        sha256: "hash",
+      };
+    },
+  });
+
+  expect(uploadedPointers).toEqual(["https://lh3.googleusercontent.com/asset"]);
+  expect(captures[0].assets).toEqual([expect.objectContaining({
+    pointer: "https://lh3.googleusercontent.com/asset",
+    local_path: "assets/gemini/aaaa0000bbbb1111/hash.png",
+    content_type: "image/png",
+  })]);
 });
 
 test("Gemini adapter returns empty result when sidebar has no conversations", async () => {
