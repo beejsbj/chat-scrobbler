@@ -3,7 +3,7 @@
 // everything here is deterministic and unit-tested.
 import type { ProviderSource } from "../../../shared/src";
 
-export type ConversationState = "synced" | "stale" | "missing" | "syncing" | "error";
+export type ConversationState = "synced" | "stale" | "missing" | "syncing" | "error" | "ignored";
 
 export const CAPTURE_THROTTLE_MS = 2_500;
 export const CAPTURE_RETRY_DELAY_MS = 500;
@@ -103,6 +103,8 @@ const GLYPH_STALE = SVG('<circle cx="5" cy="5" r="3.5" fill="currentColor" opaci
 const GLYPH_SYNCING = SVG('<circle cx="5" cy="5" r="3" fill="none" stroke="currentColor" stroke-width="1.5" stroke-dasharray="12 7" stroke-linecap="round"/>', 'style="display:block"');
 // Exclamation dot (error)
 const GLYPH_ERROR = SVG('<circle cx="5" cy="5" r="3.5" fill="currentColor"/><rect x="4.25" y="2.5" width="1.5" height="2.8" rx=".5" fill="#fff"/><circle cx="5" cy="7" r=".7" fill="#fff"/>');
+// Slashed ring (ignored)
+const GLYPH_IGNORED = SVG('<circle cx="5" cy="5" r="3" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M2.4 7.6 7.6 2.4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>');
 
 export function badgePresentation(state: ConversationState): BadgePresentation {
   switch (state) {
@@ -110,6 +112,7 @@ export function badgePresentation(state: ConversationState): BadgePresentation {
     case "stale": return { glyph: GLYPH_STALE, label: "Updated since last sync", state };
     case "syncing": return { glyph: GLYPH_SYNCING, label: "Syncing…", state };
     case "error": return { glyph: GLYPH_ERROR, label: "Sync failed", state };
+    case "ignored": return { glyph: GLYPH_IGNORED, label: "Ignored", state };
     case "missing":
     default: return { glyph: GLYPH_MISSING, label: "Not synced yet", state };
   }
@@ -124,6 +127,15 @@ export function captureQueue(
 ): string[] {
   if (!autoSync) return [];
   return ids.filter((id) => statuses[id] === "missing" || statuses[id] === "stale");
+}
+
+export function applyIgnoredStates(
+  statuses: Record<string, ConversationState>,
+  ignoredIds: ReadonlySet<string>,
+): Record<string, ConversationState> {
+  const next = { ...statuses };
+  for (const id of ignoredIds) next[id] = "ignored";
+  return next;
 }
 
 export function captureDelayMs(index: number, throttleMs = CAPTURE_THROTTLE_MS): number {

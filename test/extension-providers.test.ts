@@ -32,6 +32,30 @@ test("ChatGPT adapter fetches only conversations newer than the cursor", async (
   expect(calls.some((call) => call.startsWith("/backend-api/conversation/old"))).toBe(false);
 });
 
+test("ChatGPT adapter skips ignored conversations before detail fetch", async () => {
+  const calls: string[] = [];
+  const fetcher: FetchLike = async (input) => {
+    calls.push(String(input));
+    if (input === "/api/auth/session") return json({ accessToken: "tok" });
+    if (String(input).startsWith("/backend-api/conversations")) {
+      return json({ items: [{ id: "ignored", update_time: "2026-06-05T11:00:00.000Z" }] });
+    }
+    if (String(input).startsWith("/backend-api/conversation/")) {
+      throw new Error(`unexpected detail fetch ${input}`);
+    }
+    throw new Error(`unexpected fetch ${input}`);
+  };
+
+  const result = await createChatgptAdapter(fetcher).sync({
+    lastSync: null,
+    emitCapture: async () => { throw new Error("should not emit ignored capture"); },
+    shouldIgnore: (source, id) => source === "chatgpt" && id === "ignored",
+  });
+
+  expect(result).toMatchObject({ scanned: 1, captured: 0, skipped: 1 });
+  expect(calls.some((call) => call.startsWith("/backend-api/conversation/ignored"))).toBe(false);
+});
+
 test("ChatGPT adapter stops paginating early when cursor page is all old", async () => {
   const pageRequests: string[] = [];
   const fetcher: FetchLike = async (input) => {
@@ -169,6 +193,30 @@ test("Claude adapter discovers org and captures conversation details", async () 
   // Detail fetch MUST request the tree rendering, or content blocks are dropped.
   expect(detailUrl).toContain("tree=True");
   expect(detailUrl).toContain("rendering_mode=messages");
+});
+
+test("Claude adapter skips ignored conversations before detail fetch", async () => {
+  const calls: string[] = [];
+  const fetcher: FetchLike = async (input) => {
+    calls.push(String(input));
+    if (input === "/api/organizations") return json([{ uuid: "org-1" }]);
+    if (String(input).startsWith("/api/organizations/org-1/chat_conversations?")) {
+      return json([{ uuid: "ignored", updated_at: "2026-06-05T11:00:00.000Z" }]);
+    }
+    if (String(input).includes("/chat_conversations/ignored")) {
+      throw new Error(`unexpected detail fetch ${input}`);
+    }
+    throw new Error(`unexpected fetch ${input}`);
+  };
+
+  const result = await createClaudeAdapter(fetcher).sync({
+    lastSync: null,
+    emitCapture: async () => { throw new Error("should not emit ignored capture"); },
+    shouldIgnore: (source, id) => source === "claude" && id === "ignored",
+  });
+
+  expect(result).toMatchObject({ scanned: 1, captured: 0, skipped: 1 });
+  expect(calls.some((call) => call.includes("/chat_conversations/ignored"))).toBe(false);
 });
 
 test("Claude adapter normalizes numeric string timestamps to ISO", async () => {

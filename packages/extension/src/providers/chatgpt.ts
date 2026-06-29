@@ -88,6 +88,10 @@ async function syncChatgpt(fetcher: FetchLike, options: ProviderSyncOptions): Pr
     for (const item of items) {
       scanned += 1;
       maxConversationUpdatedAt = maxIso(maxConversationUpdatedAt, item.updatedAt);
+      if (options.shouldIgnore?.("chatgpt", item.id)) {
+        skipped += 1;
+        continue;
+      }
       if (!shouldCapture(item.updatedAt, options.lastSync)) {
         skipped += 1;
         continue;
