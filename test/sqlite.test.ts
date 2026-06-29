@@ -1,6 +1,6 @@
 // test/sqlite.test.ts
 import { test, expect } from "bun:test";
-import { openIndex, indexSession, searchMessages, listSessions, type EmbeddingProvider } from "../src/indexer/sqlite";
+import { openIndex, indexSession, searchMessages, searchMessagesWithEmbeddings, listSessions, type EmbeddingProvider } from "../src/indexer/sqlite";
 import type { Session } from "../src/schema/types";
 
 function mk(id: string, source: "chatgpt" | "claude", title: string, text: string): Session {
@@ -97,4 +97,22 @@ test("search dedupes literal and semantic matches while preserving both sources"
   expect(hits).toHaveLength(1);
   expect(hits[0].provenance).toBe("hybrid");
   expect(hits[0].match_sources).toEqual(["literal", "semantic"]);
+});
+
+test("async search falls back to literal hits when query embedding fails", async () => {
+  const provider: EmbeddingProvider = {
+    kind: "test-failing-query",
+    async embed(): Promise<number[]> {
+      throw new Error("query embedding service unavailable");
+    },
+  };
+  const db = openIndex(":memory:");
+  indexSession(db, mk("a", "chatgpt", "T", "protection matters"), { embeddingProvider: null });
+
+  const hits = await searchMessagesWithEmbeddings(db, "protection", { embeddingProvider: provider });
+
+  expect(hits).toHaveLength(1);
+  expect(hits[0].session_id).toBe("chatgpt:a");
+  expect(hits[0].provenance).toBe("literal");
+  expect(hits[0].match_sources).toEqual(["literal"]);
 });

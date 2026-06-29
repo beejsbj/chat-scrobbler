@@ -42,54 +42,26 @@ export function openIndex(path: string): Database {
 }
 
 export function indexSession(db: Database, s: Session, opts: IndexSessionOptions = {}): void {
-  // message_count reflects the active branch only; FTS indexes every message so
-  // search can reach text on inactive (edited-away) branches too.
-  const activeCount = activePath(s).length;
-  db.run(`INSERT OR REPLACE INTO sessions (id, source, source_id, title, created_at, updated_at, message_count)
-          VALUES (?,?,?,?,?,?,?)`,
-    [s.id, s.source, s.source_id, s.title, s.created_at, s.updated_at, activeCount]);
-  db.run(`DELETE FROM messages_fts WHERE session_id = ?`, [s.id]);
-  db.run(`DELETE FROM message_embeddings WHERE session_id = ?`, [s.id]);
-  const stmt = db.prepare(
-    `INSERT INTO messages_fts (text, message_id, session_id, role, created_at, source, title)
-     VALUES (?,?,?,?,?,?,?)`);
   const embeddingProvider = opts.embeddingProvider ?? null;
-  const embeddingStmt = db.prepare(
-    `INSERT INTO message_embeddings (session_id, message_id, embedding, text, role, created_at, source, title)
-     VALUES (?,?,?,?,?,?,?,?)`);
-  for (const m of s.messages) {
-    if (!m.text) continue;
-    stmt.run(m.text, m.id, s.id, m.role, m.created_at, s.source, s.title);
-    if (embeddingProvider) {
-      embeddingStmt.run(s.id, m.id, JSON.stringify(syncEmbedding(embeddingProvider, m.text, { kind: "document", title: s.title })), m.text, m.role, m.created_at, s.source, s.title);
-    }
+  indexLiteralSession(db, s);
+  if (!embeddingProvider) return;
+
+  try {
+    replaceEmbeddingRows(db, s.id, collectSyncEmbeddingRows(s, embeddingProvider));
+  } catch {
+    db.run(`DELETE FROM message_embeddings WHERE session_id = ?`, [s.id]);
   }
 }
 
 export async function indexSessionWithEmbeddings(db: Database, s: Session, opts: IndexSessionOptions = {}): Promise<void> {
   const embeddingProvider = opts.embeddingProvider ?? null;
-  if (!embeddingProvider) {
-    indexSession(db, s, { embeddingProvider: null });
-    return;
-  }
+  indexLiteralSession(db, s);
+  if (!embeddingProvider) return;
 
-  const activeCount = activePath(s).length;
-  db.run(`INSERT OR REPLACE INTO sessions (id, source, source_id, title, created_at, updated_at, message_count)
-          VALUES (?,?,?,?,?,?,?)`,
-    [s.id, s.source, s.source_id, s.title, s.created_at, s.updated_at, activeCount]);
-  db.run(`DELETE FROM messages_fts WHERE session_id = ?`, [s.id]);
-  db.run(`DELETE FROM message_embeddings WHERE session_id = ?`, [s.id]);
-  const stmt = db.prepare(
-    `INSERT INTO messages_fts (text, message_id, session_id, role, created_at, source, title)
-     VALUES (?,?,?,?,?,?,?)`);
-  const embeddingStmt = db.prepare(
-    `INSERT INTO message_embeddings (session_id, message_id, embedding, text, role, created_at, source, title)
-     VALUES (?,?,?,?,?,?,?,?)`);
-  for (const m of s.messages) {
-    if (!m.text) continue;
-    stmt.run(m.text, m.id, s.id, m.role, m.created_at, s.source, s.title);
-    const embedding = await embeddingProvider.embed(m.text, { kind: "document", title: s.title });
-    embeddingStmt.run(s.id, m.id, JSON.stringify(embedding), m.text, m.role, m.created_at, s.source, s.title);
+  try {
+    replaceEmbeddingRows(db, s.id, await collectAsyncEmbeddingRows(s, embeddingProvider));
+  } catch {
+    db.run(`DELETE FROM message_embeddings WHERE session_id = ?`, [s.id]);
   }
 }
 
@@ -119,8 +91,10 @@ export function searchMessages(db: Database, query: string, opts: SearchMessages
 
   const semanticProvider = opts.embeddingProvider ?? null;
   if (semanticProvider) {
-    const queryEmbedding = syncEmbedding(semanticProvider, query, { kind: "query" });
-    mergeSemanticHits(merged, semanticCandidates(db, queryEmbedding, opts.source, Math.max(limit * 3, 20)), query);
+    const queryEmbedding = safeSyncEmbedding(semanticProvider, query, { kind: "query" });
+    if (queryEmbedding) {
+      mergeSemanticHits(merged, semanticCandidates(db, queryEmbedding, opts.source, Math.max(limit * 3, 20)), query);
+    }
   }
 
   return finalizeHits(merged, limit);
@@ -132,8 +106,10 @@ export async function searchMessagesWithEmbeddings(db: Database, query: string, 
   const merged = literalHits(db, query, opts.source, limit);
   const semanticProvider = opts.embeddingProvider ?? null;
   if (semanticProvider) {
-    const queryEmbedding = await semanticProvider.embed(query, { kind: "query" });
-    mergeSemanticHits(merged, semanticCandidates(db, queryEmbedding, opts.source, Math.max(limit * 3, 20)), query);
+    const queryEmbedding = await safeAsyncEmbedding(semanticProvider, query, { kind: "query" });
+    if (queryEmbedding) {
+      mergeSemanticHits(merged, semanticCandidates(db, queryEmbedding, opts.source, Math.max(limit * 3, 20)), query);
+    }
   }
   return finalizeHits(merged, limit);
 }
@@ -162,7 +138,76 @@ interface SemanticRow {
   created_at: string | null; source: string; title: string | null; similarity: number;
 }
 
+interface EmbeddingRow {
+  session_id: string; message_id: string; embedding: number[]; text: string; role: string;
+  created_at: string | null; source: string; title: string | null;
+}
+
 type RankedHit = MessageHit & { literalRank?: number; semanticRank?: number };
+
+function indexLiteralSession(db: Database, s: Session): void {
+  // message_count reflects the active branch only; FTS indexes every message so
+  // search can reach text on inactive (edited-away) branches too.
+  const activeCount = activePath(s).length;
+  db.run(`INSERT OR REPLACE INTO sessions (id, source, source_id, title, created_at, updated_at, message_count)
+          VALUES (?,?,?,?,?,?,?)`,
+    [s.id, s.source, s.source_id, s.title, s.created_at, s.updated_at, activeCount]);
+  db.run(`DELETE FROM messages_fts WHERE session_id = ?`, [s.id]);
+  db.run(`DELETE FROM message_embeddings WHERE session_id = ?`, [s.id]);
+  const stmt = db.prepare(
+    `INSERT INTO messages_fts (text, message_id, session_id, role, created_at, source, title)
+     VALUES (?,?,?,?,?,?,?)`);
+  for (const m of s.messages) {
+    if (!m.text) continue;
+    stmt.run(m.text, m.id, s.id, m.role, m.created_at, s.source, s.title);
+  }
+}
+
+function collectSyncEmbeddingRows(s: Session, provider: EmbeddingProvider): EmbeddingRow[] {
+  const rows: EmbeddingRow[] = [];
+  for (const m of s.messages) {
+    if (!m.text) continue;
+    rows.push({
+      session_id: s.id,
+      message_id: m.id,
+      embedding: syncEmbedding(provider, m.text, { kind: "document", title: s.title }),
+      text: m.text,
+      role: m.role,
+      created_at: m.created_at,
+      source: s.source,
+      title: s.title,
+    });
+  }
+  return rows;
+}
+
+async function collectAsyncEmbeddingRows(s: Session, provider: EmbeddingProvider): Promise<EmbeddingRow[]> {
+  const rows: EmbeddingRow[] = [];
+  for (const m of s.messages) {
+    if (!m.text) continue;
+    rows.push({
+      session_id: s.id,
+      message_id: m.id,
+      embedding: await provider.embed(m.text, { kind: "document", title: s.title }),
+      text: m.text,
+      role: m.role,
+      created_at: m.created_at,
+      source: s.source,
+      title: s.title,
+    });
+  }
+  return rows;
+}
+
+function replaceEmbeddingRows(db: Database, sessionId: string, rows: EmbeddingRow[]): void {
+  db.run(`DELETE FROM message_embeddings WHERE session_id = ?`, [sessionId]);
+  const stmt = db.prepare(
+    `INSERT INTO message_embeddings (session_id, message_id, embedding, text, role, created_at, source, title)
+     VALUES (?,?,?,?,?,?,?,?)`);
+  for (const row of rows) {
+    stmt.run(row.session_id, row.message_id, JSON.stringify(row.embedding), row.text, row.role, row.created_at, row.source, row.title);
+  }
+}
 
 function literalHits(db: Database, query: string, source: string | undefined, limit: number): Map<string, RankedHit> {
   const merged = new Map<string, RankedHit>();
@@ -270,4 +315,20 @@ function syncEmbedding(provider: EmbeddingProvider, text: string, context: Embed
     throw new Error(`Embedding provider "${provider.kind ?? "unknown"}" is async; use indexSessionWithEmbeddings/searchMessagesWithEmbeddings`);
   }
   return result;
+}
+
+function safeSyncEmbedding(provider: EmbeddingProvider, text: string, context: EmbeddingContext): number[] | null {
+  try {
+    return syncEmbedding(provider, text, context);
+  } catch {
+    return null;
+  }
+}
+
+async function safeAsyncEmbedding(provider: EmbeddingProvider, text: string, context: EmbeddingContext): Promise<number[] | null> {
+  try {
+    return await provider.embed(text, context);
+  } catch {
+    return null;
+  }
 }

@@ -40,6 +40,7 @@ export interface ChatHistoryConfig {
 }
 
 export type EmbeddingProviderKind = "none" | "gemini" | "ollama" | "hash";
+const EMBEDDING_PROVIDER_KINDS: readonly EmbeddingProviderKind[] = ["none", "gemini", "ollama", "hash"];
 
 /** Default data home: keeps user data out of whatever repo/cwd the tool runs from. */
 const DATA_HOME = join(homedir(), ".local", "share", "chat-scrobbler");
@@ -98,8 +99,10 @@ export function loadConfig(opts: LoadConfigOptions = {}): ChatHistoryConfig {
   // Layer 1: config file.
   const fileLayer = readConfigFile(resolveConfigPath(opts.configPath, env, cwd));
   for (const k of FILE_KEYS) {
+    if (k === "embeddingProvider") continue;
     if (fileLayer[k] !== undefined) (cfg as any)[k] = fileLayer[k];
   }
+  applyEmbeddingProvider(cfg, fileLayer.embeddingProvider);
   // Legacy: a singular backupTarget string in the config file still works.
   if (fileLayer.backupTargets === undefined && typeof fileLayer.backupTarget === "string" && fileLayer.backupTarget !== "") {
     cfg.backupTargets = [fileLayer.backupTarget];
@@ -180,9 +183,10 @@ function applyNullableString(cfg: ChatHistoryConfig, key: "embeddingModel" | "ge
   if (v !== undefined) cfg[key] = v || null;
 }
 
-function applyEmbeddingProvider(cfg: ChatHistoryConfig, v: string | undefined): void {
+function applyEmbeddingProvider(cfg: ChatHistoryConfig, v: unknown): void {
   if (v === undefined || v === "") return;
-  if (["none", "gemini", "ollama", "hash"].includes(v)) {
+  if (typeof v !== "string") return;
+  if (EMBEDDING_PROVIDER_KINDS.includes(v as EmbeddingProviderKind)) {
     cfg.embeddingProvider = v as EmbeddingProviderKind;
   }
 }

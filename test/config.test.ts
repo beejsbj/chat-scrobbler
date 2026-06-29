@@ -150,3 +150,18 @@ test("embedding env config selects local and cloud providers", () => {
   expect(ollama.embeddingModel).toBe("mxbai-embed-large");
   expect(ollama.ollamaBaseUrl).toBe("http://127.0.0.1:11434");
 });
+
+test("config file embeddingProvider is validated before being applied", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ch-config-"));
+  try {
+    const invalidFile = join(dir, "invalid-provider.json");
+    writeFileSync(invalidFile, JSON.stringify({ embeddingProvider: "not-a-provider" }));
+    expect(loadConfig({ env: {}, configPath: invalidFile }).embeddingProvider).toBe("none");
+
+    const validFile = join(dir, "valid-provider.json");
+    writeFileSync(validFile, JSON.stringify({ embeddingProvider: "hash" }));
+    expect(loadConfig({ env: {}, configPath: validFile }).embeddingProvider).toBe("hash");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
