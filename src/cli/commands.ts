@@ -221,7 +221,8 @@ export function runConnect(opts: ConnectCmdOpts): void {
   const mcpUrl = `http://127.0.0.1:${cfg.mcpHttpPort}/mcp`;
 
   write(`MCP endpoint (local, read-only): ${mcpUrl}`);
-  write(`  Served while "chat-scrobbler serve" is running.`);
+  write(`  Served while "chat-scrobbler serve" is running. This URL is only reachable`);
+  write(`  from the same machine unless you deliberately put a secure proxy in front of it.`);
   write("");
   write(`Claude Desktop (stdio) -- add to claude_desktop_config.json:`);
   write(
@@ -232,10 +233,24 @@ export function runConnect(opts: ConnectCmdOpts): void {
     ),
   );
   write("");
-  write(`claude.ai / other remote connectors:`);
-  write(`  The endpoint above is bound to 127.0.0.1. To use it from claude.ai,`);
-  write(`  expose it over HTTPS with a tunnel (e.g. cloudflared) and add the`);
-  write(`  public URL as a custom connector.`);
+  write(`Claude Desktop / local tools (HTTP):`);
+  write(`  Local MCP clients running on this machine may use ${mcpUrl}.`);
+  write("");
+  write(`Claude web/mobile:`);
+  write(`  Do not paste the localhost URL into claude.ai. Cloud clients need a publicly`);
+  write(`  reachable HTTPS URL plus compatible authentication. Do not publish this`);
+  write(`  endpoint without auth. Cloudflare Tunnel + Access is a candidate route, but`);
+  write(`  verify live Claude connector compatibility before calling it supported.`);
+  write("");
+  write(`OpenAI Secure MCP Tunnel:`);
+  write(`  Use the local endpoint as the private origin only if the tunnel's current`);
+  write(`  requirements match this server and compatible auth is configured. Verify`);
+  write(`  current tunnel requirements before exposing chat history.`);
+  write("");
+  write(`Generic public remote MCP:`);
+  write(`  Requires publicly reachable HTTPS and compatible authentication. Tailscale`);
+  write(`  Serve is private and will not work for cloud clients; Tailscale Funnel is`);
+  write(`  public and unsafe here unless the endpoint has compatible auth.`);
 
   const extDir = resolveExtensionDir();
   if (extDir) {
@@ -374,7 +389,7 @@ export function printServeInfo(cfg: ChatHistoryConfig, handles: ServeHandles): v
   const mcpUrl = `http://127.0.0.1:${mcpPort}/mcp`;
 
   process.stdout.write(`Ingest receiver (paste into extension): ${ingestUrl}\n`);
-  process.stdout.write(`MCP endpoint (paste into claude.ai):    ${mcpUrl}\n`);
+  process.stdout.write(`MCP endpoint (local, read-only):       ${mcpUrl}\n`);
   process.stdout.write(`Canonical dir: ${cfg.canonicalDir}\n`);
   process.stdout.write(`Index path:    ${cfg.indexPath}\n`);
 }

@@ -8,7 +8,8 @@ chat-scrobbler is a working, self-hostable tool:
 - Canonical JSON session store (one file per conversation, source of truth).
 - SQLite FTS5 index, rebuildable at any time from canonical.
 - Read-only MCP connector (`search`, `get_session`, `list_sessions`) over stdio and
-  Streamable HTTP -- usable as a local harness tool or a remote custom connector.
+  Streamable HTTP -- usable as a local harness tool, with remote connector use
+  requiring public HTTPS and compatible auth.
 - CLI (`search`, `get`, `list`, `unify`, `serve`, `backup`, `backups`, `restore`, `init`).
 - Multi-target backup with a local snapshot dir default; SFTP/S3 target slots reserved.
 - Single compiled binary (`dist/chat-scrobbler`) with the extension bundled alongside.

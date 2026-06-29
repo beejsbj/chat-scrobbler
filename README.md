@@ -20,10 +20,9 @@ that is a fine outcome too.
   abandoned branches included), not just the visible path.
 - **Searches everything.** A SQLite FTS5 index covers every message in every
   branch. One query, all providers, all history.
-- **Answers agents.** A read-only MCP server exposes search/get/list, so any
-  MCP client (claude.ai, agent harnesses, your own scripts) can recall your
-  history. "When did I talk about rain gutters, and in which app?" is now a
-  query.
+- **Answers agents.** A read-only MCP server exposes search/get/list, so local
+  MCP clients and authenticated remote connector setups can recall your history.
+  "When did I talk about rain gutters, and in which app?" is now a query.
 - **Backs up.** Snapshots fan out to multiple targets with one command.
 
 ## How it does it
@@ -53,7 +52,7 @@ That drops `chat-scrobbler` into `~/.local/bin` and the browser extension into
 ```bash
 chat-scrobbler init      # scaffold the data dirs + a starter config
 chat-scrobbler serve     # start the capture receiver + MCP endpoint
-chat-scrobbler connect   # print the MCP URL + how to wire it into Claude
+chat-scrobbler connect   # print local MCP + client-specific connector guidance
 ```
 
 Load the extension once: `chrome://extensions` -> Developer mode -> Load
@@ -80,8 +79,10 @@ chat-scrobbler get chatgpt:<id> --role assistant --text-only # answers, no think
 ```
 
 The MCP server exposes the same search/get/list over a read-only connector, so
-any MCP client gets exactly what the CLI gets. `chat-scrobbler connect` prints
-a ready-to-paste Claude Desktop config and the local endpoint URL.
+MCP clients get exactly what the CLI gets. `chat-scrobbler connect` prints a
+ready-to-paste Claude Desktop config, the local endpoint URL, and client-specific
+remote connector cautions. See [docs/MCP_CONNECTORS.md](docs/MCP_CONNECTORS.md)
+before putting the endpoint behind any tunnel.
 
 <details>
 <summary>Build from source instead</summary>
@@ -102,9 +103,9 @@ bun run build:dist          # compiles dist/chat-scrobbler + dist/extension/
   crashes ([docs/examples/com.chat-scrobbler.serve.plist](docs/examples/com.chat-scrobbler.serve.plist)).
 - Backups fan out to a local snapshot dir, with a second machine next on the
   list. `backupTargets` in the config is just an array.
-- The MCP endpoint is wired into claude.ai as a custom connector (via a
-  tunnel), so mid-conversation I can ask "have I talked about this before?"
-  and get my own history back, with sources.
+- The MCP endpoint can be wired into cloud clients only through a public HTTPS
+  route with compatible authentication. The local endpoint itself stays bound to
+  localhost; see [docs/MCP_CONNECTORS.md](docs/MCP_CONNECTORS.md).
 - Longer term, this corpus feeds a personal wiki project: agents following
   search hits back to the raw sessions and distilling them into notes. That
   lives elsewhere; this repo stays the neutral substrate.
