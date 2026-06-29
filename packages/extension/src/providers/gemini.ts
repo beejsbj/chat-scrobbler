@@ -226,6 +226,10 @@ async function syncGemini(
 
   for (const id of ids) {
     scanned += 1;
+    if (options.shouldIgnore?.("gemini", id)) {
+      skipped += 1;
+      continue;
+    }
 
     // Gemini sidebar does not expose conversation timestamps. We cannot check
     // shouldCapture() per-item. On incremental sync (lastSync set) we skip ids

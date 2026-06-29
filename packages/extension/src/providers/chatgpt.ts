@@ -80,14 +80,15 @@ async function syncChatgpt(fetcher: FetchLike, options: ProviderSyncOptions): Pr
     if (options.lastSync && items.every((item) => !shouldCapture(item.updatedAt, options.lastSync))) {
       scanned += items.length;
       skipped += items.length;
-      // Still update maxConversationUpdatedAt for the items we scanned.
-      for (const item of items) maxConversationUpdatedAt = maxIso(maxConversationUpdatedAt, item.updatedAt);
       break;
     }
 
     for (const item of items) {
       scanned += 1;
-      maxConversationUpdatedAt = maxIso(maxConversationUpdatedAt, item.updatedAt);
+      if (options.shouldIgnore?.("chatgpt", item.id)) {
+        skipped += 1;
+        continue;
+      }
       if (!shouldCapture(item.updatedAt, options.lastSync)) {
         skipped += 1;
         continue;
@@ -104,6 +105,7 @@ async function syncChatgpt(fetcher: FetchLike, options: ProviderSyncOptions): Pr
         rawUrl: `${currentOrigin()}${detailEndpoint}`,
       }));
       captured += 1;
+      maxConversationUpdatedAt = maxIso(maxConversationUpdatedAt, item.updatedAt);
     }
 
     offset += items.length;

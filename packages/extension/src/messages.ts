@@ -54,6 +54,17 @@ export interface CaptureProgressMessage {
   total: number;
 }
 
+export interface IgnoredChatsMessage {
+  type: "SCROBBLER_IGNORED_CHATS";
+  provider: ProviderSource;
+}
+
+export interface ToggleIgnoredChatMessage {
+  type: "SCROBBLER_TOGGLE_IGNORED_CHAT";
+  provider: ProviderSource;
+  id: string;
+}
+
 export interface SnapshotCredentialsMessage {
   type: "SCROBBLER_SNAPSHOT_CREDENTIALS";
   provider: ProviderSource;
@@ -80,11 +91,13 @@ export type RuntimeMessage =
   | SnapshotCredentialsMessage
   | ConversationStatesMessage
   | CaptureProgressMessage
+  | IgnoredChatsMessage
+  | ToggleIgnoredChatMessage
   | CaptureLoggedMessage;
 
 export interface ConversationStatesResponse {
   ok: true;
-  statuses: Record<string, "synced" | "stale" | "missing">;
+  statuses: Record<string, "synced" | "stale" | "missing" | "ignored">;
 }
 
 export interface ContentSyncResponse extends ProviderSyncResult {

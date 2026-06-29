@@ -188,6 +188,46 @@ test("Gemini adapter captures each listed conversation via RPC", async () => {
   expect(captures.every((c) => c.source === "gemini")).toBe(true);
 });
 
+test("Gemini adapter skips ignored conversations before RPC or DOM capture", async () => {
+  const fetcher: FetchLike = async (input) => {
+    throw new Error(`unexpected fetch: ${input}`);
+  };
+  const pageCtx = makeFakePageCtx(["aaaa0000bbbb1111"]);
+
+  const result = await createGeminiAdapter(fetcher, pageCtx).sync({
+    lastSync: null,
+    emitCapture: async () => { throw new Error("should not emit ignored capture"); },
+    shouldIgnore: (source, id) => source === "gemini" && id === "aaaa0000bbbb1111",
+  });
+
+  expect(result).toMatchObject({ scanned: 1, captured: 0, skipped: 1 });
+  expect(result.maxConversationUpdatedAt).toBeNull();
+});
+
+test("Gemini adapter only advances cursor for captured conversations", async () => {
+  const captures: Array<{ source_id: string }> = [];
+  const fetcher: FetchLike = async (input) => {
+    if (String(input).includes("batchexecute")) {
+      return new Response(
+        makeBatchExecuteResponse("hNvQHb", [["conversation-data"]]),
+        { status: 200 },
+      );
+    }
+    throw new Error(`Unexpected fetch: ${input}`);
+  };
+  const pageCtx = makeFakePageCtx(["aaaa0000bbbb1111", "cccc2222dddd3333"]);
+
+  const result = await createGeminiAdapter(fetcher, pageCtx).sync({
+    lastSync: null,
+    emitCapture: async (c) => { captures.push({ source_id: c.source_id }); },
+    shouldIgnore: (source, id) => source === "gemini" && id === "aaaa0000bbbb1111",
+  });
+
+  expect(result).toMatchObject({ scanned: 2, captured: 1, skipped: 1 });
+  expect(captures).toEqual([{ source_id: "cccc2222dddd3333" }]);
+  expect(result.maxConversationUpdatedAt).not.toBeNull();
+});
+
 test("Gemini adapter falls back to DOM capture when RPC fails", async () => {
   const captures: Array<{ source_id: string; payload: unknown }> = [];
 

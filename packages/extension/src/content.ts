@@ -28,6 +28,15 @@ if (provider) {
       const res = await sendRuntimeMessage({ type: "SCROBBLER_GET_STATUS" });
       return !!(res?.ok && res.settings?.autoSync);
     },
+    getIgnoredIds: async () => {
+      const res = await sendRuntimeMessage({ type: "SCROBBLER_IGNORED_CHATS", provider: provider.source });
+      return new Set<string>(res?.ok && Array.isArray(res.ids) ? res.ids : []);
+    },
+    toggleIgnored: async (id) => {
+      const res = await sendRuntimeMessage({ type: "SCROBBLER_TOGGLE_IGNORED_CHAT", provider: provider.source, id });
+      if (!res?.ok) throw new Error(res?.error ?? "Failed to toggle ignored chat");
+      return !!res.ignored;
+    },
     emitCapture,
     reportCaptureProgress: async (remaining, total) => {
       await sendRuntimeMessage({ type: "SCROBBLER_CAPTURE_PROGRESS", remaining, total });
@@ -45,9 +54,11 @@ if (provider) {
 }
 
 async function syncProvider(message: SyncRequest): Promise<SyncResponse> {
+  await refreshIgnoredIds();
   const result = await provider!.sync({
     lastSync: message.lastSync ?? null,
     emitCapture,
+    shouldIgnore: (_source, sourceId) => ignoredIds.has(sourceId),
   });
   return { ok: true, ...result };
 }
@@ -59,4 +70,11 @@ async function emitCapture(capture: RawCapture): Promise<void> {
 
 function sendRuntimeMessage(message: RuntimeMessage): Promise<any> {
   return new Promise((resolve) => chrome.runtime.sendMessage(message, resolve));
+}
+
+let ignoredIds = new Set<string>();
+
+async function refreshIgnoredIds(): Promise<void> {
+  const res = await sendRuntimeMessage({ type: "SCROBBLER_IGNORED_CHATS", provider: provider!.source });
+  ignoredIds = new Set<string>(res?.ok && Array.isArray(res.ids) ? res.ids : []);
 }

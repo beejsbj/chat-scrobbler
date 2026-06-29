@@ -3,6 +3,7 @@ import type { ProviderSource, RawCapture } from "../../../shared/src";
 export interface ProviderSyncOptions {
   lastSync?: string | null;
   emitCapture: (capture: RawCapture) => Promise<void>;
+  shouldIgnore?: (source: ProviderSource, sourceId: string) => boolean;
 }
 
 export interface ProviderSyncResult {

@@ -9,6 +9,8 @@ import {
   MAX_RATE_LIMIT_COOLDOWN_MS,
   SIDEBAR_CONFIGS,
   activeConversationId,
+  applyIgnoredStates,
+  badgeActionLabel,
   badgePresentation,
   captureDelayMs,
   captureQueue,
@@ -59,6 +61,20 @@ test("badgePresentation maps each state to a glyph + accessible label", () => {
   const error = badgePresentation("error");
   expect(error.state).toBe("error");
   expect(error.glyph).toContain("<svg");
+
+  const ignored = badgePresentation("ignored");
+  expect(ignored.state).toBe("ignored");
+  expect(ignored.glyph).toContain("<svg");
+  expect(ignored.label).toMatch(/ignored/i);
+});
+
+test("badgeActionLabel describes the toggle action for tooltip and aria", () => {
+  expect(badgeActionLabel("synced")).toBe("Disable sync for this chat");
+  expect(badgeActionLabel("missing")).toBe("Disable sync for this chat");
+  expect(badgeActionLabel("stale")).toBe("Disable sync for this chat");
+  expect(badgeActionLabel("error")).toBe("Disable sync for this chat");
+  expect(badgeActionLabel("syncing")).toBe("Disable sync for this chat");
+  expect(badgeActionLabel("ignored")).toBe("Enable sync for this chat");
 });
 
 test("captureQueue selects missing+stale in order, only when auto-sync is on", () => {
@@ -66,6 +82,18 @@ test("captureQueue selects missing+stale in order, only when auto-sync is on", (
   const ids = ["a", "b", "c", "d"];
   expect(captureQueue(statuses, ids, true)).toEqual(["b", "c"]);
   expect(captureQueue(statuses, ids, false)).toEqual([]);
+});
+
+test("captureQueue excludes ignored conversations because ignored is not capturable", () => {
+  const statuses = { a: "ignored", b: "missing", c: "stale" } as const;
+  expect(captureQueue(statuses, ["a", "b", "c"], true)).toEqual(["b", "c"]);
+});
+
+test("applyIgnoredStates overlays ignored state without mutating source statuses", () => {
+  const statuses = { a: "synced", b: "missing" } as const;
+  const next = applyIgnoredStates(statuses, new Set(["b", "c"]));
+  expect(next).toEqual({ a: "synced", b: "ignored", c: "ignored" });
+  expect(statuses).toEqual({ a: "synced", b: "missing" });
 });
 
 test("captureDelayMs inserts a throttle only between captures", () => {

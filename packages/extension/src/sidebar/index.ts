@@ -8,6 +8,7 @@ import {
   FAST_PATH_DEBOUNCE_MS,
   SIDEBAR_CONFIGS,
   activeConversationId,
+  applyIgnoredStates,
   captureDelayMs,
   captureQueue,
   captureWithRetry,
@@ -26,6 +27,8 @@ const SIDEBAR_RECONCILE_DEBOUNCE_MS = 800;
 export interface SidebarDeps {
   getStates: (conversations: Array<{ id: string; updatedAt: string | null }>) => Promise<Record<string, ConversationState>>;
   getAutoSync: () => Promise<boolean>;
+  getIgnoredIds: () => Promise<Set<string>>;
+  toggleIgnored: (id: string) => Promise<boolean>;
   emitCapture: (capture: RawCapture) => Promise<void>;
   reportCaptureProgress?: (remaining: number, total: number) => Promise<void> | void;
   /** Called after each successful capture with the id, human-readable title, and capture kind. */
@@ -53,6 +56,7 @@ export function runSidebarBadges(provider: ProviderAdapter, deps: SidebarDeps): 
   let retryAfterUntilMs = 0;
   let rateLimitAttempts = 0;
   let cachedStatuses: Record<string, ConversationState> = {};
+  let ignoredIds = new Set<string>();
   /**
    * Session-scoped re-capture guard: maps conversation id -> updatedAt (ms) at
    * which we last successfully captured it. Prevents endless re-capture churn
@@ -112,8 +116,10 @@ export function runSidebarBadges(provider: ProviderAdapter, deps: SidebarDeps): 
 
       let statuses: Record<string, ConversationState> = {};
       try { statuses = await deps.getStates(visible); } catch { return; }
+      ignoredIds = await deps.getIgnoredIds().catch(() => new Set<string>());
+      statuses = applyIgnoredStates(statuses, ignoredIds);
       cachedStatuses = { ...statuses };
-      for (const [id, anchor] of anchors) setBadge(anchor, statuses[id] ?? "missing");
+      for (const [id, anchor] of anchors) paintBadge(anchor, id, statuses[id] ?? "missing");
 
       const autoSync = await deps.getAutoSync().catch(() => false);
       // Apply the session-scoped re-capture guard AFTER captureQueue so captureQueue
@@ -139,8 +145,9 @@ export function runSidebarBadges(provider: ProviderAdapter, deps: SidebarDeps): 
         const id = queue[index]!;
         const anchor = anchors.get(id);
         if (!provider.captureOne) break;
+        if (ignoredIds.has(id)) continue;
         await wait(captureDelayMs(index));
-        if (anchor) setBadge(anchor, "syncing");
+        if (anchor) paintBadge(anchor, id, "syncing");
         try {
           await captureWithRetry(
             () => provider.captureOne!(id, updatedById.get(id) ?? null, deps.emitCapture),
@@ -156,7 +163,7 @@ export function runSidebarBadges(provider: ProviderAdapter, deps: SidebarDeps): 
           // anything else ("stale") = update to an existing one.
           const kind: CaptureKind = statuses[id] === "missing" ? "new" : "update";
           cachedStatuses[id] = "synced";
-          if (anchor) setBadge(anchor, cachedStatuses[id]);
+          if (anchor) paintBadge(anchor, id, cachedStatuses[id]);
           // Notify the background so the popup "captured this session" list updates.
           if (deps.onCaptured) {
             deps.onCaptured(id, anchor ? anchorTitle(anchor) : id, kind);
@@ -165,11 +172,11 @@ export function runSidebarBadges(provider: ProviderAdapter, deps: SidebarDeps): 
           if (isRateLimitError(error)) {
             stoppedByRateLimit = true;
             cachedStatuses[id] = "missing";
-            if (anchor) setBadge(anchor, cachedStatuses[id]);
+            if (anchor) paintBadge(anchor, id, cachedStatuses[id]);
             scheduleRateLimitRetry(error);
           } else {
             cachedStatuses[id] = "error";
-            if (anchor) setBadge(anchor, cachedStatuses[id]);
+            if (anchor) paintBadge(anchor, id, cachedStatuses[id]);
           }
         } finally {
           remaining = Math.max(0, remaining - 1);
@@ -199,6 +206,8 @@ export function runSidebarBadges(provider: ProviderAdapter, deps: SidebarDeps): 
     if (running) return;
     if (Date.now() < retryAfterUntilMs) return;
     if (!provider.captureOne) return;
+    ignoredIds = await deps.getIgnoredIds().catch(() => ignoredIds);
+    if (ignoredIds.has(activeId)) return;
 
     running = true;
     observer.disconnect();
@@ -223,7 +232,7 @@ export function runSidebarBadges(provider: ProviderAdapter, deps: SidebarDeps): 
       if (!shouldRecapture(lastCapturedAt.get(activeId), liveMs)) return;
 
       // Optimistic paint: immediate "syncing" feedback before the network call.
-      if (anchor) setBadge(anchor, "syncing");
+      if (anchor) paintBadge(anchor, activeId, "syncing");
 
       try {
         await captureWithRetry(
@@ -240,18 +249,18 @@ export function runSidebarBadges(provider: ProviderAdapter, deps: SidebarDeps): 
             ? "new"
             : "update";
         cachedStatuses[activeId] = "synced";
-        if (anchor) setBadge(anchor, "synced");
+        if (anchor) paintBadge(anchor, activeId, "synced");
         if (deps.onCaptured) {
           deps.onCaptured(activeId, anchor ? anchorTitle(anchor) : activeId, fastKind);
         }
       } catch (error) {
         if (isRateLimitError(error)) {
           cachedStatuses[activeId] = "missing";
-          if (anchor) setBadge(anchor, "missing");
+          if (anchor) paintBadge(anchor, activeId, "missing");
           scheduleRateLimitRetry(error);
         } else {
           cachedStatuses[activeId] = "error";
-          if (anchor) setBadge(anchor, "error");
+          if (anchor) paintBadge(anchor, activeId, "error");
         }
       }
     } finally {
@@ -265,7 +274,24 @@ export function runSidebarBadges(provider: ProviderAdapter, deps: SidebarDeps): 
   }
 
   function paintCachedStatuses(anchors: Map<string, Element>): void {
-    for (const [id, anchor] of anchors) setBadge(anchor, cachedStatuses[id] ?? "missing");
+    for (const [id, anchor] of anchors) paintBadge(anchor, id, cachedStatuses[id] ?? "missing");
+  }
+
+  function paintBadge(anchor: Element, id: string, state: ConversationState): void {
+    setBadge(anchor, state, () => { void toggleIgnored(id, anchor); });
+  }
+
+  async function toggleIgnored(id: string, anchor: Element): Promise<void> {
+    const ignored = await deps.toggleIgnored(id);
+    if (ignored) {
+      ignoredIds.add(id);
+      cachedStatuses[id] = "ignored";
+    } else {
+      ignoredIds.delete(id);
+      cachedStatuses[id] = "missing";
+      schedule(0);
+    }
+    paintBadge(anchor, id, cachedStatuses[id] ?? "missing");
   }
 
   function scheduleRateLimitRetry(error: unknown): void {

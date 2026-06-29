@@ -41,6 +41,7 @@ interface Status {
 
 const SETTINGS_KEY = "scrobbler.settings";
 const STATUS_KEY = "scrobbler.status";
+const IGNORED_CHATS_KEY = "scrobbler.ignoredChats";
 const VISIT_COOLDOWN_MS = 10 * 60 * 1000;
 const SPINNER_INTERVAL_MS = 90;
 
@@ -91,6 +92,8 @@ async function handleRuntimeMessage(message: RuntimeMessage, sender: any): Promi
   if (message.type === "SCROBBLER_SYNC_ACTIVE_TAB") return syncActiveTab();
   if (message.type === "SCROBBLER_SYNC_ALL_OPEN_TABS") return syncAllOpenProviderTabs("manual");
   if (message.type === "SCROBBLER_CONVERSATION_STATES") return getConversationStates(message);
+  if (message.type === "SCROBBLER_IGNORED_CHATS") return listIgnoredChats(message.provider);
+  if (message.type === "SCROBBLER_TOGGLE_IGNORED_CHAT") return toggleIgnoredChat(message.provider, message.id);
   if (message.type === "SCROBBLER_CAPTURE_PROGRESS") return updateToolbarProgress(message, sender);
   if (message.type === "SCROBBLER_GET_STATUS") return { ok: true, settings: await getSettings(), status: await getStatus() };
   if (message.type === "SCROBBLER_SAVE_SETTINGS") {
@@ -214,6 +217,9 @@ function startFallbackBadgeSpinner(): void {
 }
 
 async function postCapture(message: CaptureReadyMessage): Promise<unknown> {
+  if (await isIgnoredChat(message.capture.source, message.capture.source_id)) {
+    return { ok: true, ignored: true };
+  }
   const settings = await getSettings();
   const headers: Record<string, string> = { "content-type": "application/json" };
   if (settings.ingestToken) headers["authorization"] = `Bearer ${settings.ingestToken}`;
@@ -244,7 +250,12 @@ async function getConversationStates(message: ConversationStatesMessage): Promis
   });
   if (!res.ok) throw new Error(`Status request failed with HTTP ${res.status}`);
   const body = await res.json() as { statuses?: Record<string, string> };
-  return { ok: true, statuses: body.statuses ?? {} };
+  const statuses = body.statuses ?? {};
+  const ignored = await getIgnoredChatKeys();
+  for (const conversation of message.conversations) {
+    if (ignored.has(ignoreKey(message.provider, conversation.id))) statuses[conversation.id] = "ignored";
+  }
+  return { ok: true, statuses };
 }
 
 async function maybeSyncVisitedTab(tab: any, provider: ProviderSource): Promise<void> {
@@ -346,6 +357,45 @@ async function logRecentCapture(message: CaptureLoggedMessage): Promise<unknown>
   });
   await storageSet({ [RECENT_CAPTURES_KEY]: updated });
   return { ok: true };
+}
+
+async function listIgnoredChats(provider: ProviderSource): Promise<unknown> {
+  const ignored = await getIgnoredChatKeys();
+  const prefix = `${provider}:`;
+  return {
+    ok: true,
+    ids: [...ignored]
+      .filter((key) => key.startsWith(prefix))
+      .map((key) => key.slice(prefix.length)),
+  };
+}
+
+async function toggleIgnoredChat(provider: ProviderSource, id: string): Promise<unknown> {
+  const key = ignoreKey(provider, id);
+  const ignored = await getIgnoredChatKeys();
+  const nextIgnored = !ignored.has(key);
+  if (nextIgnored) ignored.add(key);
+  else ignored.delete(key);
+  await setIgnoredChatKeys(ignored);
+  return { ok: true, ignored: nextIgnored };
+}
+
+async function isIgnoredChat(provider: ProviderSource, id: string): Promise<boolean> {
+  return (await getIgnoredChatKeys()).has(ignoreKey(provider, id));
+}
+
+function ignoreKey(provider: ProviderSource, id: string): string {
+  return `${provider}:${id}`;
+}
+
+async function getIgnoredChatKeys(): Promise<Set<string>> {
+  const stored = await storageGet(IGNORED_CHATS_KEY);
+  const value = stored[IGNORED_CHATS_KEY];
+  return new Set(Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : []);
+}
+
+async function setIgnoredChatKeys(keys: Set<string>): Promise<void> {
+  await storageSet({ [IGNORED_CHATS_KEY]: [...keys].sort() });
 }
 
 function ensureAlarm(): void {
