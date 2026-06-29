@@ -125,6 +125,9 @@ test("search --json returns parseable JSON array", async () => {
   const parsed = JSON.parse(lines.join(""));
   expect(Array.isArray(parsed)).toBe(true);
   expect(parsed[0].session_id).toBe("claude:cl-xyz");
+  expect(parsed[0].snippet).toBeDefined();
+  expect(parsed[0].score).toBeGreaterThan(0);
+  expect(parsed[0].match_sources).toContain("literal");
 });
 
 test("search --source filters to the given source", async () => {

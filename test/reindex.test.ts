@@ -106,6 +106,7 @@ test("reindex reads canonical sessions and makes them searchable", async () => {
     // Unique words from each session return hits in only one session.
     expect(searchMessages(db, "glucose").length).toBe(1);
     expect(searchMessages(db, "powerhouse").length).toBe(1);
+    expect(searchMessages(db, "cellular powerhouse").some((h) => h.message_id === "rb-m2")).toBe(true);
   } finally {
     db.close();
   }

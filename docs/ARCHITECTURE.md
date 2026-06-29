@@ -1,9 +1,9 @@
 # Architecture
 
 chat-scrobbler captures your AI chat history (ChatGPT, Claude, Gemini) through a
-browser extension, stores it as canonical JSON sessions, indexes it in SQLite FTS5,
-and serves it via a CLI and a read-only MCP connector. This document is a technical
-tour of how those pieces fit together.
+browser extension, stores it as canonical JSON sessions, indexes it in SQLite FTS5
+plus a rebuildable semantic table, and serves it via a CLI and a read-only MCP
+connector. This document is a technical tour of how those pieces fit together.
 
 ---
 
@@ -14,12 +14,12 @@ browser extension (scrobbler)
   |-- POST /captures --> ingest server (port 4318)
                            |-- parser registry (chatgpt:api | claude:api | gemini:api)
                            |-- writeSession() -> canonical store (~/.local/share/chat-scrobbler/canonical/sessions/)
-                           `-- indexSession() -> SQLite FTS5 index (~/.local/share/chat-scrobbler/index/sessions.db)
+                           `-- indexSession() -> SQLite FTS5 + semantic index (~/.local/share/chat-scrobbler/index/sessions.db)
 ```
 
 The canonical store is the source of truth. The SQLite index is a rebuildable view:
-`chat-scrobbler unify` rebuilds it from scratch by re-reading every canonical session
-file. Nothing important lives only in the index.
+`chat-scrobbler unify` rebuilds FTS and semantic rows from scratch by re-reading every
+canonical session file. Nothing important lives only in the index.
 
 ---
 
@@ -194,21 +194,28 @@ structured error log line and an HTTP 400 response.
 
 ---
 
-## SQLite FTS5 index
+## SQLite search index
 
 `src/indexer/sqlite.ts`
 
-Two tables:
+Three tables:
 
 - `sessions` -- one row per session (id, source, source_id, title, created_at,
   updated_at, message_count). Used by `list_sessions`.
 - `messages_fts` -- FTS5 virtual table, one row per message across all branches. Used
   by `search`. Columns: `text` (indexed), `message_id`, `session_id`, `role`,
   `created_at`, `source`, `title` (all `UNINDEXED`).
+- `message_embeddings` -- rebuildable semantic rows keyed by `(session_id,
+  message_id)`. The built-in `HashEmbeddingProvider` is deterministic and
+  dependency-free; it is a packaging-safe placeholder behind the `EmbeddingProvider`
+  seam, not the final quality backend.
 
 `searchMessages` AND-joins quoted FTS5 terms (to handle arbitrary user input safely),
-then returns snippet + metadata for each hit. `listSessions` queries the `sessions`
-table ordered by `updated_at DESC`.
+runs semantic lookup through the same core path, dedupes by `(session_id, message_id)`,
+and fuses ranks with literal hits weighted strongly. CLI `search` and MCP `search`
+return the same result shape: the legacy fields plus `provenance`, `score`, and
+`match_sources`. `listSessions` queries the `sessions` table ordered by `updated_at
+DESC`.
 
 The index can be fully rebuilt from the canonical store at any time:
 `chat-scrobbler unify` (or `bun run unify`) calls `indexSession` on every session file.

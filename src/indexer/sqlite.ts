@@ -6,11 +6,33 @@ import { activePath } from "../store/sessions";
 export interface MessageHit {
   snippet: string; session_id: string; message_id: string;
   role: string; created_at: string | null; source: string; title: string | null;
+  provenance: "literal" | "semantic" | "hybrid"; score: number; match_sources: Array<"literal" | "semantic">;
 }
 export interface SessionSummary {
   id: string; source: string; title: string | null;
   created_at: string; updated_at: string; message_count: number;
 }
+export interface EmbeddingProvider {
+  dimensions: number;
+  embed(text: string): number[];
+}
+
+export class HashEmbeddingProvider implements EmbeddingProvider {
+  dimensions = 64;
+  embed(text: string): number[] {
+    const vector = new Array(this.dimensions).fill(0);
+    for (const token of tokenizeForEmbedding(text)) {
+      const idx = hashToken(token) % this.dimensions;
+      vector[idx] += 1;
+    }
+    return normalize(vector);
+  }
+}
+
+const DEFAULT_EMBEDDING_PROVIDER = new HashEmbeddingProvider();
+
+export interface IndexSessionOptions { embeddingProvider?: EmbeddingProvider | null; }
+export interface SearchMessagesOptions { source?: string; limit?: number; embeddingProvider?: EmbeddingProvider | null; }
 
 export function openIndex(path: string): Database {
   const db = new Database(path);
@@ -20,10 +42,14 @@ export function openIndex(path: string): Database {
   db.run(`CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
     text, message_id UNINDEXED, session_id UNINDEXED, role UNINDEXED,
     created_at UNINDEXED, source UNINDEXED, title UNINDEXED);`);
+  db.run(`CREATE TABLE IF NOT EXISTS message_embeddings (
+    session_id TEXT NOT NULL, message_id TEXT NOT NULL, embedding TEXT NOT NULL,
+    text TEXT NOT NULL, role TEXT, created_at TEXT, source TEXT, title TEXT,
+    PRIMARY KEY (session_id, message_id));`);
   return db;
 }
 
-export function indexSession(db: Database, s: Session): void {
+export function indexSession(db: Database, s: Session, opts: IndexSessionOptions = {}): void {
   // message_count reflects the active branch only; FTS indexes every message so
   // search can reach text on inactive (edited-away) branches too.
   const activeCount = activePath(s).length;
@@ -31,12 +57,20 @@ export function indexSession(db: Database, s: Session): void {
           VALUES (?,?,?,?,?,?,?)`,
     [s.id, s.source, s.source_id, s.title, s.created_at, s.updated_at, activeCount]);
   db.run(`DELETE FROM messages_fts WHERE session_id = ?`, [s.id]);
+  db.run(`DELETE FROM message_embeddings WHERE session_id = ?`, [s.id]);
   const stmt = db.prepare(
     `INSERT INTO messages_fts (text, message_id, session_id, role, created_at, source, title)
      VALUES (?,?,?,?,?,?,?)`);
+  const embeddingProvider = opts.embeddingProvider === null ? null : (opts.embeddingProvider ?? DEFAULT_EMBEDDING_PROVIDER);
+  const embeddingStmt = db.prepare(
+    `INSERT INTO message_embeddings (session_id, message_id, embedding, text, role, created_at, source, title)
+     VALUES (?,?,?,?,?,?,?,?)`);
   for (const m of s.messages) {
     if (!m.text) continue;
     stmt.run(m.text, m.id, s.id, m.role, m.created_at, s.source, s.title);
+    if (embeddingProvider) {
+      embeddingStmt.run(s.id, m.id, JSON.stringify(embeddingProvider.embed(m.text)), m.text, m.role, m.created_at, s.source, s.title);
+    }
   }
 }
 
@@ -59,9 +93,10 @@ function ftsQuery(raw: string): string {
   return terms.join(" ");
 }
 
-export function searchMessages(db: Database, query: string, opts: { source?: string; limit?: number } = {}): MessageHit[] {
+export function searchMessages(db: Database, query: string, opts: SearchMessagesOptions = {}): MessageHit[] {
   if (!query.trim()) return [];
   const limit = opts.limit ?? 20;
+  const merged = new Map<string, MessageHit & { literalRank?: number; semanticRank?: number }>();
   const params: any[] = [ftsQuery(query)];
   let where = "";
   if (opts.source) { where = "AND source = ?"; params.push(opts.source); }
@@ -71,10 +106,42 @@ export function searchMessages(db: Database, query: string, opts: { source?: str
             message_id, session_id, role, created_at, source, title
      FROM messages_fts WHERE messages_fts MATCH ? ${where}
      ORDER BY rank LIMIT ?`).all(...params) as any[];
-  return rows.map(r => ({
-    snippet: r.snippet, session_id: r.session_id, message_id: r.message_id,
-    role: r.role, created_at: r.created_at, source: r.source, title: r.title,
-  }));
+  rows.forEach((r, idx) => {
+    const key = hitKey(r.session_id, r.message_id);
+    merged.set(key, {
+      snippet: r.snippet, session_id: r.session_id, message_id: r.message_id,
+      role: r.role, created_at: r.created_at, source: r.source, title: r.title,
+      provenance: "literal", score: 0, match_sources: ["literal"], literalRank: idx + 1,
+    });
+  });
+
+  const semanticProvider = opts.embeddingProvider === null ? null : (opts.embeddingProvider ?? DEFAULT_EMBEDDING_PROVIDER);
+  if (semanticProvider) {
+    const queryEmbedding = semanticProvider.embed(query);
+    const semanticRows = semanticCandidates(db, queryEmbedding, opts.source, Math.max(limit * 3, 20));
+    semanticRows.forEach((r, idx) => {
+      const key = hitKey(r.session_id, r.message_id);
+      const existing = merged.get(key);
+      if (existing) {
+        existing.semanticRank = idx + 1;
+        existing.provenance = "hybrid";
+        existing.match_sources = ["literal", "semantic"];
+      } else {
+        merged.set(key, {
+          snippet: semanticSnippet(r.text, query),
+          session_id: r.session_id, message_id: r.message_id,
+          role: r.role, created_at: r.created_at, source: r.source, title: r.title,
+          provenance: "semantic", score: 0, match_sources: ["semantic"], semanticRank: idx + 1,
+        });
+      }
+    });
+  }
+
+  return [...merged.values()]
+    .map((hit) => ({ ...hit, score: fusedScore(hit.literalRank, hit.semanticRank) }))
+    .sort((a, b) => b.score - a.score || (a.created_at ?? "").localeCompare(b.created_at ?? ""))
+    .slice(0, limit)
+    .map(({ literalRank, semanticRank, ...hit }) => hit);
 }
 
 export function listSessions(db: Database, opts: { source?: string; titleContains?: string; limit?: number } = {}): SessionSummary[] {
@@ -94,4 +161,78 @@ export function listSessions(db: Database, opts: { source?: string; titleContain
     id: r.id, source: r.source, title: r.title,
     created_at: r.created_at, updated_at: r.updated_at, message_count: r.message_count,
   }));
+}
+
+interface SemanticRow {
+  session_id: string; message_id: string; text: string; role: string;
+  created_at: string | null; source: string; title: string | null; similarity: number;
+}
+
+function semanticCandidates(db: Database, queryEmbedding: number[], source: string | undefined, limit: number): SemanticRow[] {
+  const rows = db.query(
+    `SELECT session_id, message_id, embedding, text, role, created_at, source, title
+     FROM message_embeddings ${source ? "WHERE source = ?" : ""}`,
+  ).all(...(source ? [source] : [])) as any[];
+  return rows
+    .map((r) => ({ ...r, similarity: cosine(queryEmbedding, parseEmbedding(r.embedding)) }))
+    .filter((r) => r.similarity > 0)
+    .sort((a, b) => b.similarity - a.similarity)
+    .slice(0, limit);
+}
+
+function fusedScore(literalRank?: number, semanticRank?: number): number {
+  const literal = literalRank ? 2 / (literalRank + 1) : 0;
+  const semantic = semanticRank ? 1 / (semanticRank + 1) : 0;
+  return Number((literal + semantic).toFixed(6));
+}
+
+function hitKey(sessionId: string, messageId: string): string {
+  return `${sessionId}\0${messageId}`;
+}
+
+function semanticSnippet(text: string, query: string): string {
+  const compact = text.replace(/\s+/g, " ").trim();
+  if (compact.length <= 160) return compact;
+  const needle = query.trim().split(/\s+/)[0]?.toLowerCase();
+  const idx = needle ? compact.toLowerCase().indexOf(needle) : -1;
+  const start = idx > 40 ? idx - 40 : 0;
+  return `${start > 0 ? "…" : ""}${compact.slice(start, start + 160)}${start + 160 < compact.length ? "…" : ""}`;
+}
+
+function parseEmbedding(raw: string): number[] {
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.map(Number) : [];
+  } catch {
+    return [];
+  }
+}
+
+function cosine(a: number[], b: number[]): number {
+  const n = Math.min(a.length, b.length);
+  let dot = 0, a2 = 0, b2 = 0;
+  for (let i = 0; i < n; i++) {
+    dot += a[i] * b[i];
+    a2 += a[i] * a[i];
+    b2 += b[i] * b[i];
+  }
+  return a2 && b2 ? dot / (Math.sqrt(a2) * Math.sqrt(b2)) : 0;
+}
+
+function tokenizeForEmbedding(text: string): string[] {
+  return text.toLowerCase().match(/[a-z0-9]+/g) ?? [];
+}
+
+function hashToken(token: string): number {
+  let hash = 2166136261;
+  for (let i = 0; i < token.length; i++) {
+    hash ^= token.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return hash >>> 0;
+}
+
+function normalize(vector: number[]): number[] {
+  const length = Math.sqrt(vector.reduce((sum, v) => sum + v * v, 0));
+  return length ? vector.map((v) => Number((v / length).toFixed(6))) : vector;
 }

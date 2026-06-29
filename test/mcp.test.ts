@@ -54,5 +54,8 @@ test("handleSearch returns message hits", () => {
   });
   const res = handleSearch(db, { query: "uniquetokenxyz" });
   expect(res.content[0].text).toContain("chatgpt:a");
+  const hits = JSON.parse(res.content[0].text);
+  expect(hits[0].match_sources).toEqual(["literal", "semantic"]);
+  expect(hits[0].score).toBeGreaterThan(0);
   rmSync(dir, { recursive: true, force: true });
 });

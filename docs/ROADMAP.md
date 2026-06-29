@@ -14,12 +14,19 @@ chat-scrobbler is a working, self-hostable tool:
 - Multi-target backup with a local snapshot dir default; SFTP/S3 target slots reserved.
 - Single compiled binary (`dist/chat-scrobbler`) with the extension bundled alongside.
 
-## Next: semantic recall as a pipeline
+## Now: semantic recall layer 1
 
-The plan is to add embeddings as a second rebuildable index alongside FTS, then layer
-hybrid FTS + vector search into the existing `search` CLI/MCP surface. Embeddings rank
+Layer 1 adds embeddings as a second rebuildable index alongside FTS, then layers hybrid
+FTS + semantic search into the existing `search` CLI/MCP surface. Embeddings rank
 results; results themselves are always raw verbatim sessions -- no summaries or
 generated artifacts. The embedding index lives in `index/`, never in `canonical/`.
+
+Current backend note: the built-in `HashEmbeddingProvider` is deterministic and has no
+runtime packaging footprint, so tests and local rebuilds are stable. It is a seam, not
+the destination. The recommended real backend path is a local, optional embedding
+provider selected at install/runtime, plus a vector store that can be rebuilt under
+`index/`. Packaging risks to surface before that step: native vector extensions,
+model downloads, CPU/GPU runtime availability, binary size, and first-run latency.
 
 This also frames a pipeline seam: chat-scrobbler should be easy to wire into external
 memory systems (mem0, Zep, Letta, custom vector stores) both as a data source and as a
