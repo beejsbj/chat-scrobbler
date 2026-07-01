@@ -26,6 +26,7 @@ export function embeddingProviderFromConfig(cfg: ChatHistoryConfig): EmbeddingPr
 
 export class HashEmbeddingProvider implements EmbeddingProvider {
   readonly kind: EmbeddingProviderKind = "hash";
+  readonly model = "hash-v1";
   readonly dimensions = 64;
 
   embed(text: string): number[] {

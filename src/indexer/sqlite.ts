@@ -19,6 +19,7 @@ export interface SessionSummary {
 }
 export interface EmbeddingProvider {
   readonly kind?: string;
+  readonly model?: string | null;
   readonly dimensions?: number | null;
   embed(text: string, context?: EmbeddingContext): number[] | Promise<number[]>;
 }
@@ -38,7 +39,9 @@ export function openIndex(path: string): Database {
   db.run(`CREATE TABLE IF NOT EXISTS message_embeddings (
     session_id TEXT NOT NULL, message_id TEXT NOT NULL, embedding TEXT NOT NULL,
     text TEXT NOT NULL, role TEXT, created_at TEXT, source TEXT, title TEXT,
+    provider_kind TEXT, provider_model TEXT, dimension INTEGER,
     PRIMARY KEY (session_id, message_id));`);
+  migrateMessageEmbeddings(db);
   return db;
 }
 
@@ -107,7 +110,7 @@ export function searchMessages(db: Database, query: string, opts: SearchMessages
   if (semanticProvider) {
     const queryEmbedding = safeSyncEmbedding(semanticProvider, query, { kind: "query" });
     if (queryEmbedding) {
-      mergeSemanticHits(merged, semanticCandidates(db, queryEmbedding, opts.source, Math.max(limit * 3, 20)), query);
+      mergeSemanticHits(merged, semanticCandidates(db, queryEmbedding, embeddingMetadata(semanticProvider, queryEmbedding), opts.source, Math.max(limit * 3, 20)), query);
     }
   }
 
@@ -122,7 +125,7 @@ export async function searchMessagesWithEmbeddings(db: Database, query: string, 
   if (semanticProvider) {
     const queryEmbedding = await safeAsyncEmbedding(semanticProvider, query, { kind: "query" });
     if (queryEmbedding) {
-      mergeSemanticHits(merged, semanticCandidates(db, queryEmbedding, opts.source, Math.max(limit * 3, 20)), query);
+      mergeSemanticHits(merged, semanticCandidates(db, queryEmbedding, embeddingMetadata(semanticProvider, queryEmbedding), opts.source, Math.max(limit * 3, 20)), query);
     }
   }
   return finalizeHits(merged, limit);
@@ -155,9 +158,30 @@ interface SemanticRow {
 interface EmbeddingRow {
   session_id: string; message_id: string; embedding: number[]; text: string; role: string;
   created_at: string | null; source: string; title: string | null;
+  provider_kind: string; provider_model: string | null; dimension: number;
 }
 
 type RankedHit = MessageHit & { literalRank?: number; semanticRank?: number };
+
+interface EmbeddingMetadata {
+  provider_kind: string; provider_model: string | null; dimension: number;
+}
+
+function migrateMessageEmbeddings(db: Database): void {
+  const columns = new Set(
+    (db.query(`PRAGMA table_info(message_embeddings)`).all() as Array<{ name: string }>)
+      .map((row) => row.name),
+  );
+  if (!columns.has("provider_kind")) {
+    db.run(`ALTER TABLE message_embeddings ADD COLUMN provider_kind TEXT`);
+  }
+  if (!columns.has("provider_model")) {
+    db.run(`ALTER TABLE message_embeddings ADD COLUMN provider_model TEXT`);
+  }
+  if (!columns.has("dimension")) {
+    db.run(`ALTER TABLE message_embeddings ADD COLUMN dimension INTEGER`);
+  }
+}
 
 function indexLiteralSession(db: Database, s: Session): void {
   // message_count reflects the active branch only; FTS indexes every message so
@@ -181,15 +205,17 @@ function collectSyncEmbeddingRows(s: Session, provider: EmbeddingProvider): Embe
   const rows: EmbeddingRow[] = [];
   for (const m of s.messages) {
     if (!m.text) continue;
+    const embedding = syncEmbedding(provider, m.text, { kind: "document", title: s.title });
     rows.push({
       session_id: s.id,
       message_id: m.id,
-      embedding: syncEmbedding(provider, m.text, { kind: "document", title: s.title }),
+      embedding,
       text: m.text,
       role: m.role,
       created_at: m.created_at,
       source: s.source,
       title: s.title,
+      ...embeddingMetadata(provider, embedding),
     });
   }
   return rows;
@@ -199,15 +225,17 @@ async function collectAsyncEmbeddingRows(s: Session, provider: EmbeddingProvider
   const rows: EmbeddingRow[] = [];
   for (const m of s.messages) {
     if (!m.text) continue;
+    const embedding = await provider.embed(m.text, { kind: "document", title: s.title });
     rows.push({
       session_id: s.id,
       message_id: m.id,
-      embedding: await provider.embed(m.text, { kind: "document", title: s.title }),
+      embedding,
       text: m.text,
       role: m.role,
       created_at: m.created_at,
       source: s.source,
       title: s.title,
+      ...embeddingMetadata(provider, embedding),
     });
   }
   return rows;
@@ -216,10 +244,22 @@ async function collectAsyncEmbeddingRows(s: Session, provider: EmbeddingProvider
 function replaceEmbeddingRows(db: Database, sessionId: string, rows: EmbeddingRow[]): void {
   db.run(`DELETE FROM message_embeddings WHERE session_id = ?`, [sessionId]);
   const stmt = db.prepare(
-    `INSERT INTO message_embeddings (session_id, message_id, embedding, text, role, created_at, source, title)
-     VALUES (?,?,?,?,?,?,?,?)`);
+    `INSERT INTO message_embeddings (session_id, message_id, embedding, text, role, created_at, source, title, provider_kind, provider_model, dimension)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?)`);
   for (const row of rows) {
-    stmt.run(row.session_id, row.message_id, JSON.stringify(row.embedding), row.text, row.role, row.created_at, row.source, row.title);
+    stmt.run(
+      row.session_id,
+      row.message_id,
+      JSON.stringify(row.embedding),
+      row.text,
+      row.role,
+      row.created_at,
+      row.source,
+      row.title,
+      row.provider_kind,
+      row.provider_model,
+      row.dimension,
+    );
   }
 }
 
@@ -272,11 +312,23 @@ function finalizeHits(merged: Map<string, RankedHit>, limit: number): MessageHit
     .map(({ literalRank, semanticRank, ...hit }) => hit);
 }
 
-function semanticCandidates(db: Database, queryEmbedding: number[], source: string | undefined, limit: number): SemanticRow[] {
+function semanticCandidates(db: Database, queryEmbedding: number[], metadata: EmbeddingMetadata, source: string | undefined, limit: number): SemanticRow[] {
+  const clauses = ["provider_kind = ?", "dimension = ?"];
+  const params: any[] = [metadata.provider_kind, metadata.dimension];
+  if (metadata.provider_model === null) {
+    clauses.push("provider_model IS NULL");
+  } else {
+    clauses.push("provider_model = ?");
+    params.push(metadata.provider_model);
+  }
+  if (source) {
+    clauses.push("source = ?");
+    params.push(source);
+  }
   const rows = db.query(
     `SELECT session_id, message_id, embedding, text, role, created_at, source, title
-     FROM message_embeddings ${source ? "WHERE source = ?" : ""}`,
-  ).all(...(source ? [source] : [])) as any[];
+     FROM message_embeddings WHERE ${clauses.join(" AND ")}`,
+  ).all(...params) as any[];
   return rows
     .map((r) => ({ ...r, similarity: cosine(queryEmbedding, parseEmbedding(r.embedding)) }))
     .filter((r) => r.similarity > 0)
@@ -306,14 +358,17 @@ function semanticSnippet(text: string, query: string): string {
 function parseEmbedding(raw: string): number[] {
   try {
     const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed.map(Number) : [];
+    if (!Array.isArray(parsed)) return [];
+    const vector = parsed.map(Number);
+    return vector.every(Number.isFinite) ? vector : [];
   } catch {
     return [];
   }
 }
 
 function cosine(a: number[], b: number[]): number {
-  const n = Math.min(a.length, b.length);
+  if (a.length === 0 || a.length !== b.length) return 0;
+  const n = a.length;
   let dot = 0, a2 = 0, b2 = 0;
   for (let i = 0; i < n; i++) {
     dot += a[i] * b[i];
@@ -321,6 +376,14 @@ function cosine(a: number[], b: number[]): number {
     b2 += b[i] * b[i];
   }
   return a2 && b2 ? dot / (Math.sqrt(a2) * Math.sqrt(b2)) : 0;
+}
+
+function embeddingMetadata(provider: EmbeddingProvider, embedding: number[]): EmbeddingMetadata {
+  return {
+    provider_kind: provider.kind?.trim() || "unknown",
+    provider_model: provider.model?.trim() || null,
+    dimension: embedding.length,
+  };
 }
 
 function syncEmbedding(provider: EmbeddingProvider, text: string, context: EmbeddingContext): number[] {
