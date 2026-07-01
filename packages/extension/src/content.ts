@@ -42,7 +42,7 @@ if (provider) {
       const res = await sendRuntimeMessage({ type: "SCROBBLER_DELETE_CAPTURE", provider: provider.source, id });
       if (!res?.ok) throw new Error(res?.error ?? "Failed to delete local capture");
     },
-    emitCapture,
+    emitCapture: async (capture) => { await emitCapture(capture); },
     uploadAsset,
     reportCaptureProgress: async (remaining, total) => {
       await sendRuntimeMessage({ type: "SCROBBLER_CAPTURE_PROGRESS", remaining, total });
@@ -76,9 +76,11 @@ async function uploadAsset(asset: AssetUploadRequest): Promise<UploadedAsset> {
   return response.asset as UploadedAsset;
 }
 
-async function emitCapture(capture: RawCapture): Promise<void> {
+async function emitCapture(capture: RawCapture): Promise<boolean> {
   const response = await sendRuntimeMessage({ type: "SCROBBLER_CAPTURE_READY", capture });
+  if (response?.ignored || response?.captured === false) return false;
   if (!response?.ok) throw new Error(response?.error ?? "Background ingest failed");
+  return true;
 }
 
 function sendRuntimeMessage(message: RuntimeMessage): Promise<any> {

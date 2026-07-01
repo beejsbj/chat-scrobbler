@@ -1,6 +1,8 @@
 import { expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
 import { createChatgptAdapter } from "../packages/extension/src/providers/chatgpt";
 import { createClaudeAdapter } from "../packages/extension/src/providers/claude";
+import { uploadProviderAssets } from "../packages/extension/src/providers/assets";
 import { isRateLimitError, type FetchLike } from "../packages/extension/src/providers";
 
 test("ChatGPT adapter fetches only conversations newer than the cursor", async () => {
@@ -75,6 +77,31 @@ test("ChatGPT adapter does not advance cursor from ignored conversations", async
     lastSync: null,
     emitCapture: async () => {},
     shouldIgnore: (source, id) => source === "chatgpt" && id === "ignored-newest",
+  });
+
+  expect(result).toMatchObject({ scanned: 2, captured: 1, skipped: 1 });
+  expect(result.maxConversationUpdatedAt).toBe("2026-06-05T11:00:00.000Z");
+});
+
+test("ChatGPT adapter does not count captures ignored by background emit", async () => {
+  const fetcher: FetchLike = async (input) => {
+    if (input === "/api/auth/session") return json({ accessToken: "tok" });
+    if (String(input).startsWith("/backend-api/conversations")) {
+      return json({
+        items: [
+          { id: "ignored-late", update_time: "2026-06-05T12:00:00.000Z" },
+          { id: "captured-older", update_time: "2026-06-05T11:00:00.000Z" },
+        ],
+      });
+    }
+    if (input === "/backend-api/conversation/ignored-late") return json({ id: "ignored-late", mapping: {} });
+    if (input === "/backend-api/conversation/captured-older") return json({ id: "captured-older", mapping: {} });
+    throw new Error(`unexpected fetch ${input}`);
+  };
+
+  const result = await createChatgptAdapter(fetcher).sync({
+    lastSync: null,
+    emitCapture: async (capture) => capture.source_id !== "ignored-late",
   });
 
   expect(result).toMatchObject({ scanned: 2, captured: 1, skipped: 1 });
@@ -190,6 +217,100 @@ test("ChatGPT captureOne uploads discovered attachment bytes into raw capture as
     local_path: "assets/chatgpt/with-asset/hash.png",
     content_type: "image/png",
   })]);
+});
+
+test("provider asset upload skips oversized responses before reading bytes", async () => {
+  let readBytes = false;
+  let uploaded = false;
+  const fetcher: FetchLike = async () => ({
+    ok: true,
+    headers: new Headers({ "content-length": "2", "content-type": "image/png" }),
+    arrayBuffer: async () => {
+      readBytes = true;
+      return new Uint8Array([1, 2]).buffer;
+    },
+  } as Response);
+
+  const assets = await uploadProviderAssets(
+    fetcher,
+    async () => {
+      uploaded = true;
+      throw new Error("should not upload oversized asset");
+    },
+    [{ source: "chatgpt", sourceId: "conv", pointer: "file-service://too-big", url: "/asset" }],
+    { maxBytes: 1 },
+  );
+
+  expect(assets).toEqual([]);
+  expect(readBytes).toBe(false);
+  expect(uploaded).toBe(false);
+});
+
+test("provider asset upload skips oversized responses after reading bytes", async () => {
+  let uploaded = false;
+  const fetcher: FetchLike = async () => new Response(new Uint8Array([1, 2]), {
+    headers: { "content-type": "image/png" },
+  });
+
+  const assets = await uploadProviderAssets(
+    fetcher,
+    async () => {
+      uploaded = true;
+      throw new Error("should not upload oversized asset");
+    },
+    [{ source: "chatgpt", sourceId: "conv", pointer: "file-service://too-big", url: "/asset" }],
+    { maxBytes: 1 },
+  );
+
+  expect(assets).toEqual([]);
+  expect(uploaded).toBe(false);
+});
+
+test("provider asset upload uses background byte fetch for marked candidates", async () => {
+  const contentFetches: string[] = [];
+  const backgroundFetches: string[] = [];
+  const fetcher: FetchLike = async (input) => {
+    contentFetches.push(String(input));
+    throw new Error("content script fetch should not handle this asset");
+  };
+
+  const assets = await uploadProviderAssets(
+    fetcher,
+    async (asset) => ({
+      pointer: asset.pointer,
+      local_path: "assets/gemini/conv/hash.webp",
+      filename: asset.filename ?? null,
+      content_type: asset.contentType ?? null,
+      size_bytes: asset.bytes.length,
+      sha256: "hash",
+    }),
+    [{
+      source: "gemini",
+      sourceId: "conv",
+      pointer: "https://lh3.googleusercontent.com/asset.webp",
+      url: "https://lh3.googleusercontent.com/asset.webp",
+      fetchViaBackground: true,
+    }],
+    {
+      fetchAsset: async (url) => {
+        backgroundFetches.push(url);
+        return { bytes: [1, 2, 3], contentType: "image/webp", filename: "asset.webp" };
+      },
+    },
+  );
+
+  expect(contentFetches).toEqual([]);
+  expect(backgroundFetches).toEqual(["https://lh3.googleusercontent.com/asset.webp"]);
+  expect(assets).toEqual([expect.objectContaining({
+    pointer: "https://lh3.googleusercontent.com/asset.webp",
+    content_type: "image/webp",
+    filename: "asset.webp",
+  })]);
+});
+
+test("extension manifest grants background access to Gemini image hosts", () => {
+  const manifest = JSON.parse(readFileSync("packages/extension/static/manifest.json", "utf8"));
+  expect(manifest.host_permissions).toContain("https://*.googleusercontent.com/*");
 });
 
 test("ChatGPT adapter stops paginating early when cursor page is all old", async () => {
@@ -374,6 +495,33 @@ test("Claude adapter does not advance cursor from ignored conversations", async 
     lastSync: null,
     emitCapture: async () => {},
     shouldIgnore: (source, id) => source === "claude" && id === "ignored-newest",
+  });
+
+  expect(result).toMatchObject({ scanned: 2, captured: 1, skipped: 1 });
+  expect(result.maxConversationUpdatedAt).toBe("2026-06-05T11:00:00.000Z");
+});
+
+test("Claude adapter does not count captures ignored by background emit", async () => {
+  const fetcher: FetchLike = async (input) => {
+    if (input === "/api/organizations") return json([{ uuid: "org-1" }]);
+    if (String(input).startsWith("/api/organizations/org-1/chat_conversations?")) {
+      return json([
+        { uuid: "ignored-late", updated_at: "2026-06-05T12:00:00.000Z" },
+        { uuid: "captured-older", updated_at: "2026-06-05T11:00:00.000Z" },
+      ]);
+    }
+    if (String(input).startsWith("/api/organizations/org-1/chat_conversations/ignored-late")) {
+      return json({ uuid: "ignored-late", chat_messages: [] });
+    }
+    if (String(input).startsWith("/api/organizations/org-1/chat_conversations/captured-older")) {
+      return json({ uuid: "captured-older", chat_messages: [] });
+    }
+    throw new Error(`unexpected fetch ${input}`);
+  };
+
+  const result = await createClaudeAdapter(fetcher).sync({
+    lastSync: null,
+    emitCapture: async (capture) => capture.source_id !== "ignored-late",
   });
 
   expect(result).toMatchObject({ scanned: 2, captured: 1, skipped: 1 });

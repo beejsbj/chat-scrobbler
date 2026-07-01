@@ -6,7 +6,7 @@
  * with synthetic samples that match the documented Gemini wire format.
  */
 import { expect, test } from "bun:test";
-import { createGeminiAdapter, parseBatchExecuteResponse, parseWizDataFromScript } from "../packages/extension/src/providers/gemini";
+import { createBrowserPageContext, createGeminiAdapter, parseBatchExecuteResponse, parseWizDataFromScript } from "../packages/extension/src/providers/gemini";
 import type { GeminiPageContext, WizData } from "../packages/extension/src/providers/gemini";
 import type { FetchLike } from "../packages/extension/src/providers";
 
@@ -362,9 +362,6 @@ test("Gemini captureOne uploads discovered attachment bytes into raw capture ass
     if (String(input).includes("batchexecute")) {
       return new Response(makeBatchExecuteResponse("hNvQHb", [["conversation-data"]]), { status: 200 });
     }
-    if (input === "https://lh3.googleusercontent.com/asset") {
-      return new Response(new Uint8Array([7, 8, 9]), { headers: { "content-type": "image/png" } });
-    }
     throw new Error(`Unexpected fetch: ${input}`);
   };
   const pageCtx = makeFakePageCtx(
@@ -372,27 +369,133 @@ test("Gemini captureOne uploads discovered attachment bytes into raw capture ass
     FAKE_WIZ,
     () => [{ pointer: "https://lh3.googleusercontent.com/asset", url: "https://lh3.googleusercontent.com/asset", contentType: "image/png" }],
   );
-
-  await createGeminiAdapter(fetcher, pageCtx).captureOne?.("aaaa0000bbbb1111", null, {
-    emitCapture: async (c) => { captures.push({ assets: c.assets }); },
-    uploadAsset: async (asset) => {
-      uploadedPointers.push(asset.pointer);
-      return {
-        pointer: asset.pointer,
-        local_path: "assets/gemini/aaaa0000bbbb1111/hash.png",
-        filename: asset.filename ?? null,
-        content_type: asset.contentType ?? null,
-        size_bytes: asset.bytes.length,
-        sha256: "hash",
-      };
+  const originalChrome = (globalThis as { chrome?: unknown }).chrome;
+  (globalThis as { chrome?: unknown }).chrome = {
+    runtime: {
+      sendMessage: (_message: unknown, resolve: (response: unknown) => void) => {
+        resolve({ ok: true, bytes: [7, 8, 9], contentType: "image/png", filename: null });
+      },
     },
-  });
+  };
+
+  try {
+    await createGeminiAdapter(fetcher, pageCtx).captureOne?.("aaaa0000bbbb1111", null, {
+      emitCapture: async (c) => { captures.push({ assets: c.assets }); },
+      uploadAsset: async (asset) => {
+        uploadedPointers.push(asset.pointer);
+        return {
+          pointer: asset.pointer,
+          local_path: "assets/gemini/aaaa0000bbbb1111/hash.png",
+          filename: asset.filename ?? null,
+          content_type: asset.contentType ?? null,
+          size_bytes: asset.bytes.length,
+          sha256: "hash",
+        };
+      },
+    });
+  } finally {
+    (globalThis as { chrome?: unknown }).chrome = originalChrome;
+  }
 
   expect(uploadedPointers).toEqual(["https://lh3.googleusercontent.com/asset"]);
   expect(captures[0].assets).toEqual([expect.objectContaining({
     pointer: "https://lh3.googleusercontent.com/asset",
     local_path: "assets/gemini/aaaa0000bbbb1111/hash.png",
     content_type: "image/png",
+  })]);
+});
+
+test("Gemini browser asset reader only reads the requested conversation container", () => {
+  const originalDocument = (globalThis as { document?: unknown }).document;
+  const mainImage = {
+    getAttribute: (name: string) => name === "src" ? "https://lh3.googleusercontent.com/wrong-chat" : null,
+  };
+  const fakeMain = {
+    querySelectorAll: (selector: string) => selector === "img[src]" ? [mainImage] : [],
+  };
+  (globalThis as { document?: unknown }).document = {
+    querySelector: (selector: string) => selector === "main" ? fakeMain : null,
+    querySelectorAll: () => [],
+  };
+  try {
+    const assets = createBrowserPageContext().readConversationAssets?.("target-chat");
+    expect(assets).toEqual([]);
+  } finally {
+    (globalThis as { document?: unknown }).document = originalDocument;
+  }
+});
+
+test("Gemini browser asset reader leaves image content type to the fetch response", () => {
+  const originalDocument = (globalThis as { document?: unknown }).document;
+  const image = {
+    getAttribute: (name: string) => name === "src" ? "https://lh3.googleusercontent.com/image.webp" : null,
+  };
+  const conversation = {
+    querySelectorAll: (selector: string) => selector === "img[src]" ? [image] : [],
+  };
+  (globalThis as { document?: unknown }).document = {
+    querySelector: (selector: string) => selector === '[data-conversation-id="target-chat"]' ? conversation : null,
+    querySelectorAll: () => [],
+  };
+  try {
+    const assets = createBrowserPageContext().readConversationAssets?.("target-chat") ?? [];
+    expect(assets).toHaveLength(1);
+    expect(assets[0]?.contentType).toBeUndefined();
+  } finally {
+    (globalThis as { document?: unknown }).document = originalDocument;
+  }
+});
+
+test("Gemini captureOne routes visible image byte fetches through background asset fetcher", async () => {
+  const fetchedAssetUrls: string[] = [];
+  const uploadedContentTypes: Array<string | null | undefined> = [];
+  const captures: Array<{ assets?: unknown[] }> = [];
+  const fetcher: FetchLike = async (input) => {
+    if (String(input).includes("batchexecute")) {
+      return new Response(makeBatchExecuteResponse("hNvQHb", [["conversation-data"]]), { status: 200 });
+    }
+    throw new Error(`content script should not fetch asset bytes: ${input}`);
+  };
+  const pageCtx = makeFakePageCtx(
+    ["aaaa0000bbbb1111"],
+    FAKE_WIZ,
+    () => [{ pointer: "https://lh3.googleusercontent.com/asset.webp", url: "https://lh3.googleusercontent.com/asset.webp" }],
+  );
+  const originalChrome = (globalThis as { chrome?: unknown }).chrome;
+  (globalThis as { chrome?: unknown }).chrome = {
+    runtime: {
+      sendMessage: (message: { type?: string; url?: string }, resolve: (response: unknown) => void) => {
+        fetchedAssetUrls.push(message.url ?? "");
+        resolve({ ok: true, bytes: [7, 8, 9], contentType: "image/webp", filename: null });
+      },
+    },
+  };
+
+  try {
+    await createGeminiAdapter(fetcher, pageCtx).captureOne?.("aaaa0000bbbb1111", null, {
+      emitCapture: async (c) => { captures.push({ assets: c.assets }); },
+      uploadAsset: async (asset) => {
+        uploadedContentTypes.push(asset.contentType);
+        return {
+          pointer: asset.pointer,
+          local_path: "assets/gemini/aaaa0000bbbb1111/hash.webp",
+          filename: asset.filename ?? null,
+          content_type: asset.contentType ?? null,
+          size_bytes: asset.bytes.length,
+          sha256: "hash",
+        };
+      },
+    });
+  } finally {
+    (globalThis as { chrome?: unknown }).chrome = originalChrome;
+  }
+
+  expect(fetchedAssetUrls).toEqual(["https://lh3.googleusercontent.com/asset.webp"]);
+  expect(uploadedContentTypes).toEqual(["image/webp"]);
+  expect(captures[0].assets).toEqual([expect.objectContaining({
+    pointer: "https://lh3.googleusercontent.com/asset.webp",
+    local_path: "assets/gemini/aaaa0000bbbb1111/hash.webp",
+    content_type: "image/webp",
   })]);
 });
 

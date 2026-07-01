@@ -142,13 +142,12 @@ export function createBrowserPageContext(): GeminiPageContext {
     },
     readConversationAssets(id: string) {
       if (typeof document === "undefined") return [];
-      const conversationEl = document.querySelector(`[data-conversation-id="${id}"]`)
-        ?? document.querySelector("main");
+      const conversationEl = document.querySelector(`[data-conversation-id="${id}"]`);
       if (!conversationEl) return [];
       return Array.from(conversationEl.querySelectorAll<HTMLImageElement>("img[src]")).flatMap((img) => {
         const url = img.getAttribute("src");
         if (!url || url.startsWith("data:")) return [];
-        return [{ pointer: url, url, filename: null, contentType: "image/png" }];
+        return [{ pointer: url, url, filename: null }];
       });
     },
   };
@@ -243,6 +242,7 @@ function geminiAssetCandidates(pageCtx: GeminiPageContext, sourceId: string): Pr
     url: asset.url,
     filename: asset.filename ?? null,
     contentType: asset.contentType ?? null,
+    fetchViaBackground: true,
   }));
 }
 

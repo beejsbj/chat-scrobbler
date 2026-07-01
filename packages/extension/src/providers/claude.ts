@@ -100,7 +100,7 @@ async function syncClaude(fetcher: FetchLike, options: ProviderSyncOptions): Pro
         options.uploadAsset,
         claudeAssetCandidates(payload, item.id, org.uuid),
       );
-      await options.emitCapture(buildRawCapture({
+      const didCapture = await options.emitCapture(buildRawCapture({
         source: "claude",
         sourceId: item.id,
         endpoint: detailEndpoint,
@@ -110,6 +110,10 @@ async function syncClaude(fetcher: FetchLike, options: ProviderSyncOptions): Pro
         conversationUpdatedAt: item.updatedAt,
         rawUrl: `${currentOrigin()}${detailEndpoint}`,
       }));
+      if (didCapture === false) {
+        skipped += 1;
+        continue;
+      }
       captured += 1;
       maxConversationUpdatedAt = maxIso(maxConversationUpdatedAt, item.updatedAt);
     }

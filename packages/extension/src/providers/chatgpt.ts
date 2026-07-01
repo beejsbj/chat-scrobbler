@@ -109,7 +109,7 @@ async function syncChatgpt(fetcher: FetchLike, options: ProviderSyncOptions): Pr
         options.uploadAsset,
         chatgptAssetCandidates(payload, item.id),
       );
-      await options.emitCapture(buildRawCapture({
+      const didCapture = await options.emitCapture(buildRawCapture({
         source: "chatgpt",
         sourceId: item.id,
         endpoint: detailEndpoint,
@@ -118,6 +118,10 @@ async function syncChatgpt(fetcher: FetchLike, options: ProviderSyncOptions): Pr
         conversationUpdatedAt: item.updatedAt,
         rawUrl: `${currentOrigin()}${detailEndpoint}`,
       }));
+      if (didCapture === false) {
+        skipped += 1;
+        continue;
+      }
       captured += 1;
       maxConversationUpdatedAt = maxIso(maxConversationUpdatedAt, item.updatedAt);
     }

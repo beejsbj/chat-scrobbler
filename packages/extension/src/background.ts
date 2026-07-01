@@ -3,7 +3,9 @@ import { assetsUrl, capturesUrl, deleteCaptureUrl, statusUrl, DEFAULT_INGEST_BAS
 import { collectCredentialSnapshot } from "./credentials";
 import { toolbarProgressView, aggregateTabProgress, type ToolbarProgressInput } from "./toolbar-progress";
 import { appendRecentCapture, RECENT_CAPTURES_KEY, type RecentCapture } from "./recent-captures";
+import { filenameFromHeaders, isOversizedContentLength, MAX_PROVIDER_ASSET_BYTES } from "./providers/assets";
 import type {
+  AssetFetchMessage,
   CaptureLoggedMessage,
   CaptureProgressMessage,
   CaptureReadyMessage,
@@ -88,6 +90,7 @@ chrome.runtime.onMessage.addListener((message: RuntimeMessage, sender: any, send
 async function handleRuntimeMessage(message: RuntimeMessage, sender: any): Promise<unknown> {
   if (message.type === "SCROBBLER_CAPTURE_READY") return postCapture(message);
   if (message.type === "SCROBBLER_ASSET_UPLOAD") return postAsset(message.asset);
+  if (message.type === "SCROBBLER_ASSET_FETCH") return fetchAssetBytes(message);
   if (message.type === "SCROBBLER_PROVIDER_READY" && sender.tab?.id) {
     maybeSyncVisitedTab(sender.tab, message.provider).catch(console.error);
     return { ok: true };
@@ -133,6 +136,28 @@ async function postAsset(asset: AssetUploadRequest): Promise<unknown> {
   });
   if (!res.ok) throw new Error(`Ingest rejected asset with HTTP ${res.status}: ${await res.text()}`);
   return { ok: true, asset: await res.json() };
+}
+
+async function fetchAssetBytes(message: AssetFetchMessage): Promise<unknown> {
+  const url = new URL(message.url);
+  if (url.protocol !== "https:" && url.protocol !== "http:") {
+    throw new Error("Asset URL must be http or https");
+  }
+  const res = await fetch(url.toString(), { credentials: "include" });
+  if (!res.ok) throw new Error(`Provider rejected asset fetch with HTTP ${res.status}`);
+  if (isOversizedContentLength(res.headers.get("content-length"), MAX_PROVIDER_ASSET_BYTES)) {
+    throw new Error("Provider asset exceeds the 50 MiB upload limit");
+  }
+  const buffer = await res.arrayBuffer();
+  if (buffer.byteLength > MAX_PROVIDER_ASSET_BYTES) {
+    throw new Error("Provider asset exceeds the 50 MiB upload limit");
+  }
+  return {
+    ok: true,
+    bytes: Array.from(new Uint8Array(buffer)),
+    filename: filenameFromHeaders(res),
+    contentType: res.headers.get("content-type"),
+  };
 }
 
 function updateToolbarProgress(message: CaptureProgressMessage, sender: any): unknown {
@@ -242,7 +267,7 @@ function startFallbackBadgeSpinner(): void {
 
 async function postCapture(message: CaptureReadyMessage): Promise<unknown> {
   if (await isIgnoredChat(message.capture.source, message.capture.source_id)) {
-    return { ok: true, ignored: true };
+    return { ok: false, captured: false, ignored: true, error: "Capture ignored" };
   }
   const settings = await getSettings();
   const headers: Record<string, string> = { "content-type": "application/json" };
@@ -257,7 +282,7 @@ async function postCapture(message: CaptureReadyMessage): Promise<unknown> {
     status.lastCaptureAt = new Date().toISOString();
     status.capturesPosted += 1;
   });
-  return { ok: true, ingest: await res.json() };
+  return { ok: true, captured: true, ingest: await res.json() };
 }
 
 async function deleteCapture(message: DeleteCaptureMessage): Promise<unknown> {
@@ -273,6 +298,15 @@ async function deleteCapture(message: DeleteCaptureMessage): Promise<unknown> {
 }
 
 async function getConversationStates(message: ConversationStatesMessage): Promise<unknown> {
+  const ignored = await getIgnoredChatKeys();
+  const ignoredStatuses: Record<string, string> = {};
+  const conversations = message.conversations.filter((conversation) => {
+    if (!ignored.has(ignoreKey(message.provider, conversation.id))) return true;
+    ignoredStatuses[conversation.id] = "ignored";
+    return false;
+  });
+  if (conversations.length === 0) return { ok: true, statuses: ignoredStatuses };
+
   const settings = await getSettings();
   const headers: Record<string, string> = { "content-type": "application/json" };
   if (settings.ingestToken) headers["authorization"] = `Bearer ${settings.ingestToken}`;
@@ -281,16 +315,12 @@ async function getConversationStates(message: ConversationStatesMessage): Promis
     headers,
     body: JSON.stringify({
       source: message.provider,
-      conversations: message.conversations.map((c) => ({ id: c.id, updated_at: c.updatedAt })),
+      conversations: conversations.map((c) => ({ id: c.id, updated_at: c.updatedAt })),
     }),
   });
   if (!res.ok) throw new Error(`Status request failed with HTTP ${res.status}`);
   const body = await res.json() as { statuses?: Record<string, string> };
-  const statuses = body.statuses ?? {};
-  const ignored = await getIgnoredChatKeys();
-  for (const conversation of message.conversations) {
-    if (ignored.has(ignoreKey(message.provider, conversation.id))) statuses[conversation.id] = "ignored";
-  }
+  const statuses = { ...(body.statuses ?? {}), ...ignoredStatuses };
   return { ok: true, statuses };
 }
 

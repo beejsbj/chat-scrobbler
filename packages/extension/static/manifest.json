@@ -13,7 +13,8 @@
     "https://chat.openai.com/*",
     "https://auth.openai.com/*",
     "https://claude.ai/*",
-    "https://gemini.google.com/*"
+    "https://gemini.google.com/*",
+    "https://*.googleusercontent.com/*"
   ],
   "background": {
     "service_worker": "dist/background.js",

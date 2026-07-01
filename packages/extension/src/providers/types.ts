@@ -3,10 +3,12 @@ import type { AssetUploadRequest } from "../messages";
 
 export interface ProviderSyncOptions {
   lastSync?: string | null;
-  emitCapture: (capture: RawCapture) => Promise<void>;
+  emitCapture: (capture: RawCapture) => Promise<EmitCaptureResult>;
   shouldIgnore?: (source: ProviderSource, sourceId: string) => boolean;
   uploadAsset?: (asset: AssetUploadRequest) => Promise<UploadedAsset>;
 }
+
+export type EmitCaptureResult = boolean | void;
 
 export type ProviderCaptureOneOptions = Pick<ProviderSyncOptions, "emitCapture" | "uploadAsset">;
 

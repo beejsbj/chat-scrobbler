@@ -27,6 +27,17 @@ export interface AssetUploadMessage {
   asset: AssetUploadRequest;
 }
 
+export interface AssetFetchMessage {
+  type: "SCROBBLER_ASSET_FETCH";
+  url: string;
+}
+
+export interface AssetFetchResponse {
+  bytes: number[];
+  filename?: string | null;
+  contentType?: string | null;
+}
+
 export interface ProviderReadyMessage {
   type: "SCROBBLER_PROVIDER_READY";
   provider: ProviderSource;
@@ -104,6 +115,7 @@ export type RuntimeMessage =
   | SyncRequest
   | CaptureReadyMessage
   | AssetUploadMessage
+  | AssetFetchMessage
   | ProviderReadyMessage
   | SyncActiveTabMessage
   | SyncAllMessage
