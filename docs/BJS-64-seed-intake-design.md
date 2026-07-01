@@ -81,8 +81,10 @@ The read-only MCP server exposes:
 The MCP `search` and `list_sessions` surfaces match the same core fields as the CLI.
 The MCP `get_session` currently supports only full JSON or markdown. It does not expose
 the CLI-only `--role` or `--text-only` narrowing. For seed intake, agents should prefer
-CLI `get <id> --markdown --role user --text-only` when running locally, and fall back to
-MCP full markdown only when CLI access is unavailable.
+CLI full JSON when running locally, then fetch role-filtered markdown only for readable
+excerpts. This preserves branch `message_id` hits before narrowing output. When CLI
+access is unavailable, fall back to MCP full JSON. Avoid MCP markdown for branch hits
+because markdown rendering uses the active path and may miss messages found by search.
 
 ## Search Sample
 
@@ -92,7 +94,8 @@ Scope used for this note followed the issue limit:
 - Limit 10 results each.
 - Queries: `seed`, `"Linear issue"`, `"turn this into an issue"`, `"project idea"`, `backlog`.
 - Stopped after finding plausible seed-like sessions.
-- Fetched user-only markdown first.
+- Fetched full JSON first to preserve branch `message_id` values, then fetched user-only
+  markdown for readable excerpts.
 
 Plausible sampled sessions:
 
@@ -287,7 +290,14 @@ check and provenance have been read. Bulk creation should stay unavailable.
     "source": "chatgpt",
     "title": "Readwise Clone & Incremental Reading",
     "createdAt": "2026-06-16T14:43:36.873Z",
-    "fetchedWith": "chat-scrobbler get <id> --markdown --role user --text-only"
+    "fetchedWith": "chat-scrobbler get <id> --format json, then chat-scrobbler get <id> --markdown --role user --text-only"
+  },
+  "extractedAt": "2026-06-30T00:00:00.000Z",
+  "searchScope": {
+    "queries": ["seed", "\"Linear issue\"", "\"turn this into an issue\"", "\"project idea\"", "backlog"],
+    "maxSearches": 5,
+    "maxResultsPerSearch": 10,
+    "stoppedBecause": "candidate_cap_reached"
   },
   "title": "Readwise/SuperMemo recurrence seed",
   "kind": "project_seed",
@@ -298,6 +308,10 @@ check and provenance have been read. Bulk creation should stay unavailable.
       "role": "user",
       "excerpt": "User called the idea a seed and asked to put it in Linear so it would not keep floating in chats."
     }
+  ],
+  "boundaries": [
+    "Do not create a new Linear issue for an already captured seed.",
+    "Use chat-scrobbler only for provenance, not review state."
   ],
   "suggestedLinear": {
     "action": "attach_to_existing",
@@ -362,7 +376,14 @@ No new issue. Attach this source session as provenance to the existing Readwise/
     "source": "chatgpt",
     "title": "Readwise Document Access",
     "createdAt": "2026-06-17T01:14:18.866Z",
-    "fetchedWith": "chat-scrobbler get <id> --markdown --role user --text-only"
+    "fetchedWith": "chat-scrobbler get <id> --format json, then chat-scrobbler get <id> --markdown --role user --text-only"
+  },
+  "extractedAt": "2026-06-30T00:00:00.000Z",
+  "searchScope": {
+    "queries": ["seed", "\"Linear issue\"", "\"turn this into an issue\"", "\"project idea\"", "backlog"],
+    "maxSearches": 5,
+    "maxResultsPerSearch": 10,
+    "stoppedBecause": "candidate_cap_reached"
   },
   "title": "NotebookLM-style backlog clusters",
   "kind": "research_seed",
@@ -373,6 +394,10 @@ No new issue. Attach this source session as provenance to the existing Readwise/
       "role": "user",
       "excerpt": "User wanted clusters for NotebookLM podcasts to clear backlog, with direct-read items singled out separately."
     }
+  ],
+  "boundaries": [
+    "Keep backlog clustering under digest unless review finds a stronger home.",
+    "Do not ingest the whole reading backlog before selection rules are named."
   ],
   "suggestedLinear": {
     "action": "attach_to_existing",
@@ -456,7 +481,14 @@ chat-scrobbler session: `chatgpt:6a31f3d3-c43c-83e8-a5f6-eecee32a7647`
     "source": "claude",
     "title": "Redesigning a personal portfolio site architecture",
     "createdAt": "2026-01-12T19:26:12.983Z",
-    "fetchedWith": "chat-scrobbler get <id> --markdown --role user --text-only"
+    "fetchedWith": "chat-scrobbler get <id> --format json, then chat-scrobbler get <id> --markdown --role user --text-only"
+  },
+  "extractedAt": "2026-06-30T00:00:00.000Z",
+  "searchScope": {
+    "queries": ["seed", "\"Linear issue\"", "\"turn this into an issue\"", "\"project idea\"", "backlog"],
+    "maxSearches": 5,
+    "maxResultsPerSearch": 10,
+    "stoppedBecause": "candidate_cap_reached"
   },
   "title": "Shape personal-site architecture",
   "kind": "issue_seed",
@@ -467,6 +499,10 @@ chat-scrobbler session: `chatgpt:6a31f3d3-c43c-83e8-a5f6-eecee32a7647`
       "role": "user",
       "excerpt": "User wanted a new personal-site architecture with project detail pages, experiments, modular additions, and a more alive home on the internet."
     }
+  ],
+  "boundaries": [
+    "Create only a child issue under personal-site after duplicate review.",
+    "Do not create a new project from this session alone."
   ],
   "suggestedLinear": {
     "action": "create_issue",
