@@ -31,6 +31,9 @@ test("runInit scaffolds data dirs and writes a starter config file", async () =>
     expect(written.canonicalDir).toBe(cfg.canonicalDir);
     expect(written.indexPath).toBe(cfg.indexPath);
     expect(written.backupTargets).toEqual(cfg.backupTargets);
+    expect(written.mcpAuthToken).toMatch(/^[0-9a-f]{32}$/);
+    expect(written.ingestToken).toMatch(/^[0-9a-f]{32}$/);
+    expect(written.mcpAuthToken).not.toBe(written.ingestToken);
 
     const text = out.join("\n");
     expect(text).toContain("serve");
@@ -50,6 +53,23 @@ test("runInit never overwrites an existing config file", async () => {
     const preserved = JSON.parse(readFileSync(configFile, "utf8"));
     expect(preserved.canonicalDir).toBe("/custom/canon");
     expect(preserved.indexPath).toBeUndefined();
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("runInit points existing configs without generated tokens at doctor", async () => {
+  const { cfg, root, out, write } = makeEnv();
+  try {
+    const configFile = join(root, "chat-scrobbler.config.json");
+    writeFileSync(configFile, JSON.stringify({ canonicalDir: "/custom/canon" }));
+
+    await runInit({ cfg: { ...cfg, mcpAuthToken: null, ingestToken: null }, configFilePath: configFile, write });
+
+    const text = out.join("\n");
+    expect(text).toContain("missing mcpAuthToken");
+    expect(text).toContain("missing ingestToken");
+    expect(text).toContain("chat-scrobbler doctor");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

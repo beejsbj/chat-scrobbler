@@ -14,11 +14,13 @@ import { handleIngestRequest } from "../../packages/ingest/src/server";
 import { discoverConfigPath, type ChatHistoryConfig } from "../config";
 import { resolveTarget } from "../backup/target";
 import { createBackup, generateSnapshotName, listBackups, restoreBackup } from "../backup/backup";
-import { mkdirSync, existsSync, writeFileSync } from "node:fs";
+import { mkdirSync, existsSync, writeFileSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { randomBytes } from "node:crypto";
 import { resolveExtensionDir } from "./paths";
 
 type Writer = (s: string) => void;
+type HttpFetch = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
 
 // ---------------------------------------------------------------------------
 // search
@@ -189,14 +191,20 @@ export async function runInit(opts: InitCmdOpts): Promise<void> {
 
   if (existsSync(configFilePath)) {
     write(`Config:        ${configFilePath} (already exists, left untouched)`);
+    const missing = missingTokenKeys(configFilePath);
+    if (missing.length > 0) {
+      write(`Config note:   ${missing.map((key) => `missing ${key}`).join("; ")}; run chat-scrobbler doctor to verify install drift.`);
+    }
   } else {
     const starter = {
       canonicalDir: cfg.canonicalDir,
       indexPath: cfg.indexPath,
       ingestPort: cfg.ingestPort,
       mcpHttpPort: cfg.mcpHttpPort,
+      mcpAuthToken: randomToken(),
       mcpPublicBaseUrl: cfg.mcpPublicBaseUrl,
       backupTargets: cfg.backupTargets,
+      ingestToken: randomToken(),
       embeddingProvider: cfg.embeddingProvider,
       embeddingModel: cfg.embeddingModel,
       ollamaBaseUrl: cfg.ollamaBaseUrl,
@@ -217,6 +225,22 @@ export async function runInit(opts: InitCmdOpts): Promise<void> {
   }
   write(`  3. Paste the printed receiver URL into the extension popup`);
   write(`  4. chat-scrobbler connect   (MCP endpoint + connector setup)`);
+}
+
+function randomToken(): string {
+  return randomBytes(16).toString("hex");
+}
+
+function missingTokenKeys(configFilePath: string): string[] {
+  try {
+    const parsed = JSON.parse(readFileSync(configFilePath, "utf8")) as Record<string, unknown>;
+    const missing: string[] = [];
+    if (typeof parsed.mcpAuthToken !== "string" || parsed.mcpAuthToken === "") missing.push("mcpAuthToken");
+    if (typeof parsed.ingestToken !== "string" || parsed.ingestToken === "") missing.push("ingestToken");
+    return missing;
+  } catch {
+    return ["mcpAuthToken", "ingestToken"];
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -303,6 +327,218 @@ export function runConnect(opts: ConnectCmdOpts): void {
     write("");
     write(`Browser extension: load unpacked from ${extDir}`);
   }
+}
+
+// ---------------------------------------------------------------------------
+// doctor -- verify config, local services, semantic recall, and public tunnel
+// ---------------------------------------------------------------------------
+
+export interface DoctorInspectIndexResult {
+  exists: boolean;
+  sessionCount: number;
+  embeddingCount: number;
+  error?: string;
+}
+
+export interface DoctorResult {
+  ok: boolean;
+  exitCode: 0 | 1;
+}
+
+export interface DoctorCmdOpts {
+  cfg: ChatHistoryConfig;
+  configPath: string | null;
+  write: Writer;
+  fetch?: HttpFetch;
+  existsSync?: (path: string) => boolean;
+  inspectIndex?: (path: string) => Promise<DoctorInspectIndexResult> | DoctorInspectIndexResult;
+}
+
+type DoctorLineKind = "PASS" | "FAIL" | "WARN";
+
+export async function runDoctor(opts: DoctorCmdOpts): Promise<DoctorResult> {
+  const fetcher = opts.fetch ?? fetch;
+  const fsExists = opts.existsSync ?? existsSync;
+  const inspectIndex = opts.inspectIndex ?? defaultInspectIndex;
+  let failed = false;
+
+  const line = (kind: DoctorLineKind, label: string, detail: string): void => {
+    opts.write(`${kind} ${label}: ${detail}`);
+    if (kind === "FAIL") failed = true;
+  };
+
+  if (opts.configPath) {
+    line("PASS", "config", opts.configPath);
+  } else {
+    line("PASS", "config", "defaults only");
+  }
+
+  if (opts.cfg.mcpAuthToken) {
+    line("PASS", "mcpAuthToken", "present");
+  } else {
+    line("FAIL", "mcpAuthToken", "missing");
+  }
+
+  try {
+    const res = await fetcher(withPath(opts.cfg.ingestBaseUrl, "/health"), { method: "GET" });
+    if (res.ok) {
+      line("PASS", "ingest health", `${opts.cfg.ingestBaseUrl}/health responded ${res.status}`);
+    } else {
+      line("FAIL", "ingest health", `${opts.cfg.ingestBaseUrl}/health responded ${res.status}`);
+    }
+  } catch (err) {
+    line("FAIL", "ingest health", errorMessage(err));
+  }
+
+  const mcpLocalUrl = mcpUrl(`http://127.0.0.1:${opts.cfg.mcpHttpPort}`, opts.cfg.mcpAuthToken);
+  await checkStructuredMcp(fetcher, mcpLocalUrl, (kind, detail) => line(kind, "MCP HTTP", detail));
+
+  await checkEmbeddingProvider(opts.cfg, fetcher, line);
+
+  const index = await inspectIndex(opts.cfg.indexPath);
+  if (!index.exists) {
+    line("FAIL", "index", index.error ?? `${opts.cfg.indexPath} missing`);
+  } else {
+    line("PASS", "index", `${index.sessionCount} sessions at ${opts.cfg.indexPath}`);
+    if (opts.cfg.embeddingProvider !== "none") {
+      if (index.embeddingCount > 0) {
+        line("PASS", "embeddings coverage", `${index.embeddingCount} rows`);
+      } else {
+        line("WARN", "embeddings coverage", "0 rows, run chat-scrobbler unify");
+      }
+    }
+  }
+
+  if (opts.cfg.mcpPublicBaseUrl) {
+    if (!opts.cfg.mcpAuthToken) {
+      line("FAIL", "public MCP", "mcpPublicBaseUrl set but mcpAuthToken missing");
+    } else {
+      const publicUrl = mcpUrl(opts.cfg.mcpPublicBaseUrl, opts.cfg.mcpAuthToken);
+      try {
+        const res = await fetcher(publicUrl, { method: "GET" });
+        line("PASS", "public MCP", `${publicUrl} responded ${res.status}`);
+      } catch (err) {
+        line("FAIL", "public MCP", errorMessage(err));
+      }
+    }
+  }
+
+  if (opts.configPath && !fsExists(opts.configPath)) {
+    line("WARN", "config file", "discovered path is not readable now");
+  }
+
+  return { ok: !failed, exitCode: failed ? 1 : 0 };
+}
+
+async function defaultInspectIndex(path: string): Promise<DoctorInspectIndexResult> {
+  if (!existsSync(path)) return { exists: false, sessionCount: 0, embeddingCount: 0 };
+  try {
+    const db = openIndex(path);
+    try {
+      const sessions = db.query(`SELECT COUNT(*) AS count FROM sessions`).get() as { count: number };
+      const embeddings = db.query(`SELECT COUNT(*) AS count FROM message_embeddings`).get() as { count: number };
+      return {
+        exists: true,
+        sessionCount: Number(sessions.count ?? 0),
+        embeddingCount: Number(embeddings.count ?? 0),
+      };
+    } finally {
+      db.close();
+    }
+  } catch (err) {
+    return { exists: false, sessionCount: 0, embeddingCount: 0, error: errorMessage(err) };
+  }
+}
+
+async function checkStructuredMcp(
+  fetcher: HttpFetch,
+  url: string,
+  report: (kind: DoctorLineKind, detail: string) => void,
+): Promise<void> {
+  try {
+    const res = await fetcher(url, {
+      method: "POST",
+      headers: {
+        accept: "application/json, text/event-stream",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "initialize",
+        params: {
+          protocolVersion: "2024-11-05",
+          capabilities: {},
+          clientInfo: { name: "chat-scrobbler-doctor", version: "1.0.0" },
+        },
+      }),
+    });
+    const body = await res.text();
+    if (isStructuredMcpBody(body)) {
+      report("PASS", `${url} responded ${res.status}`);
+    } else {
+      report("FAIL", `${url} responded ${res.status} without structured MCP JSON`);
+    }
+  } catch (err) {
+    report("FAIL", errorMessage(err));
+  }
+}
+
+async function checkEmbeddingProvider(
+  cfg: ChatHistoryConfig,
+  fetcher: HttpFetch,
+  line: (kind: DoctorLineKind, label: string, detail: string) => void,
+): Promise<void> {
+  if (cfg.embeddingProvider === "none") {
+    line("WARN", "embedding provider", "none, semantic recall dormant");
+    return;
+  }
+  if (cfg.embeddingProvider === "gemini") {
+    line(cfg.geminiApiKey ? "PASS" : "FAIL", "embedding provider", cfg.geminiApiKey ? "gemini API key present" : "gemini API key missing");
+    return;
+  }
+  if (cfg.embeddingProvider === "ollama") {
+    try {
+      const res = await fetcher(withPath(cfg.ollamaBaseUrl, "/api/tags"), { method: "GET" });
+      if (!res.ok) {
+        line("FAIL", "embedding provider", `ollama /api/tags responded ${res.status}`);
+        return;
+      }
+      const tags = await res.json() as { models?: Array<{ name?: string }> };
+      const model = cfg.embeddingModel;
+      if (!model) {
+        line("PASS", "embedding provider", "ollama reachable");
+        return;
+      }
+      const names = (tags.models ?? []).map((m) => m.name).filter((name): name is string => typeof name === "string");
+      const present = names.some((name) => name === model || name.startsWith(`${model}:`));
+      line(present ? "PASS" : "FAIL", "embedding provider", present ? `ollama model ${model} present` : `ollama model ${model} missing`);
+    } catch (err) {
+      line("FAIL", "embedding provider", `ollama unreachable: ${errorMessage(err)}`);
+    }
+    return;
+  }
+  line("PASS", "embedding provider", `${cfg.embeddingProvider} configured`);
+}
+
+function isStructuredMcpBody(body: string): boolean {
+  try {
+    const parsed = JSON.parse(body) as unknown;
+    if (!parsed || typeof parsed !== "object") return false;
+    const record = parsed as Record<string, unknown>;
+    return record.jsonrpc === "2.0" || "result" in record || "error" in record || "method" in record;
+  } catch {
+    return false;
+  }
+}
+
+function withPath(baseUrl: string, path: string): string {
+  const base = baseUrl.replace(/\/+$/, "");
+  return `${base}${path}`;
+}
+
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
 }
 
 // ---------------------------------------------------------------------------
