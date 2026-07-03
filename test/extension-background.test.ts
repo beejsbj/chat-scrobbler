@@ -97,8 +97,8 @@ test("background ignores chats after successful delete capture only", async () =
   expect(failedResponse).toEqual({ ok: false, error: "Delete request failed with HTTP 500: not deleted" });
   expect(storageData["scrobbler.ignoredChats"]).toEqual(["chatgpt:deleted-chat"]);
   expect(deletes).toEqual([
-    "http://127.0.0.1:4318/captures/chatgpt/deleted-chat",
-    "http://127.0.0.1:4318/captures/chatgpt/failed-delete",
+    "http://127.0.0.1:4318/captures?source=chatgpt&source_id=deleted-chat",
+    "http://127.0.0.1:4318/captures?source=chatgpt&source_id=failed-delete",
   ]);
 });
 
