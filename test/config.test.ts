@@ -11,6 +11,7 @@ test("loadConfig returns data-home defaults with empty env and no config file", 
   expect(cfg.indexPath).toBe(join(dataHome, "index", "sessions.db"));
   expect(cfg.ingestPort).toBe(4318);
   expect(cfg.mcpHttpPort).toBe(4319);
+  expect(cfg.bindHost).toBe("127.0.0.1");
   expect(cfg.mcpAuthToken).toBeNull();
   expect(cfg.mcpPublicBaseUrl).toBeNull();
   expect(cfg.ingestToken).toBeNull();
@@ -25,6 +26,7 @@ test("env overrides defaults", () => {
       INDEX_PATH: "/data/idx.db",
       PORT: "5000",
       MCP_HTTP_PORT: "5001",
+      BIND_HOST: "127.0.0.2",
       MCP_AUTH_TOKEN: "mcp-secret",
       MCP_PUBLIC_BASE_URL: "https://chat-history.example.com",
       INGEST_TOKEN: "secret",
@@ -36,6 +38,7 @@ test("env overrides defaults", () => {
   expect(cfg.indexPath).toBe("/data/idx.db");
   expect(cfg.ingestPort).toBe(5000);
   expect(cfg.mcpHttpPort).toBe(5001);
+  expect(cfg.bindHost).toBe("127.0.0.2");
   expect(cfg.mcpAuthToken).toBe("mcp-secret");
   expect(cfg.mcpPublicBaseUrl).toBe("https://chat-history.example.com");
   expect(cfg.ingestToken).toBe("secret");
@@ -74,6 +77,7 @@ test("config file overrides defaults; env overrides config file", () => {
         canonicalDir: "/from/file/canon",
         indexPath: "/from/file/idx.db",
         ingestPort: 6000,
+        bindHost: "127.0.0.3",
         mcpAuthToken: "from-file-token",
         mcpPublicBaseUrl: "https://from-file.example.com",
       }),
@@ -81,12 +85,14 @@ test("config file overrides defaults; env overrides config file", () => {
     const cfg = loadConfig({
       env: {
         INDEX_PATH: "/from/env/idx.db",
+        CHAT_SCROBBLER_BIND_HOST: "127.0.0.4",
         MCP_AUTH_TOKEN: "from-env-token",
       },
       configPath: file,
     });
     expect(cfg.canonicalDir).toBe("/from/file/canon"); // file wins over default
     expect(cfg.ingestPort).toBe(6000); // file wins over default
+    expect(cfg.bindHost).toBe("127.0.0.4"); // env wins over file
     expect(cfg.indexPath).toBe("/from/env/idx.db"); // env wins over file
     expect(cfg.mcpAuthToken).toBe("from-env-token"); // env wins over file
     expect(cfg.mcpPublicBaseUrl).toBe("https://from-file.example.com"); // file wins over default

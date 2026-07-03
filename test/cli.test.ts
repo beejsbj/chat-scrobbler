@@ -321,6 +321,7 @@ test("serve boots ingest + MCP HTTP on ephemeral ports and responds", async () =
     ...cfg,
     ingestPort: 0,
     mcpHttpPort: 0,
+    bindHost: "127.0.0.1",
     ingestBaseUrl: "http://127.0.0.1:0",
   };
 
