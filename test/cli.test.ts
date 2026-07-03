@@ -317,25 +317,29 @@ test("unify re-indexes from canonical and reports count", async () => {
 // ---------------------------------------------------------------------------
 
 test("serve boots ingest + MCP HTTP on ephemeral ports and responds", async () => {
+  const ingestPort = 14321;
+  const mcpPort = 14322;
   const serveCfg: ChatHistoryConfig = {
     ...cfg,
-    ingestPort: 0,
-    mcpHttpPort: 0,
-    ingestBaseUrl: "http://127.0.0.1:0",
+    ingestPort,
+    mcpHttpPort: mcpPort,
+    bindHost: "127.0.0.1",
+    ingestBaseUrl: `http://127.0.0.1:${ingestPort}`,
   };
 
   const { ingestServer, mcpServer } = await startServe(serveCfg);
 
   try {
+    expect(ingestServer.hostname).toBe("127.0.0.1");
+    expect(mcpServer.hostname).toBe("127.0.0.1");
+
     // Verify ingest health endpoint
-    const ingestPort = ingestServer.port;
     const healthRes = await fetch(`http://127.0.0.1:${ingestPort}/health`);
     expect(healthRes.status).toBe(200);
     const healthBody = await healthRes.json() as { ok: boolean };
     expect(healthBody.ok).toBe(true);
 
     // Verify MCP endpoint responds to OPTIONS (CORS preflight)
-    const mcpPort = mcpServer.port;
     const optRes = await fetch(`http://127.0.0.1:${mcpPort}/mcp`, { method: "OPTIONS" });
     expect(optRes.status).toBe(200);
   } finally {

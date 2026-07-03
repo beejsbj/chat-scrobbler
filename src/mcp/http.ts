@@ -7,6 +7,7 @@ import type { EmbeddingProvider } from "../indexer/sqlite";
 
 export interface HttpServerOptions {
   port: number;
+  bindHost?: string;
   indexPath: string;
   canonicalDir: string;
   embeddingProvider?: EmbeddingProvider | null;
@@ -83,8 +84,9 @@ export async function startHttpServer(
   opts: HttpServerOptions
 ): Promise<ReturnType<typeof Bun.serve>> {
   const mcpAuthToken = opts.mcpAuthToken ?? null;
+  const bindHost = opts.bindHost ?? "127.0.0.1";
   const server = Bun.serve({
-    hostname: "127.0.0.1",
+    hostname: bindHost,
     port: opts.port,
 
     async fetch(req: Request): Promise<Response> {
@@ -135,7 +137,7 @@ export async function startHttpServer(
   });
 
   const authNote = mcpAuthToken ? " (auth token required)" : "";
-  process.stderr.write(`MCP HTTP server listening on http://127.0.0.1:${opts.port}/mcp${authNote}\n`);
+  process.stderr.write(`MCP HTTP server listening on http://${bindHost}:${server.port}/mcp${authNote}\n`);
 
   return server;
 }
@@ -144,6 +146,7 @@ if (import.meta.main) {
   const cfg = loadConfig();
   await startHttpServer({
     port: cfg.mcpHttpPort,
+    bindHost: cfg.bindHost,
     indexPath: cfg.indexPath,
     canonicalDir: cfg.canonicalDir,
     embeddingProvider: embeddingProviderFromConfig(cfg),

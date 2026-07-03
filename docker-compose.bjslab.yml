@@ -1,0 +1,29 @@
+# Intended for Coolify on bjslab. MCP_AUTH_TOKEN and INGEST_TOKEN come from
+# Coolify env. After first boot run:
+# docker compose exec ollama ollama pull nomic-embed-text
+
+services:
+  scrobbler:
+    build: .
+    restart: unless-stopped
+    # No host ports are published. Coolify Traefik reaches this service over
+    # its proxy network.
+    environment:
+      MCP_AUTH_TOKEN: ${MCP_AUTH_TOKEN}
+      INGEST_TOKEN: ${INGEST_TOKEN}
+      MCP_HTTP_PORT: "4321"
+      PORT: "4318"
+      CHAT_SCROBBLER_EMBED_PROVIDER: ollama
+      CHAT_SCROBBLER_EMBED_MODEL: nomic-embed-text
+      OLLAMA_BASE_URL: http://ollama:11434
+      BIND_HOST: 0.0.0.0
+    volumes:
+      - /mnt/server-ssd/chat-scrobbler:/data
+    depends_on:
+      - ollama
+
+  ollama:
+    image: ollama/ollama:latest
+    restart: unless-stopped
+    volumes:
+      - /mnt/server-ssd/ollama:/root/.ollama
