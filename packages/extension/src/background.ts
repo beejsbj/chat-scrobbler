@@ -294,6 +294,9 @@ async function deleteCapture(message: DeleteCaptureMessage): Promise<unknown> {
     headers,
   });
   if (!res.ok) throw new Error(`Delete request failed with HTTP ${res.status}: ${await res.text()}`);
+  const ignored = await getIgnoredChatKeys();
+  ignored.add(ignoreKey(message.provider, message.id));
+  await setIgnoredChatKeys(ignored);
   return { ok: true, delete: await res.json() };
 }
 
