@@ -35,7 +35,8 @@ bun install
 bun test
 bun x tsc --noEmit
 
-bun run cli <command>        # run CLI from source (search/get/list/unify/init/serve/mcp/connect/backup/backups/restore)
+bun run cli <command>        # run CLI from source (search/get/list/unify/init/doctor/serve/mcp/connect/backup/backups/restore)
+bun run cli doctor           # verify install chain: config, tokens, ingest, MCP, embeddings, index, public URL
 bun run serve                # ingest receiver (port 4318) + MCP HTTP (port 4319) together
 bun run unify                # rebuild SQLite index from canonical
 bun run build:dist           # compile dist/chat-scrobbler binary + bundle dist/extension/
