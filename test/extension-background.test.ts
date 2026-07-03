@@ -69,6 +69,39 @@ test("background omits ignored conversations from status requests and returns ig
   expect(response).toEqual({ ok: true, statuses: { active: "synced", ignored: "ignored" } });
 });
 
+test("background ignores chats after successful delete capture only", async () => {
+  const deletes: string[] = [];
+  globalThis.fetch = (async (input) => {
+    deletes.push(String(input));
+    if (String(input).includes("failed-delete")) {
+      return new Response("not deleted", { status: 500 });
+    }
+    return Response.json({ deleted: true });
+  }) as typeof fetch;
+
+  const deletedResponse = await sendRuntimeMessage({
+    type: "SCROBBLER_DELETE_CAPTURE",
+    provider: "chatgpt",
+    id: "deleted-chat",
+  });
+
+  expect(deletedResponse).toEqual({ ok: true, delete: { deleted: true } });
+  expect(storageData["scrobbler.ignoredChats"]).toEqual(["chatgpt:deleted-chat"]);
+
+  const failedResponse = await sendRuntimeMessage({
+    type: "SCROBBLER_DELETE_CAPTURE",
+    provider: "chatgpt",
+    id: "failed-delete",
+  });
+
+  expect(failedResponse).toEqual({ ok: false, error: "Delete request failed with HTTP 500: not deleted" });
+  expect(storageData["scrobbler.ignoredChats"]).toEqual(["chatgpt:deleted-chat"]);
+  expect(deletes).toEqual([
+    "http://127.0.0.1:4318/captures/chatgpt/deleted-chat",
+    "http://127.0.0.1:4318/captures/chatgpt/failed-delete",
+  ]);
+});
+
 function sendRuntimeMessage(message: RuntimeMessage): Promise<unknown> {
   return new Promise((resolve) => {
     expect(runtimeListener).not.toBeNull();
