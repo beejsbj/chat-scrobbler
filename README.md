@@ -50,9 +50,10 @@ That drops `chat-scrobbler` into `~/.local/bin` and the browser extension into
 `~/.local/share/chat-scrobbler/extension`. Then:
 
 ```bash
-chat-scrobbler init      # scaffold the data dirs + a starter config
+chat-scrobbler init      # scaffold data dirs + config with MCP and ingest tokens
 chat-scrobbler serve     # start the capture receiver + MCP endpoint
 chat-scrobbler connect   # print local MCP + client-specific connector guidance
+chat-scrobbler doctor    # verify config, services, index, embeddings, and tunnel
 ```
 
 Load the extension once: `chrome://extensions` -> Developer mode -> Load
@@ -119,6 +120,11 @@ With both values set, `connect` prints a Claude web/mobile URL shaped like
 use `Authorization: Bearer <token>` against `/mcp`. This remains a read-only,
 personal/ephemeral setup; use a stronger OAuth/Access layer before treating it
 as durable shared infrastructure.
+
+`chat-scrobbler init` generates fresh `mcpAuthToken` and `ingestToken` values
+in new starter configs. If you already have a config, run `chat-scrobbler doctor`
+after edits or upgrades to verify the effective config, local ingest health,
+MCP HTTP endpoint, embedding setup, SQLite index, and any public MCP tunnel.
 
 <details>
 <summary>Build from source instead</summary>

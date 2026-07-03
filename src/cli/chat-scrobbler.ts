@@ -1,12 +1,12 @@
 // src/cli/chat-scrobbler.ts
 // CLI entrypoint for the chat-scrobbler tool.
-// Subcommands: search, get, list, unify, serve, backup, backups, restore
+// Subcommands: search, get, list, unify, serve, doctor, backup, backups, restore
 // Arg parsing: manual / node:util parseArgs (no extra packages).
 
 import { parseArgs } from "node:util";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { loadConfig } from "../config";
+import { discoverConfigPath, loadConfig } from "../config";
 import { embeddingProviderFromConfig } from "../indexer/embedding-providers";
 import {
   runSearch,
@@ -18,6 +18,7 @@ import {
   runBackups,
   runRestore,
   runConnect,
+  runDoctor,
   startServe,
   printServeInfo,
 } from "./commands";
@@ -69,12 +70,15 @@ Recall
 Operate
   init                   Scaffold data dirs + a starter config file
     --config <path>        Where to write it (default ~/.config/chat-scrobbler/config.json)
+                           Fresh configs include MCP and ingest auth tokens
 
   serve                  Start the ingest receiver + MCP HTTP connector (always-on capture)
 
   mcp                    Run the read-only MCP server over stdio (for Claude Desktop)
 
   connect                Print the MCP endpoint + how to wire it into clients
+
+  doctor                 Verify config, local services, index, embeddings, and public MCP
 
   unify                  Rebuild the SQLite index from canonical/
                            Enable semantic recall with:
@@ -230,6 +234,11 @@ async function main(argv: string[]): Promise<void> {
       case "connect": {
         runConnect({ cfg, write });
         break;
+      }
+
+      case "doctor": {
+        const result = await runDoctor({ cfg, configPath: discoverConfigPath(), write });
+        process.exit(result.exitCode);
       }
 
       case "backup": {

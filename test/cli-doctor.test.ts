@@ -46,7 +46,7 @@ function makeDoctor(overrides: {
     run: () =>
       runDoctor({
         cfg,
-        configPath: overrides.configPath ?? "/tmp/chat-scrobbler/config.json",
+        configPath: Object.hasOwn(overrides, "configPath") ? overrides.configPath! : "/tmp/chat-scrobbler/config.json",
         write: (s) => out.push(s),
         existsSync: () => overrides.exists ?? true,
         inspectIndex: async () => overrides.index ?? { exists: true, sessionCount: 2, embeddingCount: 0 },
@@ -54,7 +54,12 @@ function makeDoctor(overrides: {
           const key = `${init?.method ?? "GET"} ${url}`;
           const result = overrides.fetches?.[key];
           if (result instanceof Error) throw result;
-          return response(result ?? { ok: true, status: 200, headers: { "content-type": "application/json" }, body: '{"jsonrpc":"2.0","result":{}}' });
+          return response(result ?? {
+            ok: true,
+            status: 200,
+            headers: { "content-type": "application/json" },
+            body: '{"jsonrpc":"2.0","id":1,"result":{"serverInfo":{"name":"unified-sessions"}}}',
+          });
         },
       }),
   };
@@ -110,7 +115,7 @@ test("runDoctor fails when ingest health is unreachable", async () => {
 test("runDoctor fails when local MCP does not return a structured response", async () => {
   const { run, out } = makeDoctor({
     fetches: {
-      "GET http://127.0.0.1:4319/mcp/mcp-token": { ok: true, status: 200, body: "not json" },
+      "POST http://127.0.0.1:4319/mcp/mcp-token": { ok: true, status: 200, body: "not json" },
     },
   });
 
