@@ -139,6 +139,21 @@ bun run build:dist          # compiles dist/chat-scrobbler + dist/extension/
 ```
 </details>
 
+## Run with Docker
+
+The repo includes a root [Dockerfile](Dockerfile) and a bjslab Coolify compose
+file at [docker-compose.bjslab.yml](docker-compose.bjslab.yml). The image keeps
+the normal local default intact, while the container sets `BIND_HOST=0.0.0.0`
+so Coolify Traefik can reach the ingest and MCP HTTP servers on the Docker
+network.
+
+Provide `MCP_AUTH_TOKEN` and `INGEST_TOKEN` through Coolify env. After first
+boot, pull the embedding model into the Ollama service:
+
+```bash
+docker compose -f docker-compose.bjslab.yml exec ollama ollama pull nomic-embed-text
+```
+
 ## How I am using it
 
 - `serve` runs as a launchd agent on my Mac so capture survives reboots and
