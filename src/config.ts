@@ -22,6 +22,8 @@ export interface ChatHistoryConfig {
   ingestPort: number;
   /** Port the read-only MCP HTTP connector listens on. */
   mcpHttpPort: number;
+  /** Interface both HTTP servers bind to. Defaults to localhost. */
+  bindHost: string;
   /** Optional shared secret for MCP HTTP. Null keeps localhost /mcp anonymous. */
   mcpAuthToken: string | null;
   /** Optional public HTTPS tunnel base used only for printed connector URLs. */
@@ -54,6 +56,7 @@ export const DEFAULT_CONFIG: ChatHistoryConfig = {
   indexPath: join(DATA_HOME, "index", "sessions.db"),
   ingestPort: 4318,
   mcpHttpPort: 4319,
+  bindHost: "127.0.0.1",
   mcpAuthToken: null,
   mcpPublicBaseUrl: null,
   ingestBaseUrl: DEFAULT_INGEST_BASE_URL,
@@ -86,6 +89,7 @@ const FILE_KEYS: Array<keyof ChatHistoryConfig> = [
   "indexPath",
   "ingestPort",
   "mcpHttpPort",
+  "bindHost",
   "mcpAuthToken",
   "mcpPublicBaseUrl",
   "ingestBaseUrl",
@@ -125,6 +129,7 @@ export function loadConfig(opts: LoadConfigOptions = {}): ChatHistoryConfig {
   applyString(cfg, "indexPath", env.INDEX_PATH);
   applyNumber(cfg, "ingestPort", env.PORT);
   applyNumber(cfg, "mcpHttpPort", env.MCP_HTTP_PORT);
+  applyString(cfg, "bindHost", env.CHAT_SCROBBLER_BIND_HOST ?? env.BIND_HOST);
   applyNullableString(cfg, "mcpAuthToken", env.MCP_AUTH_TOKEN ?? env.CHAT_SCROBBLER_MCP_AUTH_TOKEN);
   applyNullableString(cfg, "mcpPublicBaseUrl", env.MCP_PUBLIC_BASE_URL ?? env.CHAT_SCROBBLER_MCP_PUBLIC_BASE_URL);
   applyEmbeddingProvider(cfg, env.CHAT_SCROBBLER_EMBED_PROVIDER ?? env.EMBED_PROVIDER);
@@ -185,7 +190,7 @@ function readConfigFile(path: string | null): PartialConfig {
   }
 }
 
-function applyString(cfg: ChatHistoryConfig, key: "canonicalDir" | "indexPath" | "ollamaBaseUrl", v: string | undefined): void {
+function applyString(cfg: ChatHistoryConfig, key: "canonicalDir" | "indexPath" | "ollamaBaseUrl" | "bindHost", v: string | undefined): void {
   if (v !== undefined && v !== "") cfg[key] = v;
 }
 

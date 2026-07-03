@@ -11,14 +11,15 @@ if (import.meta.main) {
   // INGEST_TOKEN is optional: unset/empty = no auth (local dev); set it on a
   // Tailscale-facing host to require Authorization: Bearer <token>.
   const cfg = loadConfig();
-  const { ingestPort: port, canonicalDir, indexPath, ingestToken } = cfg;
+  const { ingestPort: port, bindHost, canonicalDir, indexPath, ingestToken } = cfg;
 
   Bun.serve({
+    hostname: bindHost,
     port,
     fetch: (req) => handleIngestRequest(req, { canonicalDir, indexPath, ingestToken }),
   });
 
-  console.log(`chat scrobbler ingest listening on http://127.0.0.1:${port}`);
+  console.log(`chat scrobbler ingest listening on http://${bindHost}:${port}`);
   console.log(`folding captures into ${canonicalDir} + ${indexPath} (fat server; POST /status enabled)`);
   if (ingestToken) console.log("bearer token auth ENABLED on capture, asset, status, and delete endpoints");
 }

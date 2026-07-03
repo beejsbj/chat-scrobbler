@@ -636,7 +636,7 @@ export interface ServeHandles {
 
 export async function startServe(cfg: ChatHistoryConfig): Promise<ServeHandles> {
   const ingestServer = Bun.serve({
-    hostname: "127.0.0.1",
+    hostname: cfg.bindHost,
     port: cfg.ingestPort,
     async fetch(req: Request): Promise<Response> {
       return handleIngestRequest(req, {
@@ -650,6 +650,7 @@ export async function startServe(cfg: ChatHistoryConfig): Promise<ServeHandles> 
 
   const mcpServer = await startHttpServer({
     port: cfg.mcpHttpPort,
+    bindHost: cfg.bindHost,
     indexPath: cfg.indexPath,
     canonicalDir: cfg.canonicalDir,
     embeddingProvider: embeddingProviderFromConfig(cfg),
