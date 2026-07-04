@@ -102,6 +102,34 @@ test("background ignores chats after successful delete capture only", async () =
   ]);
 });
 
+test("background saves and reports ingest token settings", async () => {
+  const saveResponse = await sendRuntimeMessage({
+    type: "SCROBBLER_SAVE_SETTINGS",
+    ingestBaseUrl: "https://receiver.example",
+    ingestToken: "secret-token",
+    autoSync: false,
+  });
+
+  expect(saveResponse).toMatchObject({
+    ok: true,
+    settings: {
+      ingestBaseUrl: "https://receiver.example",
+      ingestToken: "secret-token",
+      autoSync: false,
+    },
+  });
+
+  const statusResponse = await sendRuntimeMessage({ type: "SCROBBLER_GET_STATUS" });
+  expect(statusResponse).toMatchObject({
+    ok: true,
+    settings: {
+      ingestBaseUrl: "https://receiver.example",
+      ingestToken: "secret-token",
+      autoSync: false,
+    },
+  });
+});
+
 function sendRuntimeMessage(message: RuntimeMessage): Promise<unknown> {
   return new Promise((resolve) => {
     expect(runtimeListener).not.toBeNull();
