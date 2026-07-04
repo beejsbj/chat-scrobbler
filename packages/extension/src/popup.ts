@@ -5,6 +5,7 @@ import { RECENT_CAPTURES_KEY, type RecentCapture } from "./recent-captures";
 // ---- element refs ----
 const autoSyncToggle = document.querySelector<HTMLInputElement>("#auto-sync")!;
 const ingestInput    = document.querySelector<HTMLInputElement>("#ingest-url")!;
+const ingestTokenInput = document.querySelector<HTMLInputElement>("#ingest-token")!;
 const syncAllButton  = document.querySelector<HTMLButtonElement>("#sync-all")!;
 const captureCountEl = document.querySelector<HTMLElement>("#capture-count")!;
 const lastCaptureEl  = document.querySelector<HTMLElement>("#last-capture")!;
@@ -82,6 +83,7 @@ async function applyTheme(): Promise<void> {
 // ---- event handlers ----
 autoSyncToggle.addEventListener("change", () => guard(saveSettings));
 ingestInput.addEventListener("change",    () => guard(saveSettings));
+ingestTokenInput.addEventListener("change", () => guard(saveSettings));
 syncAllButton.addEventListener("click",   () => guard(syncAll));
 
 // ---- init ----
@@ -115,6 +117,7 @@ async function saveSettings(): Promise<void> {
   const res = await sendMessage({
     type: "SCROBBLER_SAVE_SETTINGS",
     ingestBaseUrl: ingestInput.value.trim() || DEFAULT_INGEST_BASE_URL,
+    ingestToken: ingestTokenInput.value.trim() || null,
     autoSync: autoSyncToggle.checked,
   });
   if (!res?.ok) throw new Error(res?.error ?? "Save failed");
@@ -129,6 +132,7 @@ async function refreshStatus(): Promise<void> {
   const s = res.status ?? {};
 
   ingestInput.value = settings.ingestBaseUrl ?? DEFAULT_INGEST_BASE_URL;
+  ingestTokenInput.value = settings.ingestToken ?? "";
   autoSyncToggle.checked = settings.autoSync ?? true;
 
   // Footer stats

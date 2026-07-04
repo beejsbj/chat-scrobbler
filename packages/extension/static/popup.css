@@ -235,7 +235,8 @@ details[open] > summary::before { transform: rotate(90deg); }
 .field { display: flex; flex-direction: column; gap: 3px; }
 .field-label { font-size: 9.5px; font-weight: 600; color: var(--muted); letter-spacing: 0.04em; text-transform: uppercase; }
 
-input[type="url"] {
+input[type="url"],
+input[type="password"] {
   width: 100%;
   padding: 5px 7px;
   border: 1px solid var(--border);
@@ -247,7 +248,8 @@ input[type="url"] {
   outline: none;
   transition: border-color .12s;
 }
-input[type="url"]:focus { border-color: var(--accent); }
+input[type="url"]:focus,
+input[type="password"]:focus { border-color: var(--accent); }
 
 button {
   width: 100%;
