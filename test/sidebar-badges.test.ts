@@ -59,6 +59,10 @@ class FakeElement {
     return this.attrs.get(name) ?? null;
   }
 
+  hasAttribute(name: string): boolean {
+    return this.getAttribute(name) !== null;
+  }
+
   removeAttribute(name: string): void {
     this.attrs.delete(name);
   }
