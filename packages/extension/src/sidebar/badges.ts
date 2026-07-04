@@ -8,6 +8,8 @@ const ACTIONS_ATTR = "data-scrobbler-actions";
 const STYLE_ID = "scrobbler-badge-style";
 const DELETE_ACTION_ATTR = "data-scrobbler-delete";
 const TOGGLE_ACTION_ATTR = "data-scrobbler-toggle";
+const ACTIONS_LISTENERS_ATTR = "data-scrobbler-actions-listeners";
+const ACTIONS_REVEALED_CLASS = "scrobbler-actions--revealed";
 
 export function ensureBadgeStyles(): void {
   if (document.getElementById(STYLE_ID)) return;
@@ -15,7 +17,7 @@ export function ensureBadgeStyles(): void {
   style.id = STYLE_ID;
   style.textContent = `
     .scrobbler-actions{
-      display:inline-flex;align-items:center;gap:4px;margin-left:5px;
+      display:inline-flex;align-items:center;gap:4px;margin-left:6px;
       vertical-align:middle;flex:0 0 auto;pointer-events:auto;
     }
     .scrobbler-badge{
@@ -26,16 +28,18 @@ export function ensureBadgeStyles(): void {
       line-height:0;
     }
     .scrobbler-badge svg{display:block;width:10px;height:10px;}
-    .scrobbler-action{
-      display:inline-flex;align-items:center;justify-content:center;
-      width:14px;height:14px;border:0;padding:0;margin:0;border-radius:3px;
-      color:#6e7781;background:transparent;cursor:pointer;line-height:0;
+    .scrobbler-action{display:none;
+      align-items:center;justify-content:center;
+      width:16px;height:16px;border:0;padding:0;margin:0;border-radius:3px;
+      color:inherit;background:transparent;cursor:pointer;line-height:0;opacity:.55;
     }
+    .scrobbler-actions.scrobbler-actions--revealed .scrobbler-action,
+    .scrobbler-actions:focus-within .scrobbler-action{display:inline-flex;}
     .scrobbler-action svg{display:block;width:12px;height:12px;}
-    .scrobbler-action:hover{color:#24292f;background:rgba(175,184,193,.2);}
+    .scrobbler-action:hover{opacity:1;background:color-mix(in srgb,currentColor 12%,transparent);}
     .scrobbler-action:focus-visible{outline:2px solid #0969da;outline-offset:1px;}
     .scrobbler-action[data-kind="delete"]:hover{color:#cf222e;}
-    .scrobbler-action[aria-pressed="true"]{color:#6e7781;background:rgba(175,184,193,.24);}
+    .scrobbler-action[aria-pressed="true"]{opacity:1;background:color-mix(in srgb,currentColor 10%,transparent);}
     .scrobbler-badge[data-state="synced"]{color:#1a7f37;}
     .scrobbler-badge[data-state="stale"]{color:#b08800;}
     .scrobbler-badge[data-state="syncing"]{color:#0969da;}
@@ -81,6 +85,15 @@ function ensureContainer(anchor: Element): HTMLElement {
     container.setAttribute(ACTIONS_ATTR, "1");
     container.className = "scrobbler-actions";
     anchor.appendChild(container);
+  }
+  if (!anchor.hasAttribute(ACTIONS_LISTENERS_ATTR)) {
+    anchor.setAttribute(ACTIONS_LISTENERS_ATTR, "1");
+    anchor.addEventListener("mouseenter", () => {
+      container.classList.add(ACTIONS_REVEALED_CLASS);
+    });
+    anchor.addEventListener("mouseleave", () => {
+      container.classList.remove(ACTIONS_REVEALED_CLASS);
+    });
   }
   return container;
 }
