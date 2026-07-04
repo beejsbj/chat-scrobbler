@@ -26,12 +26,13 @@ class FakeElement {
   readonly dataset: Record<string, string> = {};
   readonly classList = new FakeClassList(this);
   readonly listeners: Record<string, Array<() => void>> = {};
+  readonly style: Record<string, string> = {};
   className = "";
   id = "";
   innerHTML = "";
   title = "";
-  onclick: unknown;
-  onkeydown: unknown;
+  onclick: ((event: FakeEvent) => void) | null = null;
+  onkeydown: ((event: FakeKeyEvent) => void) | null = null;
   parent: FakeElement | null = null;
   textContent = "";
   private readonly attrs = new Map<string, string>();
@@ -46,6 +47,7 @@ class FakeElement {
 
   setAttribute(name: string, value: string): void {
     this.attrs.set(name, value);
+    if (name === "id") this.id = value;
     if (name.startsWith("data-")) {
       const dataKey = name
         .slice(5)
@@ -89,6 +91,7 @@ class FakeElement {
 
 function withFakeDocument(run: (root: FakeElement) => void): void {
   const originalDocument = (globalThis as { document?: unknown }).document;
+  const originalGetComputedStyle = (globalThis as { getComputedStyle?: unknown }).getComputedStyle;
   const root = new FakeElement("html");
   const fakeDocument = {
     documentElement: root,
@@ -96,43 +99,139 @@ function withFakeDocument(run: (root: FakeElement) => void): void {
     getElementById: (id: string) => root.children.find((child) => child.getAttribute("id") === id) ?? null,
   };
   (globalThis as { document?: unknown }).document = fakeDocument;
+  (globalThis as { getComputedStyle?: unknown }).getComputedStyle = (element: FakeElement) => ({
+    position: element.style.position || "static",
+  });
   try {
     run(root);
   } finally {
     (globalThis as { document?: unknown }).document = originalDocument;
+    (globalThis as { getComputedStyle?: unknown }).getComputedStyle = originalGetComputedStyle;
   }
 }
 
-test("badge styles hide actions until the row is revealed or focused", () => {
+interface FakeEvent {
+  preventDefault: () => void;
+  stopPropagation: () => void;
+}
+
+interface FakeKeyEvent extends FakeEvent {
+  key: string;
+}
+
+function click(element: FakeElement): void {
+  element.onclick?.({
+    preventDefault: () => {},
+    stopPropagation: () => {},
+  });
+}
+
+test("badge styles position a single corner-dot button", () => {
   withFakeDocument((root) => {
     ensureBadgeStyles();
 
     const style = root.querySelector("[id]");
-    expect(style?.textContent).toContain(".scrobbler-action{display:none;");
-    expect(style?.textContent).toContain(".scrobbler-actions.scrobbler-actions--revealed .scrobbler-action");
-    expect(style?.textContent).toContain(".scrobbler-actions:focus-within .scrobbler-action");
+    expect(style?.textContent).toContain(".scrobbler-badge-container{position:absolute;top:3px;left:3px;");
+    expect(style?.textContent).toContain(".scrobbler-badge{width:14px;height:14px;");
+    expect(style?.textContent).not.toContain(".scrobbler-action");
   });
 });
 
-test("setBadge reveals row actions on hover without stacking listeners", () => {
+test("captured-state dot click invokes onDelete, not onToggle", () => {
   withFakeDocument(() => {
     const anchor = new FakeElement("a");
+    let deleteCalls = 0;
+    let toggleCalls = 0;
 
-    setBadge(anchor as unknown as Element, "synced");
-    const container = anchor.querySelector("[data-scrobbler-actions]");
+    setBadge(anchor as unknown as Element, "synced", {
+      onDelete: () => { deleteCalls += 1; },
+      onToggle: () => { toggleCalls += 1; },
+    });
 
-    expect(container?.classList.contains("scrobbler-actions--revealed")).toBe(false);
-    expect(anchor.listeners.mouseenter).toHaveLength(1);
-    expect(anchor.listeners.mouseleave).toHaveLength(1);
+    const dot = anchor.querySelector("[data-scrobbler-badge]");
+    expect(dot?.tagName).toBe("button");
+    expect(dot?.title).toBe("Captured. Click to delete and stop syncing");
+    expect(dot?.getAttribute("aria-label")).toBe("Captured. Click to delete and stop syncing");
 
-    setBadge(anchor as unknown as Element, "stale");
-    expect(anchor.listeners.mouseenter).toHaveLength(1);
-    expect(anchor.listeners.mouseleave).toHaveLength(1);
+    click(dot!);
 
-    anchor.dispatch("mouseenter");
-    expect(container?.classList.contains("scrobbler-actions--revealed")).toBe(true);
+    expect(deleteCalls).toBe(1);
+    expect(toggleCalls).toBe(0);
+  });
+});
 
-    anchor.dispatch("mouseleave");
-    expect(container?.classList.contains("scrobbler-actions--revealed")).toBe(false);
+test("ignored-state dot click invokes onToggle, not onDelete", () => {
+  withFakeDocument(() => {
+    const anchor = new FakeElement("a");
+    let deleteCalls = 0;
+    let toggleCalls = 0;
+
+    setBadge(anchor as unknown as Element, "ignored", {
+      onDelete: () => { deleteCalls += 1; },
+      onToggle: () => { toggleCalls += 1; },
+    });
+
+    const dot = anchor.querySelector("[data-scrobbler-badge]");
+    expect(dot?.title).toBe("Not syncing. Click to re-enable");
+
+    click(dot!);
+
+    expect(deleteCalls).toBe(0);
+    expect(toggleCalls).toBe(1);
+  });
+});
+
+test("missing-state dot click invokes onToggle, not onDelete", () => {
+  withFakeDocument(() => {
+    const anchor = new FakeElement("a");
+    let deleteCalls = 0;
+    let toggleCalls = 0;
+
+    setBadge(anchor as unknown as Element, "missing", {
+      onDelete: () => { deleteCalls += 1; },
+      onToggle: () => { toggleCalls += 1; },
+    });
+
+    const dot = anchor.querySelector("[data-scrobbler-badge]");
+    expect(dot?.title).toBe("Not captured. Click to stop syncing");
+
+    click(dot!);
+
+    expect(deleteCalls).toBe(0);
+    expect(toggleCalls).toBe(1);
+  });
+});
+
+test("setBadge positions one reusable dot without duplicate listeners", () => {
+  withFakeDocument(() => {
+    const anchor = new FakeElement("a");
+    let firstDeleteCalls = 0;
+    let secondDeleteCalls = 0;
+
+    setBadge(anchor as unknown as Element, "synced", {
+      onDelete: () => { firstDeleteCalls += 1; },
+    });
+
+    const container = anchor.querySelector("[data-scrobbler-badge-container]");
+    const dot = anchor.querySelector("[data-scrobbler-badge]");
+    expect(anchor.style.position).toBe("relative");
+    expect(container?.style.position).toBe("absolute");
+    expect(container?.style.top).toBe("3px");
+    expect(container?.style.left).toBe("3px");
+    expect(anchor.children).toHaveLength(1);
+    expect(container?.children).toHaveLength(1);
+
+    setBadge(anchor as unknown as Element, "error", {
+      onDelete: () => { secondDeleteCalls += 1; },
+    });
+
+    expect(anchor.children).toHaveLength(1);
+    expect(container?.children).toHaveLength(1);
+    expect(anchor.listeners.mouseenter ?? []).toHaveLength(0);
+    expect(anchor.listeners.mouseleave ?? []).toHaveLength(0);
+
+    click(dot!);
+    expect(firstDeleteCalls).toBe(0);
+    expect(secondDeleteCalls).toBe(1);
   });
 });
