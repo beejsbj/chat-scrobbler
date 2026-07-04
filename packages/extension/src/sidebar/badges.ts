@@ -1,5 +1,5 @@
 // packages/extension/src/sidebar/badges.ts
-// Thin DOM glue: inject a corner sync toggle into a sidebar chat link.
+// Thin DOM glue: inject a left-edge sync toggle into a sidebar chat link.
 // All decision logic is in reconcile.ts; this only touches the DOM.
 import type { ConversationState } from "./reconcile";
 
@@ -12,29 +12,29 @@ export function ensureBadgeStyles(): void {
   const style = document.createElement("style");
   style.id = STYLE_ID;
   style.textContent = `
-    .scrobbler-badge-container{position:absolute;top:3px;left:3px;
-      width:14px;height:14px;display:block;pointer-events:none;z-index:1;
+    .scrobbler-badge-container{position:absolute;left:0;top:0;bottom:0;width:8px;
+      display:block;pointer-events:none;z-index:1;
     }
-    .scrobbler-badge{width:14px;height:14px;display:inline-flex;align-items:center;justify-content:center;
-      border:0;padding:0;margin:0;border-radius:999px;background:transparent;color:inherit;
+    .scrobbler-badge{position:absolute;left:0;top:0;bottom:0;width:8px;
+      display:block;border:0;padding:0;margin:0;background:transparent;color:inherit;
       cursor:pointer;line-height:0;pointer-events:auto;
     }
     .scrobbler-badge::before{
-      content:"";width:8px;height:8px;border-radius:999px;background:currentColor;
-      box-sizing:border-box;transition:background-color .2s,border-color .2s,opacity .2s,transform .2s;
+      content:"";position:absolute;left:0;top:0;bottom:0;width:3px;
+      border-radius:0;background:currentColor;opacity:1;box-sizing:border-box;
+      transition:background-color .2s,opacity .2s,width .2s;
     }
-    .scrobbler-badge:hover::before{transform:scale(1.18);}
+    .scrobbler-badge:hover::before{opacity:1;width:4px;}
     .scrobbler-badge:focus-visible{outline:2px solid #0969da;outline-offset:1px;}
     .scrobbler-badge[data-state="synced"]{color:#1a7f37;}
     .scrobbler-badge[data-state="stale"]{color:#b08800;}
     .scrobbler-badge[data-state="syncing"]{color:#0969da;}
     .scrobbler-badge[data-state="syncing"]::before{animation:scrobbler-pulse 1.1s ease-in-out infinite;}
+    .scrobbler-badge:hover[data-state="syncing"]::before{animation:none;}
     .scrobbler-badge[data-state="error"]{color:#cf222e;}
-    .scrobbler-badge[data-state="missing"]::before{background:color-mix(in srgb,currentColor 45%,transparent);}
-    .scrobbler-badge[data-state="ignored"]::before{
-      background:transparent;border:1.5px solid color-mix(in srgb,currentColor 48%,transparent);
-    }
-    @keyframes scrobbler-pulse{0%,100%{opacity:.6;transform:scale(.9);}50%{opacity:1;transform:scale(1.15);}}
+    .scrobbler-badge[data-state="missing"]::before{opacity:.4;}
+    .scrobbler-badge[data-state="ignored"]::before{opacity:.4;}
+    @keyframes scrobbler-pulse{0%,100%{opacity:.65;}50%{opacity:1;}}
   `;
   document.documentElement.appendChild(style);
 }
@@ -49,7 +49,7 @@ export function setBadge(anchor: Element, state: ConversationState, actions: Bad
   ensureAnchorPosition(anchor);
   const container = ensureContainer(anchor);
   const badge = ensureBadge(container);
-  const label = dotLabel(state);
+  const label = barLabel(state);
   const onActivate = activationForState(state, actions);
 
   badge.dataset.state = state;
@@ -69,8 +69,10 @@ function ensureContainer(anchor: Element): HTMLElement {
     container.setAttribute(CONTAINER_ATTR, "1");
     container.className = "scrobbler-badge-container";
     container.style.position = "absolute";
-    container.style.top = "3px";
-    container.style.left = "3px";
+    container.style.left = "0";
+    container.style.top = "0";
+    container.style.bottom = "0";
+    container.style.width = "8px";
     anchor.appendChild(container);
   }
   return container;
@@ -99,8 +101,7 @@ function activationForState(state: ConversationState, actions: BadgeActions): ((
   return actions.onDelete;
 }
 
-function dotLabel(state: ConversationState): string {
-  if (state === "ignored") return "Not syncing. Click to re-enable";
-  if (state === "missing") return "Not captured. Click to stop syncing";
+function barLabel(state: ConversationState): string {
+  if (state === "ignored" || state === "missing") return "Not syncing. Click to re-enable";
   return "Captured. Click to delete and stop syncing";
 }

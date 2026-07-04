@@ -126,18 +126,24 @@ function click(element: FakeElement): void {
   });
 }
 
-test("badge styles position a single corner-dot button", () => {
+test("badge styles position a single left-edge bar button", () => {
   withFakeDocument((root) => {
     ensureBadgeStyles();
 
     const style = root.querySelector("[id]");
-    expect(style?.textContent).toContain(".scrobbler-badge-container{position:absolute;top:3px;left:3px;");
-    expect(style?.textContent).toContain(".scrobbler-badge{width:14px;height:14px;");
+    expect(style?.textContent).toContain(".scrobbler-badge-container{position:absolute;left:0;top:0;bottom:0;width:8px;");
+    expect(style?.textContent).toContain(".scrobbler-badge{position:absolute;left:0;top:0;bottom:0;width:8px;");
+    expect(style?.textContent).toContain(".scrobbler-badge::before");
+    expect(style?.textContent).toContain("left:0;top:0;bottom:0;width:3px;");
+    expect(style?.textContent).toContain("border-radius:0");
+    expect(style?.textContent).toContain(".scrobbler-badge:hover::before{opacity:1;width:4px;}");
+    expect(style?.textContent).toContain(".scrobbler-badge[data-state=\"missing\"]::before{opacity:.4;}");
+    expect(style?.textContent).toContain(".scrobbler-badge[data-state=\"ignored\"]::before{opacity:.4;}");
     expect(style?.textContent).not.toContain(".scrobbler-action");
   });
 });
 
-test("captured-state dot click invokes onDelete, not onToggle", () => {
+test("captured-state bar click invokes onDelete, not onToggle", () => {
   withFakeDocument(() => {
     const anchor = new FakeElement("a");
     let deleteCalls = 0;
@@ -148,19 +154,19 @@ test("captured-state dot click invokes onDelete, not onToggle", () => {
       onToggle: () => { toggleCalls += 1; },
     });
 
-    const dot = anchor.querySelector("[data-scrobbler-badge]");
-    expect(dot?.tagName).toBe("button");
-    expect(dot?.title).toBe("Captured. Click to delete and stop syncing");
-    expect(dot?.getAttribute("aria-label")).toBe("Captured. Click to delete and stop syncing");
+    const bar = anchor.querySelector("[data-scrobbler-badge]");
+    expect(bar?.tagName).toBe("button");
+    expect(bar?.title).toBe("Captured. Click to delete and stop syncing");
+    expect(bar?.getAttribute("aria-label")).toBe("Captured. Click to delete and stop syncing");
 
-    click(dot!);
+    click(bar!);
 
     expect(deleteCalls).toBe(1);
     expect(toggleCalls).toBe(0);
   });
 });
 
-test("ignored-state dot click invokes onToggle, not onDelete", () => {
+test("ignored-state bar click invokes onToggle, not onDelete", () => {
   withFakeDocument(() => {
     const anchor = new FakeElement("a");
     let deleteCalls = 0;
@@ -171,17 +177,17 @@ test("ignored-state dot click invokes onToggle, not onDelete", () => {
       onToggle: () => { toggleCalls += 1; },
     });
 
-    const dot = anchor.querySelector("[data-scrobbler-badge]");
-    expect(dot?.title).toBe("Not syncing. Click to re-enable");
+    const bar = anchor.querySelector("[data-scrobbler-badge]");
+    expect(bar?.title).toBe("Not syncing. Click to re-enable");
 
-    click(dot!);
+    click(bar!);
 
     expect(deleteCalls).toBe(0);
     expect(toggleCalls).toBe(1);
   });
 });
 
-test("missing-state dot click invokes onToggle, not onDelete", () => {
+test("missing-state bar click invokes onToggle, not onDelete", () => {
   withFakeDocument(() => {
     const anchor = new FakeElement("a");
     let deleteCalls = 0;
@@ -192,17 +198,18 @@ test("missing-state dot click invokes onToggle, not onDelete", () => {
       onToggle: () => { toggleCalls += 1; },
     });
 
-    const dot = anchor.querySelector("[data-scrobbler-badge]");
-    expect(dot?.title).toBe("Not captured. Click to stop syncing");
+    const bar = anchor.querySelector("[data-scrobbler-badge]");
+    expect(bar?.title).toBe("Not syncing. Click to re-enable");
+    expect(bar?.getAttribute("aria-label")).toBe("Not syncing. Click to re-enable");
 
-    click(dot!);
+    click(bar!);
 
     expect(deleteCalls).toBe(0);
     expect(toggleCalls).toBe(1);
   });
 });
 
-test("setBadge positions one reusable dot without duplicate listeners", () => {
+test("setBadge positions one reusable left-edge bar without duplicate listeners", () => {
   withFakeDocument(() => {
     const anchor = new FakeElement("a");
     let firstDeleteCalls = 0;
@@ -213,11 +220,13 @@ test("setBadge positions one reusable dot without duplicate listeners", () => {
     });
 
     const container = anchor.querySelector("[data-scrobbler-badge-container]");
-    const dot = anchor.querySelector("[data-scrobbler-badge]");
+    const bar = anchor.querySelector("[data-scrobbler-badge]");
     expect(anchor.style.position).toBe("relative");
     expect(container?.style.position).toBe("absolute");
-    expect(container?.style.top).toBe("3px");
-    expect(container?.style.left).toBe("3px");
+    expect(container?.style.left).toBe("0");
+    expect(container?.style.top).toBe("0");
+    expect(container?.style.bottom).toBe("0");
+    expect(container?.style.width).toBe("8px");
     expect(anchor.children).toHaveLength(1);
     expect(container?.children).toHaveLength(1);
 
@@ -230,7 +239,7 @@ test("setBadge positions one reusable dot without duplicate listeners", () => {
     expect(anchor.listeners.mouseenter ?? []).toHaveLength(0);
     expect(anchor.listeners.mouseleave ?? []).toHaveLength(0);
 
-    click(dot!);
+    click(bar!);
     expect(firstDeleteCalls).toBe(0);
     expect(secondDeleteCalls).toBe(1);
   });
