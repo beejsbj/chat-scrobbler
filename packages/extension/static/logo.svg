@@ -1,10 +1,7 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32">
-  <!-- Outer ring -->
-  <circle cx="16" cy="16" r="13" fill="none" stroke="#0969da" stroke-width="2.5"/>
-  <!-- Inner dot -->
-  <circle cx="16" cy="16" r="4" fill="#0969da"/>
-  <!-- Three small dots at cardinal positions suggesting "scrobbling" -->
-  <circle cx="16" cy="5.5" r="1.8" fill="#0969da" opacity="0.5"/>
-  <circle cx="26.5" cy="16" r="1.8" fill="#0969da" opacity="0.5"/>
-  <circle cx="5.5" cy="16" r="1.8" fill="#0969da" opacity="0.5"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <rect x="6" y="6" width="116" height="116" rx="28" fill="#0b5ed7"/>
+  <path d="M40 34h48a12 12 0 0 1 12 12v30a12 12 0 0 1-12 12H66l-18 15v-15h-8a12 12 0 0 1-12-12V46a12 12 0 0 1 12-12z" fill="#ffffff"/>
+  <circle cx="52" cy="61" r="5.5" fill="#0b5ed7"/>
+  <circle cx="70" cy="61" r="5.5" fill="#0b5ed7"/>
+  <circle cx="88" cy="61" r="5.5" fill="#0b5ed7"/>
 </svg>
