@@ -24,17 +24,33 @@ export function ensureBadgeStyles(): void {
       border-radius:0;background:currentColor;opacity:1;box-sizing:border-box;
       transition:background-color .2s,opacity .2s,width .2s;
     }
+    .scrobbler-badge::after{
+      content:"";position:absolute;left:0;top:0;width:3px;height:42%;
+      border-radius:0;background:currentColor;opacity:0;box-sizing:border-box;
+      pointer-events:none;transform:translateY(-120%) scaleY(.6);transform-origin:top;
+      transition:width .2s;
+    }
     .scrobbler-badge:hover::before{opacity:1;width:4px;}
     .scrobbler-badge:focus-visible{outline:2px solid #0969da;outline-offset:1px;}
     .scrobbler-badge[data-state="synced"]{color:#1a7f37;}
     .scrobbler-badge[data-state="stale"]{color:#b08800;}
     .scrobbler-badge[data-state="syncing"]{color:#0969da;}
-    .scrobbler-badge[data-state="syncing"]::before{animation:scrobbler-pulse 1.1s ease-in-out infinite;}
-    .scrobbler-badge:hover[data-state="syncing"]::before{animation:none;}
+    .scrobbler-badge[data-state="syncing"]::before{opacity:.28;}
+    .scrobbler-badge[data-state="syncing"]::after{
+      opacity:.9;box-shadow:0 0 4px rgba(9,105,218,.25);
+      animation:scrobbler-sync-flow 1.45s cubic-bezier(.45,0,.25,1) infinite;
+    }
+    .scrobbler-badge:hover[data-state="syncing"]::after{width:4px;}
     .scrobbler-badge[data-state="error"]{color:#cf222e;}
     .scrobbler-badge[data-state="missing"]::before{opacity:.4;}
     .scrobbler-badge[data-state="ignored"]::before{opacity:.4;}
-    @keyframes scrobbler-pulse{0%,100%{opacity:.65;}50%{opacity:1;}}
+    @keyframes scrobbler-sync-flow{
+      0%{transform:translateY(-120%) scaleY(.45);opacity:0;}
+      18%{opacity:.85;}
+      46%{transform:translateY(55%) scaleY(1);opacity:.9;}
+      78%{opacity:.85;}
+      100%{transform:translateY(250%) scaleY(.65);opacity:0;}
+    }
   `;
   document.documentElement.appendChild(style);
 }
