@@ -10,16 +10,12 @@ import {
   SIDEBAR_CONFIGS,
   activeConversationId,
   applyIgnoredStates,
-  badgeActionLabel,
-  badgePresentation,
   captureDelayMs,
   captureQueue,
   captureWithRetry,
-  deleteActionLabel,
   deleteConfirmationMessage,
   nextCooldownMs,
   nextFullReconcileDelayMs,
-  sidebarActionLabels,
   shouldRecapture,
 } from "../packages/extension/src/sidebar/reconcile";
 
@@ -37,59 +33,6 @@ test("idFromHref pulls the conversation id per provider", () => {
 test("sidebar link selectors include provider-specific fallbacks", () => {
   expect(SIDEBAR_CONFIGS.chatgpt.linkSelector).toContain('aside a[href*="/c/"]');
   expect(SIDEBAR_CONFIGS.gemini.linkSelector).toContain('a[href^="/app/"]');
-});
-
-test("badgePresentation maps each state to a glyph + accessible label", () => {
-  // Glyphs are now inline SVG strings; verify they are non-empty SVG and that
-  // state + label contracts are upheld (exact markup is an implementation detail).
-  const synced = badgePresentation("synced");
-  expect(synced.state).toBe("synced");
-  expect(synced.glyph).toContain("<svg");
-  expect(synced.label).toMatch(/synced/i);
-
-  const missing = badgePresentation("missing");
-  expect(missing.state).toBe("missing");
-  expect(missing.glyph).toContain("<svg");
-  expect(missing.label).toMatch(/not synced/i);
-
-  const syncing = badgePresentation("syncing");
-  expect(syncing.state).toBe("syncing");
-  expect(syncing.glyph).toContain("<svg");
-  expect(syncing.label).toMatch(/syncing/i);
-
-  const stale = badgePresentation("stale");
-  expect(stale.state).toBe("stale");
-  expect(stale.glyph).toContain("<svg");
-
-  const error = badgePresentation("error");
-  expect(error.state).toBe("error");
-  expect(error.glyph).toContain("<svg");
-
-  const ignored = badgePresentation("ignored");
-  expect(ignored.state).toBe("ignored");
-  expect(ignored.glyph).toContain("<svg");
-  expect(ignored.label).toMatch(/ignored/i);
-});
-
-test("badgeActionLabel describes the toggle action for tooltip and aria", () => {
-  expect(badgeActionLabel("synced")).toBe("Disable sync for this chat");
-  expect(badgeActionLabel("missing")).toBe("Disable sync for this chat");
-  expect(badgeActionLabel("stale")).toBe("Disable sync for this chat");
-  expect(badgeActionLabel("error")).toBe("Disable sync for this chat");
-  expect(badgeActionLabel("syncing")).toBe("Disable sync for this chat");
-  expect(badgeActionLabel("ignored")).toBe("Enable sync for this chat");
-});
-
-test("sidebarActionLabels orders local delete before prevent-sync toggle", () => {
-  expect(deleteActionLabel()).toBe("Delete local chat-scrobbler data for this chat");
-  expect(sidebarActionLabels("synced")).toEqual([
-    "Delete local chat-scrobbler data for this chat",
-    "Disable sync for this chat",
-  ]);
-  expect(sidebarActionLabels("ignored")).toEqual([
-    "Delete local chat-scrobbler data for this chat",
-    "Enable sync for this chat",
-  ]);
 });
 
 test("deleteConfirmationMessage is explicit that provider chats are not deleted", () => {

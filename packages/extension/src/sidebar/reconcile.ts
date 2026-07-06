@@ -56,13 +56,6 @@ export const SIDEBAR_CONFIGS: Record<ProviderSource, SidebarConfig> = {
   },
 };
 
-export interface BadgePresentation {
-  glyph: string;
-  label: string;
-  /** state used as a data-attribute + class hook for styling */
-  state: ConversationState;
-}
-
 /** Run an async capture, retrying up to retries times on a transient (non-rate-limit) failure
  *  so a brief ingest or network blip does not flash a chat red. Rate-limit errors are rethrown
  *  immediately because the caller handles their cooldown separately. */
@@ -85,49 +78,6 @@ export async function captureWithRetry(
       await (opts.wait ?? (() => Promise.resolve()))(opts.delayMs ?? 0);
     }
   }
-}
-
-// iCloud/Drive-style: subtle SVG glyph + accessible label. Colors are applied via CSS
-// keyed on the data-state attribute (see badges.ts) so we keep this pure.
-// Using inline SVG strings so the glyphs are crisp at any DPI and easily themed.
-const SVG = (path: string, extra = ""): string =>
-  `<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 10 10" aria-hidden="true" ${extra}>${path}</svg>`;
-
-// Filled circle (synced)
-const GLYPH_SYNCED = SVG('<circle cx="5" cy="5" r="3.5" fill="currentColor"/>');
-// Outlined ring (missing / not synced yet)
-const GLYPH_MISSING = SVG('<circle cx="5" cy="5" r="3" fill="none" stroke="currentColor" stroke-width="1.5"/>');
-// Half-filled ring (stale / needs re-sync)
-const GLYPH_STALE = SVG('<circle cx="5" cy="5" r="3.5" fill="currentColor" opacity=".35"/><circle cx="5" cy="5" r="3" fill="none" stroke="currentColor" stroke-width="1.5"/>');
-// Spinning arc (syncing) -- animation is applied via CSS on the badge element
-const GLYPH_SYNCING = SVG('<circle cx="5" cy="5" r="3" fill="none" stroke="currentColor" stroke-width="1.5" stroke-dasharray="12 7" stroke-linecap="round"/>', 'style="display:block"');
-// Exclamation dot (error)
-const GLYPH_ERROR = SVG('<circle cx="5" cy="5" r="3.5" fill="currentColor"/><rect x="4.25" y="2.5" width="1.5" height="2.8" rx=".5" fill="#fff"/><circle cx="5" cy="7" r=".7" fill="#fff"/>');
-// Slashed ring (ignored)
-const GLYPH_IGNORED = SVG('<circle cx="5" cy="5" r="3" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M2.4 7.6 7.6 2.4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>');
-
-export function badgePresentation(state: ConversationState): BadgePresentation {
-  switch (state) {
-    case "synced": return { glyph: GLYPH_SYNCED, label: "Synced to history", state };
-    case "stale": return { glyph: GLYPH_STALE, label: "Updated since last sync", state };
-    case "syncing": return { glyph: GLYPH_SYNCING, label: "Syncing…", state };
-    case "error": return { glyph: GLYPH_ERROR, label: "Sync failed", state };
-    case "ignored": return { glyph: GLYPH_IGNORED, label: "Ignored", state };
-    case "missing":
-    default: return { glyph: GLYPH_MISSING, label: "Not synced yet", state };
-  }
-}
-
-export function badgeActionLabel(state: ConversationState): string {
-  return state === "ignored" ? "Enable sync for this chat" : "Disable sync for this chat";
-}
-
-export function deleteActionLabel(): string {
-  return "Delete local chat-scrobbler data for this chat";
-}
-
-export function sidebarActionLabels(state: ConversationState): [string, string] {
-  return [deleteActionLabel(), badgeActionLabel(state)];
 }
 
 export function deleteConfirmationMessage(title: string): string {
