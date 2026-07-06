@@ -1,5 +1,6 @@
 import { handleIngestRequest } from "./server";
 import { loadConfig } from "../../../src/config";
+import { assertTokenForExposedBind } from "../../../src/core/network";
 
 export * from "./server";
 export * from "./pipeline";
@@ -12,6 +13,12 @@ if (import.meta.main) {
   // Tailscale-facing host to require Authorization: Bearer <token>.
   const cfg = loadConfig();
   const { ingestPort: port, bindHost, canonicalDir, indexPath, ingestToken } = cfg;
+  assertTokenForExposedBind({
+    bindHost,
+    token: ingestToken,
+    envVarName: "INGEST_TOKEN",
+    serviceName: "ingest server",
+  });
 
   Bun.serve({
     hostname: bindHost,

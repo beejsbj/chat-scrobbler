@@ -4,6 +4,7 @@ import { buildServer } from "./server";
 import { loadConfig } from "../config";
 import { embeddingProviderFromConfig } from "../indexer/embedding-providers";
 import type { EmbeddingProvider } from "../indexer/sqlite";
+import { assertTokenForExposedBind } from "../core/network";
 
 export interface HttpServerOptions {
   port: number;
@@ -85,6 +86,12 @@ export async function startHttpServer(
 ): Promise<ReturnType<typeof Bun.serve>> {
   const mcpAuthToken = opts.mcpAuthToken ?? null;
   const bindHost = opts.bindHost ?? "127.0.0.1";
+  assertTokenForExposedBind({
+    bindHost,
+    token: mcpAuthToken,
+    envVarName: "MCP_AUTH_TOKEN",
+    serviceName: "MCP HTTP server",
+  });
   const server = Bun.serve({
     hostname: bindHost,
     port: opts.port,

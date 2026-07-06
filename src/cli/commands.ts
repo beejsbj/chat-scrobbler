@@ -18,6 +18,7 @@ import { mkdirSync, existsSync, writeFileSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { randomBytes } from "node:crypto";
 import { resolveExtensionDir } from "./paths";
+import { assertTokenForExposedBind } from "../core/network";
 
 type Writer = (s: string) => void;
 type HttpFetch = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
@@ -635,6 +636,12 @@ export interface ServeHandles {
 }
 
 export async function startServe(cfg: ChatHistoryConfig): Promise<ServeHandles> {
+  assertTokenForExposedBind({
+    bindHost: cfg.bindHost,
+    token: cfg.ingestToken,
+    envVarName: "INGEST_TOKEN",
+    serviceName: "ingest server",
+  });
   const ingestServer = Bun.serve({
     hostname: cfg.bindHost,
     port: cfg.ingestPort,
