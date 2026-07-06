@@ -23,6 +23,7 @@ COPY --from=builder /out/chat-scrobbler /usr/local/bin/chat-scrobbler
 ENV BIND_HOST=0.0.0.0 \
   CANONICAL_DIR=/data/canonical/sessions \
   INDEX_PATH=/data/index/sessions.db \
+  MCP_HTTP_PORT=4321 \
   BACKUP_TARGET=/data/backups
 
 VOLUME ["/data"]
