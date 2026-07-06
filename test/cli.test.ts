@@ -7,6 +7,7 @@ import type { Session } from "../src/schema/types";
 import { writeSession } from "../src/store/sessions";
 import { openIndex, indexSession } from "../src/indexer/sqlite";
 import { DEFAULT_CONFIG, type ChatHistoryConfig } from "../src/config";
+import { canBindBunServer } from "./support/bun-server";
 
 // Import command functions
 import {
@@ -25,6 +26,7 @@ import {
 let tmpCanonical: string;
 let tmpIndex: string;
 let cfg: ChatHistoryConfig;
+const serverTestsCanBind = canBindBunServer();
 
 const SESSION_A: Session = {
   id: "chatgpt:abc123",
@@ -316,15 +318,13 @@ test("unify re-indexes from canonical and reports count", async () => {
 // serve command
 // ---------------------------------------------------------------------------
 
-test("serve boots ingest + MCP HTTP on ephemeral ports and responds", async () => {
-  const ingestPort = 14321;
-  const mcpPort = 14322;
+test.skipIf(!serverTestsCanBind)("serve boots ingest + MCP HTTP on ephemeral ports and responds", async () => {
   const serveCfg: ChatHistoryConfig = {
     ...cfg,
-    ingestPort,
-    mcpHttpPort: mcpPort,
+    ingestPort: 0,
+    mcpHttpPort: 0,
     bindHost: "127.0.0.1",
-    ingestBaseUrl: `http://127.0.0.1:${ingestPort}`,
+    ingestBaseUrl: "http://127.0.0.1:0",
   };
 
   const { ingestServer, mcpServer } = await startServe(serveCfg);
@@ -332,6 +332,9 @@ test("serve boots ingest + MCP HTTP on ephemeral ports and responds", async () =
   try {
     expect(ingestServer.hostname).toBe("127.0.0.1");
     expect(mcpServer.hostname).toBe("127.0.0.1");
+
+    const ingestPort = ingestServer.port;
+    const mcpPort = mcpServer.port;
 
     // Verify ingest health endpoint
     const healthRes = await fetch(`http://127.0.0.1:${ingestPort}/health`);
