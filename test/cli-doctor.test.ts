@@ -40,9 +40,11 @@ function makeDoctor(overrides: {
 } = {}) {
   const cfg = overrides.cfg ?? cfgWith();
   const out: string[] = [];
+  const calls: Array<{ url: string; init?: RequestInit }> = [];
   return {
     cfg,
     out,
+    calls,
     run: () =>
       runDoctor({
         cfg,
@@ -52,6 +54,7 @@ function makeDoctor(overrides: {
         inspectIndex: async () => overrides.index ?? { exists: true, sessionCount: 2, embeddingCount: 0 },
         fetch: async (url, init) => {
           const key = `${init?.method ?? "GET"} ${url}`;
+          calls.push({ url: String(url), init });
           const result = overrides.fetches?.[key];
           if (result instanceof Error) throw result;
           return response(result ?? {
@@ -187,7 +190,7 @@ test("runDoctor fails when public MCP base URL is configured but unreachable", a
   const { run, out } = makeDoctor({
     cfg: cfgWith({ mcpPublicBaseUrl: "https://chat-history.example.com" }),
     fetches: {
-      "GET https://chat-history.example.com/mcp/mcp-token": new Error("dead tunnel"),
+      "POST https://chat-history.example.com/mcp/mcp-token": new Error("dead tunnel"),
     },
   });
 
@@ -195,6 +198,65 @@ test("runDoctor fails when public MCP base URL is configured but unreachable", a
 
   expect(result.exitCode).toBe(1);
   expect(out.join("\n")).toContain("FAIL public MCP");
+});
+
+test("runDoctor fails when public MCP returns a non-MCP response", async () => {
+  const { run, out } = makeDoctor({
+    cfg: cfgWith({ mcpPublicBaseUrl: "https://chat-history.example.com" }),
+    fetches: {
+      "POST https://chat-history.example.com/mcp/mcp-token": {
+        ok: false,
+        status: 502,
+        headers: { "content-type": "text/html" },
+        body: "<html>bad gateway</html>",
+      },
+    },
+  });
+
+  const result = await run();
+
+  expect(result.exitCode).toBe(1);
+  expect(out.join("\n")).toContain("FAIL public MCP");
+});
+
+test("runDoctor redacts tokenized MCP URLs in printed output", async () => {
+  const token = "secret1234-token";
+  const { run, out, calls } = makeDoctor({
+    cfg: cfgWith({
+      mcpAuthToken: token,
+      mcpPublicBaseUrl: "https://chat-history.example.com",
+    }),
+  });
+
+  const result = await run();
+
+  expect(result.exitCode).toBe(0);
+  expect(out.join("\n")).not.toContain(token);
+  expect(calls.map((call) => call.url).join("\n")).toContain(token);
+});
+
+test("runDoctor passes timeout signals to every network probe", async () => {
+  const { run, calls } = makeDoctor({
+    cfg: cfgWith({
+      embeddingProvider: "ollama",
+      embeddingModel: null,
+      mcpPublicBaseUrl: "https://chat-history.example.com",
+    }),
+    fetches: {
+      "GET http://127.0.0.1:11434/api/tags": {
+        ok: true,
+        status: 200,
+        headers: { "content-type": "application/json" },
+        body: '{"models":[]}',
+      },
+    },
+  });
+
+  const result = await run();
+
+  expect(result.exitCode).toBe(0);
+  expect(calls.length).toBeGreaterThan(0);
+  expect(calls.every((call) => call.init?.signal instanceof AbortSignal)).toBe(true);
 });
 
 test("runDoctor reports defaults-only config discovery without failing", async () => {

@@ -381,7 +381,7 @@ export async function runDoctor(opts: DoctorCmdOpts): Promise<DoctorResult> {
   }
 
   try {
-    const res = await fetcher(withPath(opts.cfg.ingestBaseUrl, "/health"), { method: "GET" });
+    const res = await fetcher(withPath(opts.cfg.ingestBaseUrl, "/health"), doctorFetchInit("GET"));
     if (res.ok) {
       line("PASS", "ingest health", `${opts.cfg.ingestBaseUrl}/health responded ${res.status}`);
     } else {
@@ -392,7 +392,12 @@ export async function runDoctor(opts: DoctorCmdOpts): Promise<DoctorResult> {
   }
 
   const mcpLocalUrl = mcpUrl(`http://127.0.0.1:${opts.cfg.mcpHttpPort}`, opts.cfg.mcpAuthToken);
-  await checkStructuredMcp(fetcher, mcpLocalUrl, (kind, detail) => line(kind, "MCP HTTP", detail));
+  await checkStructuredMcp(
+    fetcher,
+    mcpLocalUrl,
+    (kind, detail) => line(kind, "MCP HTTP", detail),
+    redactTokenizedUrl(mcpLocalUrl, opts.cfg.mcpAuthToken),
+  );
 
   await checkEmbeddingProvider(opts.cfg, fetcher, line);
 
@@ -415,12 +420,12 @@ export async function runDoctor(opts: DoctorCmdOpts): Promise<DoctorResult> {
       line("FAIL", "public MCP", "mcpPublicBaseUrl set but mcpAuthToken missing");
     } else {
       const publicUrl = mcpUrl(opts.cfg.mcpPublicBaseUrl, opts.cfg.mcpAuthToken);
-      try {
-        const res = await fetcher(publicUrl, { method: "GET" });
-        line("PASS", "public MCP", `${publicUrl} responded ${res.status}`);
-      } catch (err) {
-        line("FAIL", "public MCP", errorMessage(err));
-      }
+      await checkStructuredMcp(
+        fetcher,
+        publicUrl,
+        (kind, detail) => line(kind, "public MCP", detail),
+        redactTokenizedUrl(publicUrl, opts.cfg.mcpAuthToken),
+      );
     }
   }
 
@@ -455,9 +460,11 @@ async function checkStructuredMcp(
   fetcher: HttpFetch,
   url: string,
   report: (kind: DoctorLineKind, detail: string) => void,
+  displayUrl = url,
 ): Promise<void> {
   try {
     const res = await fetcher(url, {
+      ...doctorFetchInit("POST"),
       method: "POST",
       headers: {
         accept: "application/json, text/event-stream",
@@ -476,9 +483,9 @@ async function checkStructuredMcp(
     });
     const body = await res.text();
     if (isStructuredMcpBody(body)) {
-      report("PASS", `${url} responded ${res.status}`);
+      report("PASS", `${displayUrl} responded ${res.status}`);
     } else {
-      report("FAIL", `${url} responded ${res.status} without structured MCP JSON`);
+      report("FAIL", `${displayUrl} responded ${res.status} without structured MCP JSON`);
     }
   } catch (err) {
     report("FAIL", errorMessage(err));
@@ -500,7 +507,7 @@ async function checkEmbeddingProvider(
   }
   if (cfg.embeddingProvider === "ollama") {
     try {
-      const res = await fetcher(withPath(cfg.ollamaBaseUrl, "/api/tags"), { method: "GET" });
+      const res = await fetcher(withPath(cfg.ollamaBaseUrl, "/api/tags"), doctorFetchInit("GET"));
       if (!res.ok) {
         line("FAIL", "embedding provider", `ollama /api/tags responded ${res.status}`);
         return;
@@ -536,6 +543,16 @@ function isStructuredMcpBody(body: string): boolean {
 function withPath(baseUrl: string, path: string): string {
   const base = baseUrl.replace(/\/+$/, "");
   return `${base}${path}`;
+}
+
+function doctorFetchInit(method: string): RequestInit {
+  return { method, signal: AbortSignal.timeout(5000) };
+}
+
+function redactTokenizedUrl(url: string, token: string | null): string {
+  if (!token) return url;
+  const encoded = encodeURIComponent(token);
+  return url.replace(encoded, "<token>");
 }
 
 function errorMessage(err: unknown): string {
