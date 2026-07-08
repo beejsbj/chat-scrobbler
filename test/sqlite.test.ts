@@ -33,6 +33,53 @@ test("search returns message-level hits matching the query", () => {
   expect(hits[0].match_sources).toEqual(["literal"]);
 });
 
+test("search finds literal substrings inside indexed message text", () => {
+  const db = openIndex(":memory:");
+  indexSession(db, mk("a", "chatgpt", "Port error", "Server failed with EADDRINUSE on port 4318"));
+
+  const hits = searchMessages(db, "ddr");
+
+  expect(hits).toHaveLength(1);
+  expect(hits[0].session_id).toBe("chatgpt:a");
+  expect(hits[0].message_id).toBe("a-m1");
+  expect(hits[0].snippet).toContain("EADDRINUSE");
+});
+
+test("search dedupes FTS and substring matches", () => {
+  const db = openIndex(":memory:");
+  indexSession(db, mk("a", "chatgpt", "Ports", "port port port"));
+
+  const hits = searchMessages(db, "port");
+
+  expect(hits).toHaveLength(1);
+  expect(hits[0].session_id).toBe("chatgpt:a");
+});
+
+test("search falls back to literal substring matches for FTS-invalid syntax", () => {
+  const db = openIndex(":memory:");
+  indexSession(db, mk("a", "chatgpt", "TypeScript", "Run flagX--noEmitY before pushing"));
+
+  expect(() => searchMessages(db, "--noEmit")).not.toThrow();
+  const hits = searchMessages(db, "--noEmit");
+
+  expect(hits).toHaveLength(1);
+  expect(hits[0].session_id).toBe("chatgpt:a");
+  expect(hits[0].snippet).toContain("--noEmit");
+});
+
+test("search applies source filter and limit to substring hits", () => {
+  const db = openIndex(":memory:");
+  indexSession(db, mk("a", "chatgpt", "One", "trace ABC-123-alpha"));
+  indexSession(db, mk("b", "chatgpt", "Two", "trace ABC-123-beta"));
+  indexSession(db, mk("c", "claude", "Three", "trace ABC-123-gamma"));
+
+  const hits = searchMessages(db, "ABC-123", { source: "chatgpt", limit: 1 });
+
+  expect(hits).toHaveLength(1);
+  expect(hits[0].source).toBe("chatgpt");
+  expect(["chatgpt:a", "chatgpt:b"]).toContain(hits[0].session_id);
+});
+
 test("search filters by source", () => {
   const db = openIndex(":memory:");
   indexSession(db, mk("a", "chatgpt", "T1", "shared word here"));

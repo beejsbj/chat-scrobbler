@@ -269,11 +269,16 @@ function literalHits(db: Database, query: string, source: string | undefined, li
   let where = "";
   if (source) { where = "AND source = ?"; params.push(source); }
   params.push(limit);
-  const rows = db.query(
-    `SELECT snippet(messages_fts, 0, '[', ']', '…', 12) AS snippet,
-            message_id, session_id, role, created_at, source, title
-     FROM messages_fts WHERE messages_fts MATCH ? ${where}
-     ORDER BY rank LIMIT ?`).all(...params) as any[];
+  let rows: any[] = [];
+  try {
+    rows = db.query(
+      `SELECT snippet(messages_fts, 0, '[', ']', '…', 12) AS snippet,
+              text, message_id, session_id, role, created_at, source, title
+       FROM messages_fts WHERE messages_fts MATCH ? ${where}
+       ORDER BY rank LIMIT ?`).all(...params) as any[];
+  } catch {
+    rows = [];
+  }
   rows.forEach((r, idx) => {
     const key = hitKey(r.session_id, r.message_id);
     merged.set(key, {
@@ -282,7 +287,62 @@ function literalHits(db: Database, query: string, source: string | undefined, li
       provenance: "literal", score: 0, match_sources: ["literal"], literalRank: idx + 1,
     });
   });
+  mergeSubstringHits(merged, substringCandidates(db, query, source, limit), literalSearchQuery(query));
   return merged;
+}
+
+function substringCandidates(db: Database, query: string, source: string | undefined, limit: number): any[] {
+  const literal = literalSearchQuery(query);
+  if (!literal) return [];
+
+  const params: any[] = [literal.toLowerCase()];
+  let where = "instr(lower(text), ?) > 0";
+  if (source) {
+    where += " AND source = ?";
+    params.push(source);
+  }
+  params.push(limit);
+
+  return db.query(
+    `SELECT text, message_id, session_id, role, created_at, source, title
+     FROM messages_fts WHERE ${where}
+     LIMIT ?`,
+  ).all(...params) as any[];
+}
+
+function mergeSubstringHits(merged: Map<string, RankedHit>, rows: any[], query: string): void {
+  rows.forEach((r) => {
+    const key = hitKey(r.session_id, r.message_id);
+    if (merged.has(key)) return;
+    merged.set(key, {
+      snippet: literalSnippet(r.text, query) ?? r.text,
+      session_id: r.session_id,
+      message_id: r.message_id,
+      role: r.role,
+      created_at: r.created_at,
+      source: r.source,
+      title: r.title,
+      provenance: "literal",
+      score: 0,
+      match_sources: ["literal"],
+    });
+  });
+}
+
+function literalSearchQuery(query: string): string {
+  const trimmed = query.trim();
+  if (trimmed.length >= 2 && trimmed.startsWith('"') && trimmed.endsWith('"')) {
+    return trimmed.slice(1, -1);
+  }
+  return trimmed;
+}
+
+function literalSnippet(text: string, query: string): string | null {
+  const idx = text.toLowerCase().indexOf(query.toLowerCase());
+  if (idx < 0) return null;
+  const start = Math.max(0, idx - 40);
+  const end = Math.min(text.length, idx + query.length + 40);
+  return `${start > 0 ? "…" : ""}${text.slice(start, end)}${end < text.length ? "…" : ""}`;
 }
 
 function mergeSemanticHits(merged: Map<string, RankedHit>, semanticRows: SemanticRow[], query: string): void {
