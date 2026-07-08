@@ -4,7 +4,7 @@ import { Database } from "bun:sqlite";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { deleteIndexedSession, openIndex, indexSession, searchMessages, searchMessagesWithEmbeddings, listSessions, type EmbeddingProvider } from "../src/indexer/sqlite";
+import { deleteIndexedSession, grepMessages, openIndex, indexSession, searchMessages, searchMessagesWithEmbeddings, listSessions, type EmbeddingProvider } from "../src/indexer/sqlite";
 import type { Session } from "../src/schema/types";
 
 function mk(id: string, source: "chatgpt" | "claude", title: string, text: string): Session {
@@ -43,6 +43,25 @@ test("search finds literal substrings inside indexed message text", () => {
   expect(hits[0].session_id).toBe("chatgpt:a");
   expect(hits[0].message_id).toBe("a-m1");
   expect(hits[0].snippet).toContain("EADDRINUSE");
+});
+
+test("grepMessages scans indexed text with regex options", () => {
+  const db = openIndex(":memory:");
+  indexSession(db, mk("a", "chatgpt", "Port one", "Server failed with EADDRINUSE on port 4318"));
+  indexSession(db, mk("b", "chatgpt", "Port two", "Server failed with EADDRINUSE on port 4319"));
+  indexSession(db, mk("c", "claude", "Lowercase", "server failed with eaddrinuse on port 4320"));
+
+  const hits = grepMessages(db, "EADDR.*USE", { source: "chatgpt", limit: 1 });
+
+  expect(hits).toHaveLength(1);
+  expect(hits[0].source).toBe("chatgpt");
+  expect(hits[0].snippet).toContain("EADDRINUSE");
+  expect(hits[0].provenance).toBe("grep");
+  expect(hits[0].match_sources).toEqual(["grep"]);
+
+  expect(grepMessages(db, "EADDR.*USE", { source: "claude" })).toHaveLength(1);
+  expect(grepMessages(db, "EADDR.*USE", { source: "claude", caseSensitive: true })).toHaveLength(0);
+  expect(() => grepMessages(db, "[")).toThrow(/Invalid regex pattern "\["/);
 });
 
 test("search dedupes FTS and substring matches", () => {

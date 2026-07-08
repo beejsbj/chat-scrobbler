@@ -11,7 +11,7 @@ export interface EmbeddingContext {
 export interface MessageHit {
   snippet: string; session_id: string; message_id: string;
   role: string; created_at: string | null; source: string; title: string | null;
-  provenance: "literal" | "semantic" | "hybrid"; score: number; match_sources: Array<"literal" | "semantic">;
+  provenance: "literal" | "semantic" | "hybrid" | "grep"; score: number; match_sources: Array<"literal" | "semantic" | "grep">;
 }
 export interface SessionSummary {
   id: string; source: string; title: string | null;
@@ -26,6 +26,7 @@ export interface EmbeddingProvider {
 
 export interface IndexSessionOptions { embeddingProvider?: EmbeddingProvider | null; }
 export interface SearchMessagesOptions { source?: string; limit?: number; embeddingProvider?: EmbeddingProvider | null; }
+export interface GrepMessagesOptions { source?: string; limit?: number; caseSensitive?: boolean; }
 export interface DeleteIndexedSessionResult { deleted: boolean; sessionIds: string[]; }
 
 export function openIndex(path: string): Database {
@@ -129,6 +130,51 @@ export async function searchMessagesWithEmbeddings(db: Database, query: string, 
     }
   }
   return finalizeHits(merged, limit);
+}
+
+export function grepMessages(db: Database, pattern: string, opts: GrepMessagesOptions = {}): MessageHit[] {
+  const limit = opts.limit ?? 20;
+  if (limit <= 0) return [];
+  let regex: RegExp;
+  try {
+    regex = new RegExp(pattern, opts.caseSensitive ? "" : "i");
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    throw new Error(`Invalid regex pattern "${pattern}": ${detail}`);
+  }
+
+  const params: any[] = [];
+  const where = opts.source ? "WHERE source = ?" : "";
+  if (opts.source) params.push(opts.source);
+
+  const rows = db.query(
+    `SELECT text, message_id, session_id, role, created_at, source, title
+     FROM messages_fts ${where}
+     ORDER BY rowid`,
+  ).all(...params) as Array<{
+    text: string; message_id: string; session_id: string; role: string;
+    created_at: string | null; source: string; title: string | null;
+  }>;
+
+  const hits: MessageHit[] = [];
+  for (const row of rows) {
+    const match = regex.exec(row.text);
+    if (!match) continue;
+    hits.push({
+      snippet: snippetAround(row.text, match.index, match[0].length),
+      session_id: row.session_id,
+      message_id: row.message_id,
+      role: row.role,
+      created_at: row.created_at,
+      source: row.source,
+      title: row.title,
+      provenance: "grep",
+      score: Number((1 / (hits.length + 1)).toFixed(6)),
+      match_sources: ["grep"],
+    });
+    if (hits.length >= limit) break;
+  }
+  return hits;
 }
 
 export function listSessions(db: Database, opts: { source?: string; titleContains?: string; limit?: number } = {}): SessionSummary[] {
@@ -340,8 +386,12 @@ function literalSearchQuery(query: string): string {
 function literalSnippet(text: string, query: string): string | null {
   const idx = text.toLowerCase().indexOf(query.toLowerCase());
   if (idx < 0) return null;
-  const start = Math.max(0, idx - 40);
-  const end = Math.min(text.length, idx + query.length + 40);
+  return snippetAround(text, idx, query.length);
+}
+
+function snippetAround(text: string, matchIndex: number, matchLength: number): string {
+  const start = Math.max(0, matchIndex - 40);
+  const end = Math.min(text.length, matchIndex + matchLength + 40);
   return `${start > 0 ? "…" : ""}${text.slice(start, end)}${end < text.length ? "…" : ""}`;
 }
 

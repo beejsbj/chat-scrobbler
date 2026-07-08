@@ -73,7 +73,14 @@ chat-scrobbler backup
 ```
 
 Search is literal by default and becomes hybrid when you enable embeddings. To
-use Gemini as the cloud semantic backend:
+run an explicit regex search, use `--grep`:
+
+```bash
+chat-scrobbler search --grep 'EADDR.*USE'
+chat-scrobbler search --grep 'ExactCasePattern' --case-sensitive
+```
+
+To use Gemini as the cloud semantic backend:
 
 ```bash
 export CHAT_SCROBBLER_EMBED_PROVIDER=gemini

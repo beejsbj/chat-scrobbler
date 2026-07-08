@@ -59,3 +59,19 @@ test("handleSearch returns message hits", async () => {
   expect(hits[0].score).toBeGreaterThan(0);
   rmSync(dir, { recursive: true, force: true });
 });
+
+test("handleSearch supports regex mode", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "mcp-idx-"));
+  const db = openIndex(join(dir, "i.db"));
+  indexSession(db, {
+    id: "chatgpt:a", source: "chatgpt", source_id: "a", capture_method: "export",
+    title: "T", created_at: "2025-01-01T00:00:00.000Z", updated_at: "2025-01-01T00:00:00.000Z",
+    default_model: null, account: null, raw_ref: "x", schema_version: 1,
+    messages: [{ id: "a-m1", role: "user", created_at: null, parent_id: null, model: null, blocks: [{ type: "text", text: "Server failed with EADDRINUSE" }], text: "Server failed with EADDRINUSE" }],
+  });
+  const res = await handleSearch(db, { query: "EADDR.*USE", regex: true });
+  const hits = JSON.parse(res.content[0].text);
+  expect(hits[0].session_id).toBe("chatgpt:a");
+  expect(hits[0].provenance).toBe("grep");
+  rmSync(dir, { recursive: true, force: true });
+});

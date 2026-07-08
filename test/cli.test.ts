@@ -142,11 +142,18 @@ test("search --source filters to the given source", async () => {
   expect(output).not.toContain("claude:cl-xyz");
 });
 
-test("search empty query returns no results without error", async () => {
+test("search --grep runs regex search through runSearch", async () => {
   const lines: string[] = [];
-  await runSearch({ query: "   ", cfg, write: (s) => lines.push(s) });
-  // No error thrown; empty or no output is fine
-  expect(lines.length).toBeGreaterThanOrEqual(0);
+  await runSearch({ query: "", grep: "uniquetokenA.C", cfg, write: (s) => lines.push(s) });
+  const output = lines.join("\n");
+  expect(output).toContain("chatgpt:abc123");
+  expect(output).toContain("uniquetokenABC");
+});
+
+test("search empty query rejects when no grep pattern is given", async () => {
+  await expect(
+    runSearch({ query: "   ", cfg, write: () => {} })
+  ).rejects.toThrow("search requires a query or --grep <pattern>");
 });
 
 // ---------------------------------------------------------------------------
@@ -549,4 +556,20 @@ test("CLI spawn: search --json exits 0", () => {
   const parsed = JSON.parse(result.stdout.toString());
   expect(Array.isArray(parsed)).toBe(true);
   expect(parsed[0].session_id).toBe("chatgpt:abc123");
+});
+
+test("CLI spawn: search --grep rejects a positional query", () => {
+  const result = Bun.spawnSync(
+    [process.execPath, "run", "src/cli/chat-scrobbler.ts", "search", "uniquetokenABC", "--grep", "unique.*ABC"],
+    {
+      cwd: repoRoot,
+      env: {
+        ...process.env,
+        CANONICAL_DIR: tmpCanonical,
+        INDEX_PATH: tmpIndex,
+      },
+    }
+  );
+  expect(result.exitCode).toBe(1);
+  expect(result.stderr.toString()).toContain("cannot be used with a positional query");
 });

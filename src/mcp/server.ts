@@ -2,7 +2,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import type { Database } from "bun:sqlite";
-import { openIndex, searchMessagesWithEmbeddings, listSessions, type EmbeddingProvider } from "../indexer/sqlite";
+import { grepMessages, openIndex, searchMessagesWithEmbeddings, listSessions, type EmbeddingProvider } from "../indexer/sqlite";
 import { readSession, sessionToMarkdown } from "../store/sessions";
 import { loadConfig } from "../config";
 import { parseSessionId } from "../core/session-id";
@@ -12,12 +12,14 @@ export interface ServerOptions { indexPath: string; canonicalDir: string; embedd
 
 type ToolResult = { content: { type: "text"; text: string }[]; isError?: boolean };
 
-export async function handleSearch(db: Database, args: { query: string; source?: string; limit?: number }, embeddingProvider: EmbeddingProvider | null = null): Promise<ToolResult> {
-  const hits = await searchMessagesWithEmbeddings(db, args.query, {
-    source: args.source,
-    limit: args.limit,
-    embeddingProvider,
-  });
+export async function handleSearch(db: Database, args: { query: string; source?: string; limit?: number; regex?: boolean }, embeddingProvider: EmbeddingProvider | null = null): Promise<ToolResult> {
+  const hits = args.regex
+    ? grepMessages(db, args.query, { source: args.source, limit: args.limit })
+    : await searchMessagesWithEmbeddings(db, args.query, {
+      source: args.source,
+      limit: args.limit,
+      embeddingProvider,
+    });
   return { content: [{ type: "text", text: JSON.stringify(hits, null, 2) }] };
 }
 
@@ -41,8 +43,8 @@ export function buildServer(opts: ServerOptions): McpServer {
   const server = new McpServer({ name: "unified-sessions", version: "1.0.0" });
 
   server.registerTool("search", {
-    description: "Full-text search across all chat messages from every source. Returns message-level hits (snippet + session_id + message_id + timestamp) so you can locate where a topic was discussed. Pass a session_id to get_session for full context.",
-    inputSchema: { query: z.string(), source: z.string().optional(), limit: z.number().optional() },
+    description: "Search across all chat messages from every source. By default this uses full-text plus configured semantic recall. Set regex=true to treat query as a regular expression and bypass FTS and semantic search. Returns message-level hits (snippet + session_id + message_id + timestamp) so you can locate where a topic was discussed. Pass a session_id to get_session for full context.",
+    inputSchema: { query: z.string(), source: z.string().optional(), limit: z.number().optional(), regex: z.boolean().optional() },
   }, async (args) => handleSearch(db, args, opts.embeddingProvider ?? null));
 
   server.registerTool("get_session", {

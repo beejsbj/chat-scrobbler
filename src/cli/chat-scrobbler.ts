@@ -49,6 +49,8 @@ Usage: chat-scrobbler <command> [options]
 
 Recall
   search <query>         Hybrid search when embeddings are enabled; otherwise FTS
+    --grep <pattern>       Regex search mode instead of FTS or semantic search
+    --case-sensitive       Use case-sensitive regex matching with --grep
     --source <s>           Filter to chatgpt|claude|gemini
     --limit <n>            Max results (default 20)
     --json                 Output raw JSON array
@@ -119,6 +121,8 @@ async function main(argv: string[]): Promise<void> {
         const { positionals, values } = parseArgs({
           args: rest,
           options: {
+            grep: { type: "string" },
+            "case-sensitive": { type: "boolean", default: false },
             source: { type: "string" },
             limit: { type: "string" },
             json: { type: "boolean", default: false },
@@ -129,9 +133,11 @@ async function main(argv: string[]): Promise<void> {
         const query = positionals[0] ?? "";
         await runSearch({
           query,
+          grep: values.grep as string | undefined,
           cfg,
           source: values.source as string | undefined,
           limit: values.limit ? Number(values.limit) : undefined,
+          caseSensitive: values["case-sensitive"] as boolean | undefined,
           json: values.json as boolean | undefined,
           write,
         });

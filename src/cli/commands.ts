@@ -3,7 +3,7 @@
 // All commands accept an injected cfg and a write() function for testability.
 // Zero duplicated query logic: these are thin frontends over the core fns.
 
-import { openIndex, searchMessagesWithEmbeddings, listSessions } from "../indexer/sqlite";
+import { grepMessages, openIndex, searchMessagesWithEmbeddings, listSessions } from "../indexer/sqlite";
 import { embeddingProviderFromConfig } from "../indexer/embedding-providers";
 import { readSession, sessionToMarkdown, activePath } from "../store/sessions";
 import type { Role, Block } from "../schema/types";
@@ -29,21 +29,41 @@ type HttpFetch = (input: string | URL | Request, init?: RequestInit) => Promise<
 
 export interface SearchOpts {
   query: string;
+  grep?: string;
   cfg: ChatHistoryConfig;
   source?: string;
   limit?: number;
+  caseSensitive?: boolean;
   json?: boolean;
   write: Writer;
 }
 
 export async function runSearch(opts: SearchOpts): Promise<void> {
+  const hasQuery = opts.query.trim().length > 0;
+  const hasGrep = opts.grep !== undefined;
+  if (hasQuery && hasGrep) {
+    throw new Error("search --grep cannot be used with a positional query");
+  }
+  if (!hasQuery && !hasGrep) {
+    throw new Error("search requires a query or --grep <pattern>");
+  }
+  if (opts.caseSensitive && !hasGrep) {
+    throw new Error("--case-sensitive is only valid with --grep");
+  }
+
   const db = openIndex(opts.cfg.indexPath);
   try {
-    const hits = await searchMessagesWithEmbeddings(db, opts.query, {
-      source: opts.source,
-      limit: opts.limit,
-      embeddingProvider: embeddingProviderFromConfig(opts.cfg),
-    });
+    const hits = hasGrep
+      ? grepMessages(db, opts.grep ?? "", {
+        source: opts.source,
+        limit: opts.limit,
+        caseSensitive: opts.caseSensitive,
+      })
+      : await searchMessagesWithEmbeddings(db, opts.query, {
+        source: opts.source,
+        limit: opts.limit,
+        embeddingProvider: embeddingProviderFromConfig(opts.cfg),
+      });
     if (opts.json) {
       opts.write(JSON.stringify(hits, null, 2));
       return;
