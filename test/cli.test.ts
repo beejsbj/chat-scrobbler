@@ -408,6 +408,67 @@ test("serve output prints a public Claude web MCP URL when token and public base
   expect(output).toContain("https://chat-history.example.com/mcp/public-test-token");
 });
 
+test("serve output redacts MCP token URLs on non-loopback binds", () => {
+  const serveCfg: ChatHistoryConfig = {
+    ...cfg,
+    bindHost: "0.0.0.0",
+    ingestBaseUrl: "http://127.0.0.1:4318",
+    mcpAuthToken: "public-test-token",
+    mcpPublicBaseUrl: "https://chat-history.example.com",
+  };
+  const writes: string[] = [];
+  const originalWrite = process.stdout.write;
+  process.stdout.write = ((chunk: string | Uint8Array) => {
+    writes.push(String(chunk));
+    return true;
+  }) as typeof process.stdout.write;
+
+  try {
+    printServeInfo(serveCfg, {
+      ingestServer: { port: 4318 } as ReturnType<typeof Bun.serve>,
+      mcpServer: { port: 4319 } as Awaited<ReturnType<typeof startServe>>["mcpServer"],
+    });
+  } finally {
+    process.stdout.write = originalWrite;
+  }
+
+  const output = writes.join("");
+  expect(output).toContain("MCP endpoint (local, token path):");
+  expect(output).toContain("http://127.0.0.1:4319/mcp/<token>");
+  expect(output).toContain("Claude web/mobile URL:");
+  expect(output).toContain("https://chat-history.example.com/mcp/<token>");
+  expect(output).not.toContain("public-test-token");
+});
+
+test("serve output keeps full MCP token URLs on loopback binds", () => {
+  const serveCfg: ChatHistoryConfig = {
+    ...cfg,
+    bindHost: "127.0.0.1",
+    ingestBaseUrl: "http://127.0.0.1:4318",
+    mcpAuthToken: "public-test-token",
+    mcpPublicBaseUrl: "https://chat-history.example.com",
+  };
+  const writes: string[] = [];
+  const originalWrite = process.stdout.write;
+  process.stdout.write = ((chunk: string | Uint8Array) => {
+    writes.push(String(chunk));
+    return true;
+  }) as typeof process.stdout.write;
+
+  try {
+    printServeInfo(serveCfg, {
+      ingestServer: { port: 4318 } as ReturnType<typeof Bun.serve>,
+      mcpServer: { port: 4319 } as Awaited<ReturnType<typeof startServe>>["mcpServer"],
+    });
+  } finally {
+    process.stdout.write = originalWrite;
+  }
+
+  const output = writes.join("");
+  expect(output).toContain("http://127.0.0.1:4319/mcp/public-test-token");
+  expect(output).toContain("https://chat-history.example.com/mcp/public-test-token");
+});
+
 // ---------------------------------------------------------------------------
 // End-to-end spawn test
 // ---------------------------------------------------------------------------

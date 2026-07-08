@@ -18,7 +18,7 @@ import { mkdirSync, existsSync, writeFileSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { randomBytes } from "node:crypto";
 import { resolveExtensionDir } from "./paths";
-import { assertTokenForExposedBind } from "../core/network";
+import { assertTokenForExposedBind, isLoopbackHost } from "../core/network";
 
 type Writer = (s: string) => void;
 type HttpFetch = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
@@ -555,6 +555,11 @@ function redactTokenizedUrl(url: string, token: string | null): string {
   return url.replace(encoded, "<token>");
 }
 
+function displayTokenizedUrlForBind(baseUrl: string, token: string, bindHost: string): string {
+  const url = mcpUrl(baseUrl, token);
+  return isLoopbackHost(bindHost) ? url : redactTokenizedUrl(url, token);
+}
+
 function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
@@ -700,10 +705,10 @@ export function printServeInfo(cfg: ChatHistoryConfig, handles: ServeHandles): v
 
   process.stdout.write(`Ingest receiver (paste into extension): ${ingestUrl}\n`);
   if (cfg.mcpAuthToken) {
-    process.stdout.write(`MCP endpoint (local, token path):     ${mcpUrl(`http://127.0.0.1:${mcpPort}`, cfg.mcpAuthToken)}\n`);
+    process.stdout.write(`MCP endpoint (local, token path):     ${displayTokenizedUrlForBind(`http://127.0.0.1:${mcpPort}`, cfg.mcpAuthToken, cfg.bindHost)}\n`);
     process.stdout.write(`MCP endpoint (local, Bearer auth):    ${localMcpUrl}\n`);
     if (cfg.mcpPublicBaseUrl) {
-      process.stdout.write(`Claude web/mobile URL:                ${mcpUrl(cfg.mcpPublicBaseUrl, cfg.mcpAuthToken)}\n`);
+      process.stdout.write(`Claude web/mobile URL:                ${displayTokenizedUrlForBind(cfg.mcpPublicBaseUrl, cfg.mcpAuthToken, cfg.bindHost)}\n`);
     }
   } else {
     process.stdout.write(`MCP endpoint (local, read-only):       ${localMcpUrl}\n`);

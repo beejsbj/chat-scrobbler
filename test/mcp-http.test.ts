@@ -228,3 +228,33 @@ serverTest("OPTIONS preflight still works without auth when an MCP auth token is
   expect(res.status).toBe(200);
   expect(res.headers.get("access-control-allow-origin")).toBe("*");
 });
+
+serverTest("startup stderr does not print the MCP auth token", async () => {
+  const token = "stderr-startup-token";
+  const writes: string[] = [];
+  const originalWrite = process.stderr.write;
+  process.stderr.write = ((chunk: string | Uint8Array) => {
+    writes.push(String(chunk));
+    return true;
+  }) as typeof process.stderr.write;
+
+  let server: Awaited<ReturnType<typeof startHttpServer>> | null = null;
+  try {
+    server = await startHttpServer({
+      port: 0,
+      bindHost: "0.0.0.0",
+      indexPath,
+      canonicalDir: tmpCanonical,
+      mcpAuthToken: token,
+    });
+  } finally {
+    process.stderr.write = originalWrite;
+    server?.stop(true);
+  }
+
+  const output = writes.join("");
+  expect(output).toContain("MCP HTTP server listening on http://0.0.0.0:");
+  expect(output).toContain("/mcp (auth token required)");
+  expect(output).not.toContain(token);
+  expect(output).not.toContain(`/mcp/${token}`);
+});
