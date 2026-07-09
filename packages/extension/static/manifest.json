@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Chat Scrobbler",
-  "version": "0.1.0",
+  "version": "0.3.0",
   "description": "Quietly captures your ChatGPT, Claude, and Gemini conversations into a private, searchable archive you own.",
   "icons": {
     "16": "icons/icon-16.png",
