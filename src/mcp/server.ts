@@ -12,6 +12,8 @@ export interface ServerOptions { indexPath: string; canonicalDir: string; embedd
 
 type ToolResult = { content: { type: "text"; text: string }[]; isError?: boolean };
 
+const SERVER_INSTRUCTIONS = "Read-only archive of Burooj's AI chat history (ChatGPT, Claude, Gemini), captured continuously by the chat-scrobbler browser extension. Use it to recall past conversations: what was discussed, decided, or drafted in earlier chats across all providers. `search` blends full-text, semantic, and literal substring recall (set regex=true for regular expressions); `list_sessions` browses recent conversations; `get_session` fetches a full transcript by `source:source_id` id. Message hits carry provenance back to their exact session. The archive is append-only from this connector: nothing here can modify or delete history.";
+
 export async function handleSearch(db: Database, args: { query: string; source?: string; limit?: number; regex?: boolean }, embeddingProvider: EmbeddingProvider | null = null): Promise<ToolResult> {
   const hits = args.regex
     ? grepMessages(db, args.query, { source: args.source, limit: args.limit })
@@ -40,7 +42,10 @@ export function handleListSessions(db: Database, args: { source?: string; titleC
 
 export function buildServer(opts: ServerOptions): McpServer {
   const db = openIndex(opts.indexPath);
-  const server = new McpServer({ name: "unified-sessions", version: "1.0.0" });
+  const server = new McpServer(
+    { name: "chat-scrobbler", version: "0.3.0" },
+    { instructions: SERVER_INSTRUCTIONS }
+  );
 
   server.registerTool("search", {
     description: "Search across all chat messages from every source. By default this uses full-text plus configured semantic recall. Set regex=true to treat query as a regular expression and bypass FTS and semantic search. Returns message-level hits (snippet + session_id + message_id + timestamp) so you can locate where a topic was discussed. Pass a session_id to get_session for full context.",

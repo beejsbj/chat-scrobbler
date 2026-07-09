@@ -61,7 +61,7 @@ function makeDoctor(overrides: {
             ok: true,
             status: 200,
             headers: { "content-type": "application/json" },
-            body: '{"jsonrpc":"2.0","id":1,"result":{"serverInfo":{"name":"unified-sessions"}}}',
+            body: '{"jsonrpc":"2.0","id":1,"result":{"serverInfo":{"name":"chat-scrobbler"}}}',
           });
         },
       }),

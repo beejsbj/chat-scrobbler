@@ -218,7 +218,7 @@ serverTest("Authorization: Bearer token authorizes /mcp when an MCP auth token i
   });
   expect(res.status).toBe(200);
   const body = await res.json() as { result?: { serverInfo?: { name?: string } } };
-  expect(body.result?.serverInfo?.name).toBe("unified-sessions");
+  expect(body.result?.serverInfo?.name).toBe("chat-scrobbler");
 });
 
 serverTest("OPTIONS preflight still works without auth when an MCP auth token is configured", async () => {
