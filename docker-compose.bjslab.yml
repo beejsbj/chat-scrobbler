@@ -22,6 +22,19 @@ services:
     depends_on:
       - ollama
 
+  usage:
+    build: .
+    restart: unless-stopped
+    command: ["chat-scrobbler", "usage", "serve"]
+    environment:
+      BIND_HOST: 0.0.0.0
+      USAGE_PORT: "4322"
+      USAGE_DEVICE: bjslab
+      USAGE_SNAPSHOT_DIR: /data/usage/snapshots
+      CANONICAL_DIR: /data/canonical/sessions
+    volumes:
+      - /mnt/server-ssd/chat-scrobbler:/data
+
   ollama:
     image: ollama/ollama:latest
     restart: unless-stopped

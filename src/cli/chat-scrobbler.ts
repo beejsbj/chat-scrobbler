@@ -8,6 +8,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { discoverConfigPath, loadConfig } from "../config";
 import { embeddingProviderFromConfig } from "../indexer/embedding-providers";
+import { runUsageCommand } from "../usage/cli";
 import {
   runSearch,
   runGet,
@@ -75,6 +76,13 @@ Operate
                            Fresh configs include MCP and ingest auth tokens
 
   serve                  Start the ingest receiver + MCP HTTP connector (always-on capture)
+
+  usage collect          Build a transcript-free local usage snapshot
+    --out <path>           Snapshot output path
+    --device <name>        Device label (defaults to hostname)
+  usage serve            Serve the private usage dashboard (default port 4322)
+    --snapshot-dir <path>  Directory containing device snapshot JSON files
+    --canonical-dir <path> Refresh web-chat counts from canonical sessions on startup
 
   mcp                    Run the read-only MCP server over stdio (for Claude Desktop)
 
@@ -217,6 +225,11 @@ async function main(argv: string[]): Promise<void> {
         printServeInfo(cfg, handles);
         // Keep alive indefinitely until the process is terminated.
         await new Promise<void>(() => {});
+        break;
+      }
+
+      case "usage": {
+        await runUsageCommand(rest, write);
         break;
       }
 
