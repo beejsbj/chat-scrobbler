@@ -1,9 +1,9 @@
 import { UsageAccumulator, finiteNumber, isoDay } from "../aggregate";
-import { forEachJsonLine, walkFiles } from "../files";
+import { filesModifiedSince, forEachJsonLine, walkFiles } from "../files";
 import { projectFromPath } from "../project";
 import type { CollectResult } from "../types";
 
-export interface ClaudeCollectOptions { root: string; device: string }
+export interface ClaudeCollectOptions { root: string; device: string; modifiedSinceMs?: number }
 
 interface AssistantUsage {
   timestamp: unknown;
@@ -18,7 +18,7 @@ interface AssistantUsage {
 
 export async function collectClaudeUsage(options: ClaudeCollectOptions): Promise<CollectResult> {
   const acc = new UsageAccumulator();
-  const files = await walkFiles(options.root, (path) => path.endsWith(".jsonl"));
+  const files = await filesModifiedSince(await walkFiles(options.root, (path) => path.endsWith(".jsonl")), options.modifiedSinceMs);
   let sessions = 0;
   for (const file of files) {
     const messages = new Map<string, AssistantUsage>();

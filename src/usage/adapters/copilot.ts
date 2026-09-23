@@ -1,11 +1,11 @@
 import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { UsageAccumulator, isoDay } from "../aggregate";
-import { walkFiles } from "../files";
+import { filesModifiedSince, walkFiles } from "../files";
 import { projectFromPath } from "../project";
 import type { CollectResult } from "../types";
 
-export interface CopilotCollectOptions { workspaceStorageRoot: string; globalStorageRoot?: string; device: string }
+export interface CopilotCollectOptions { workspaceStorageRoot: string; globalStorageRoot?: string; device: string; modifiedSinceMs?: number }
 
 async function readJson(path: string): Promise<Record<string, any> | null> {
   try { return JSON.parse(await readFile(path, "utf8")); } catch { return null; }
@@ -13,8 +13,9 @@ async function readJson(path: string): Promise<Record<string, any> | null> {
 
 export async function collectCopilotUsage(options: CopilotCollectOptions): Promise<CollectResult> {
   const acc = new UsageAccumulator();
-  const files = await walkFiles(options.workspaceStorageRoot, (path) => /\/chatSessions\/[^/]+\.json$/.test(path));
+  let files = await walkFiles(options.workspaceStorageRoot, (path) => /\/chatSessions\/[^/]+\.json$/.test(path));
   if (options.globalStorageRoot) files.push(...await walkFiles(join(options.globalStorageRoot, "emptyWindowChatSessions"), (path) => path.endsWith(".json")));
+  files = await filesModifiedSince(files, options.modifiedSinceMs);
   let records = 0;
   for (const file of files) {
     const session = await readJson(file);
@@ -35,4 +36,3 @@ export async function collectCopilotUsage(options: CopilotCollectOptions): Promi
     coverage: [{ source: "github-copilot", status: "count-only", detail: "VS Code chat sessions and requests; token and completion counters were not retained", records }],
   };
 }
-

@@ -4,7 +4,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { collectClaudeUsage } from "../src/usage/adapters/claude";
 import { collectCodexUsage } from "../src/usage/adapters/codex";
+import { addCostEstimates, estimateBucketCostUsd } from "../src/usage/cost";
 import { mergeSnapshots } from "../src/usage/merge";
+import { mergeRecentSnapshot } from "../src/usage/collect";
 import { projectFromPath } from "../src/usage/project";
 import { handleUsageRequest } from "../src/usage/server";
 import type { UsageSnapshot } from "../src/usage/types";
@@ -85,6 +87,36 @@ test("mergeSnapshots sums matching cubes and preserves coverage", () => {
   expect(merged.coverage).toHaveLength(1);
 });
 
+test("mergeRecentSnapshot replaces the rolling window without double counting history", () => {
+  const old: UsageSnapshot = {
+    schemaVersion: 1, generatedAt: "2026-09-20T00:00:00Z", devices: ["mac"],
+    buckets: [
+      { date: "2026-09-01", source: "codex", surface: "CLI", device: "mac", project: "old", model: "gpt-5.5", sessions: 1, messages: 1, inputTokens: 10, cachedInputTokens: 0, cacheWriteTokens: 0, outputTokens: 1, reasoningTokens: 0, totalTokens: 11 },
+      { date: "2026-09-20", source: "codex", surface: "CLI", device: "mac", project: "live", model: "gpt-5.5", sessions: 1, messages: 1, inputTokens: 10, cachedInputTokens: 0, cacheWriteTokens: 0, outputTokens: 1, reasoningTokens: 0, totalTokens: 11 },
+    ],
+    coverage: [
+      { source: "codex", status: "exact", detail: "tokens recorded", records: 2 },
+      { source: "gemini-cli", status: "count-only", detail: "historical sessions", records: 2 },
+    ],
+  };
+  const recent: UsageSnapshot = { ...old, generatedAt: "2026-09-23T00:00:00Z", buckets: [{ ...old.buckets[1], messages: 3, totalTokens: 33 }], coverage: [old.coverage[0], { source: "gemini-cli", status: "missing", detail: "none changed recently", records: 0 }] };
+  const merged = mergeRecentSnapshot(old, recent, "2026-09-16");
+  expect(merged.buckets).toHaveLength(2);
+  expect(merged.buckets.find((b) => b.date === "2026-09-01")?.totalTokens).toBe(11);
+  expect(merged.buckets.find((b) => b.date === "2026-09-20")?.totalTokens).toBe(33);
+  expect(merged.coverage[0]?.records).toBe(2);
+  expect(merged.coverage.find((item) => item.source === "gemini-cli")).toMatchObject({ status: "count-only", records: 0 });
+});
+
+test("cost estimate separates uncached, cached, cache-write, and output tokens", () => {
+  const bucket = { date: "2026-09-20", source: "codex" as const, surface: "CLI", device: "mac", project: "demo", model: "gpt-5.6-sol", sessions: 1, messages: 2, inputTokens: 1_000_000, cachedInputTokens: 600_000, cacheWriteTokens: 100_000, outputTokens: 200_000, reasoningTokens: 50_000, totalTokens: 1_200_000 };
+  // 300k uncached × $4 + 600k cached × $0.40 + 100k write × $5 + 200k output × $20.
+  expect(estimateBucketCostUsd(bucket)).toBeCloseTo(5.94, 8);
+  const payload = addCostEstimates({ schemaVersion: 1, generatedAt: "2026-09-20T00:00:00Z", devices: ["mac"], buckets: [bucket, { ...bucket, model: "Unknown model", totalTokens: 100 }], coverage: [] });
+  expect(payload.costEstimate).toMatchObject({ amountUsd: 5.94, pricedTokens: 1_200_000, exactTokens: 1_200_100, pricingAsOf: "2026-09-23" });
+  expect(payload.costEstimate.unpricedModels).toEqual(["Unknown model"]);
+});
+
 test("usage server serves the private dashboard shell and JSON API", async () => {
   const root = tempRoot("usage-server-");
   const snapshot: UsageSnapshot = {
@@ -103,5 +135,7 @@ test("usage server serves the private dashboard shell and JSON API", async () =>
 
   const api = await handleUsageRequest(new Request("http://usage.local/api/usage"), { snapshotDir: root });
   expect(api.status).toBe(200);
-  expect((await api.json() as UsageSnapshot).devices).toEqual(["mac"]);
+  const payload = await api.json() as UsageSnapshot & { costEstimate: { amountUsd: number } };
+  expect(payload.devices).toEqual(["mac"]);
+  expect(payload.costEstimate.amountUsd).toBe(0);
 });

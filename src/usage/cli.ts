@@ -1,7 +1,9 @@
 import { parseArgs } from "node:util";
 import { homedir, hostname } from "node:os";
 import { join } from "node:path";
-import { collectLocalUsage, collectWebSnapshot, defaultSnapshotDir, writeSnapshot } from "./collect";
+import { existsSync, readFileSync } from "node:fs";
+import { collectLocalUsage, collectWebSnapshot, defaultSnapshotDir, mergeRecentSnapshot, writeSnapshot } from "./collect";
+import type { UsageSnapshot } from "./types";
 import { startUsageServer } from "./server";
 
 export async function runUsageCommand(args: string[], write = (line: string) => process.stdout.write(line + "\n")): Promise<void> {
@@ -16,6 +18,7 @@ export async function runUsageCommand(args: string[], write = (line: string) => 
       "web-only": { type: "boolean", default: false },
       port: { type: "string" },
       host: { type: "string" },
+      "incremental-days": { type: "string" },
     },
     strict: false,
   });
@@ -24,13 +27,24 @@ export async function runUsageCommand(args: string[], write = (line: string) => 
   const canonicalDir = (values["canonical-dir"] as string | undefined) ?? process.env.CANONICAL_DIR;
 
   if (action === "collect") {
-    const snapshot = values["web-only"]
-      ? await collectWebSnapshot(canonicalDir ?? join(homedir(), ".local", "share", "chat-scrobbler", "canonical", "sessions"), device)
-      : await collectLocalUsage({ device, canonicalDir, includeWeb: Boolean(canonicalDir) });
     const out = (values.out as string | undefined) ?? join(snapshotDir, `${device}.json`);
+    const incrementalDays = Number(values["incremental-days"] ?? 0);
+    const incremental = Number.isFinite(incrementalDays) && incrementalDays > 0 && existsSync(out);
+    const cutoffMs = incremental ? Date.now() - incrementalDays * 86_400_000 : undefined;
+    const cutoffDay = cutoffMs === undefined ? undefined : new Date(cutoffMs).toISOString().slice(0, 10);
+    const collected = values["web-only"]
+      ? await collectWebSnapshot(canonicalDir ?? join(homedir(), ".local", "share", "chat-scrobbler", "canonical", "sessions"), device, cutoffMs)
+      : await collectLocalUsage({ device, canonicalDir, includeWeb: Boolean(canonicalDir), modifiedSinceMs: cutoffMs });
+    let snapshot = collected;
+    if (incremental && cutoffDay) {
+      try {
+        const existing = JSON.parse(readFileSync(out, "utf8")) as UsageSnapshot;
+        if (existing.schemaVersion === 1) snapshot = mergeRecentSnapshot(existing, collected, cutoffDay);
+      } catch { /* A damaged prior snapshot falls back to a fresh recent snapshot. */ }
+    }
     writeSnapshot(out, snapshot);
     write(`Usage snapshot: ${out}`);
-    write(`Buckets: ${snapshot.buckets.length}; coverage sources: ${snapshot.coverage.length}`);
+    write(`Buckets: ${snapshot.buckets.length}; coverage sources: ${snapshot.coverage.length}${incremental ? `; refreshed last ${incrementalDays} days` : ""}`);
     return;
   }
 
@@ -50,4 +64,3 @@ export async function runUsageCommand(args: string[], write = (line: string) => 
 
   throw new Error(`Unknown usage action "${action}". Use collect or serve.`);
 }
-

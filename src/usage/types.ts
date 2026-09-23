@@ -26,6 +26,17 @@ export interface UsageBucket {
   outputTokens: number;
   reasoningTokens: number;
   totalTokens: number;
+  estimatedUsd?: number | null;
+}
+
+export interface CostEstimate {
+  amountUsd: number;
+  pricedTokens: number;
+  exactTokens: number;
+  pricedTokenRatio: number;
+  unpricedModels: string[];
+  pricingAsOf: string;
+  basis: string;
 }
 
 export interface CoverageItem {
@@ -43,6 +54,10 @@ export interface UsageSnapshot {
   coverage: CoverageItem[];
 }
 
+export interface UsagePayload extends UsageSnapshot {
+  costEstimate: CostEstimate;
+}
+
 export interface CollectResult {
   buckets: UsageBucket[];
   coverage: CoverageItem[];
@@ -51,4 +66,3 @@ export interface CollectResult {
 export type UsageIncrement = Partial<
   Pick<UsageBucket, "sessions" | "messages" | "inputTokens" | "cachedInputTokens" | "cacheWriteTokens" | "outputTokens" | "reasoningTokens" | "totalTokens">
 > & Pick<UsageBucket, "date" | "source" | "surface" | "device" | "project" | "model">;
-

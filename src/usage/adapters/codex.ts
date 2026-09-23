@@ -3,7 +3,7 @@ import { forEachJsonLine, newestUniqueRollouts } from "../files";
 import { projectFromPath } from "../project";
 import type { CollectResult } from "../types";
 
-export interface CodexCollectOptions { roots: string[]; device: string }
+export interface CodexCollectOptions { roots: string[]; device: string; modifiedSinceMs?: number }
 
 function surface(meta: Record<string, any>): string {
   const value = `${meta.originator ?? ""} ${meta.source ?? ""}`.toLowerCase();
@@ -15,7 +15,10 @@ function surface(meta: Record<string, any>): string {
 
 export async function collectCodexUsage(options: CodexCollectOptions): Promise<CollectResult> {
   const acc = new UsageAccumulator();
-  const files = await newestUniqueRollouts(options.roots);
+  const files = (await newestUniqueRollouts(options.roots)).filter((path) => {
+    if (options.modifiedSinceMs === undefined) return true;
+    try { return Bun.file(path).lastModified >= options.modifiedSinceMs; } catch { return false; }
+  });
   let sessions = 0;
   for (const file of files) {
     let meta: Record<string, any> = {};
@@ -67,4 +70,3 @@ export async function collectCodexUsage(options: CodexCollectOptions): Promise<C
     coverage: [{ source: "codex", status: "exact", detail: "Recorded token counters, sessions, models, and working directories", records: sessions }],
   };
 }
-

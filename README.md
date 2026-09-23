@@ -80,10 +80,21 @@ archive. It stores only daily aggregates such as source, model, project label,
 session/message counts, and recorded token counters. Prompt and response text,
 session titles, and raw identifiers are never copied into a usage snapshot.
 
+The displayed dollar figure is a current standard API/list-price equivalent,
+not a claim about subscription charges or historical invoices. It prices only
+models with exact token counters and an explicit official rate, separates
+uncached input, cached input, five-minute cache writes, and output, and reports
+the percentage of exact tokens covered by the rate table. Unknown and
+third-party-routed models remain unpriced.
+
 ```bash
 chat-scrobbler usage collect
 chat-scrobbler usage serve
 ```
+
+The deployed dashboard polls its aggregate API once a minute. The Mac launchd
+agent and bjslab systemd timer in `deploy/usage/` regenerate and publish their
+privacy-safe snapshots every 15 minutes; no transcript content is transferred.
 
 Snapshots from multiple devices can be placed in the same snapshot directory;
 the dashboard merges them at read time. Token totals are shown only for clients

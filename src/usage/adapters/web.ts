@@ -1,15 +1,15 @@
 import { readFile } from "node:fs/promises";
 import { UsageAccumulator, isoDay } from "../aggregate";
-import { walkFiles } from "../files";
+import { filesModifiedSince, walkFiles } from "../files";
 import type { CollectResult, UsageSource } from "../types";
 
-export interface WebCollectOptions { canonicalDir: string; device: string }
+export interface WebCollectOptions { canonicalDir: string; device: string; modifiedSinceMs?: number }
 
 const SOURCE_MAP: Record<string, UsageSource> = { chatgpt: "chatgpt", claude: "claude-web", gemini: "gemini-web" };
 
 export async function collectWebUsage(options: WebCollectOptions): Promise<CollectResult> {
   const acc = new UsageAccumulator();
-  const files = await walkFiles(options.canonicalDir, (path) => path.endsWith(".json"));
+  const files = await filesModifiedSince(await walkFiles(options.canonicalDir, (path) => path.endsWith(".json")), options.modifiedSinceMs);
   const counts = new Map<UsageSource, number>();
   for (const file of files) {
     try {
@@ -34,4 +34,3 @@ export async function collectWebUsage(options: WebCollectOptions): Promise<Colle
     })),
   };
 }
-

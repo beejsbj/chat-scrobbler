@@ -1,5 +1,6 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { addCostEstimates } from "./cost";
 import { mergeSnapshots } from "./merge";
 import { USAGE_CSS, USAGE_JS, USAGE_PAGE } from "./page";
 import type { UsageSnapshot } from "./types";
@@ -38,7 +39,7 @@ export async function handleUsageRequest(request: Request, options: UsageRequest
   if (url.pathname === "/" || url.pathname === "/index.html") return response(USAGE_PAGE, "text/html; charset=utf-8");
   if (url.pathname === "/assets/usage.css") return response(USAGE_CSS, "text/css; charset=utf-8");
   if (url.pathname === "/assets/usage.js") return response(USAGE_JS, "text/javascript; charset=utf-8");
-  if (url.pathname === "/api/usage") return response(JSON.stringify(mergeSnapshots(readSnapshots(options.snapshotDir))), "application/json; charset=utf-8");
+  if (url.pathname === "/api/usage") return response(JSON.stringify(addCostEstimates(mergeSnapshots(readSnapshots(options.snapshotDir)))), "application/json; charset=utf-8");
   if (url.pathname === "/health") return response(JSON.stringify({ ok: true }), "application/json; charset=utf-8");
   return response("Not Found", "text/plain; charset=utf-8", 404);
 }
@@ -50,4 +51,3 @@ export function startUsageServer(options: UsageRequestOptions & { bindHost: stri
     fetch: (request) => handleUsageRequest(request, options),
   });
 }
-

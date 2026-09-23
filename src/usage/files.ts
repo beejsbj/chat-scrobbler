@@ -35,6 +35,14 @@ export async function newestUniqueRollouts(roots: string[]): Promise<string[]> {
   return [...selected.values()].map((item) => item.path).sort();
 }
 
+export async function filesModifiedSince(files: string[], modifiedSinceMs?: number): Promise<string[]> {
+  if (modifiedSinceMs === undefined) return files;
+  const keep = await Promise.all(files.map(async (path) => {
+    try { return (await stat(path)).mtimeMs >= modifiedSinceMs ? path : null; } catch { return null; }
+  }));
+  return keep.filter((path): path is string => path !== null);
+}
+
 export async function forEachJsonLine(path: string, onValue: (value: Record<string, any>) => void): Promise<void> {
   const lines = createInterface({ input: createReadStream(path), crlfDelay: Infinity });
   for await (const line of lines) {

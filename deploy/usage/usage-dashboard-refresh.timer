@@ -1,0 +1,11 @@
+[Unit]
+Description=Refresh usage.burooj.dev web archive aggregates every 15 minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=15min
+Persistent=true
+Unit=usage-dashboard-refresh.service
+
+[Install]
+WantedBy=timers.target
