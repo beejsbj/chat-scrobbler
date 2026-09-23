@@ -27,7 +27,7 @@ ENV BIND_HOST=0.0.0.0 \
   BACKUP_TARGET=/data/backups
 
 VOLUME ["/data"]
-EXPOSE 4318 4321
+EXPOSE 4318 4321 4322
 
 USER scrobbler
 CMD ["chat-scrobbler", "serve"]

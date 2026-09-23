@@ -7,6 +7,8 @@
     "test": "bun test",
     "cli": "bun run src/cli/chat-scrobbler.ts",
     "serve": "bun run src/cli/chat-scrobbler.ts serve",
+    "usage:collect": "bun run src/cli/chat-scrobbler.ts usage collect",
+    "usage:serve": "bun run src/cli/chat-scrobbler.ts usage serve",
     "unify": "bun run src/cli/unify.ts",
     "mcp": "bun run src/mcp/server.ts",
     "mcp:http": "bun run src/mcp/http.ts",
