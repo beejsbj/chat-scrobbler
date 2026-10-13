@@ -95,3 +95,23 @@ test("liveness is cheap; deep health requires auth and coalesces cached probes",
     db.close();
   } finally { rmSync(opts.root, { recursive: true, force: true }); }
 });
+
+test("deep health exposes a live scheduler snapshot even while store/provider probes are cached", async () => {
+  const {startEmbeddingBackfillScheduler}=await import("../src/indexer/backfill-scheduler");
+  const {DEFAULT_CONFIG}=await import("../src/config");
+  const {openIndex,indexSession}=await import("../src/indexer/sqlite");
+  const {fixture}=await import("./support/embedding-fixture");
+  const opts=setup(), db=openIndex(opts.indexPath);indexSession(db,fixture());db.close();
+  const provider={kind:"test",model:"m",dimensions:2,embed:async()=>[1,0]};
+  const scheduler=startEmbeddingBackfillScheduler({cfg:{...DEFAULT_CONFIG,...opts},provider});
+  const options={...opts,embeddingProvider:provider,backfillStatus:()=>scheduler.status()};
+  const request=()=>new Request("http://local/health/deep",{headers:{authorization:"Bearer health-token"}});
+  try {
+    expect(await (await handleIngestRequest(request(),options)).json()).toMatchObject({backfill:{enabled:true,running:false,last_run:null}});
+    await scheduler.runNow();
+    expect(await (await handleIngestRequest(request(),options)).json()).toMatchObject({backfill:{last_run:{outcome:"complete",report:{embedded:1}},progress:{event:"complete"}}});
+    expect(await (await handleIngestRequest(new Request("http://local/health"),options)).json()).not.toHaveProperty("backfill");
+    const fallback=await (await handleIngestRequest(request(),opts)).json();
+    expect(fallback).toMatchObject({backfill:{enabled:false,state:"disabled",reason:"scheduler_not_configured"}});
+  } finally {await scheduler.stop();rmSync(opts.root,{recursive:true,force:true});}
+});

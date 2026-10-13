@@ -270,3 +270,20 @@ test("EmbeddingGemma config resolves defaults, file values, and env overrides", 
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("background backfill defaults and validated file/env controls", () => {
+  const defaults=loadConfig({env:{},configPath:null});
+  expect(defaults.embeddingBackfillEnabled).toBe(true);
+  expect(defaults.embeddingBackfillIntervalMs).toBe(600_000);
+  expect(defaults.embeddingBackfillBatchSize).toBe(25);
+  const root=mkdtempSync(join(tmpdir(),"backfill-config-"));
+  try {
+    const file=join(root,"config.json");
+    writeFileSync(file,JSON.stringify({embeddingBackfillEnabled:false,embeddingBackfillIntervalMs:2000,embeddingBackfillBatchSize:3}));
+    const cfg=loadConfig({configPath:file,env:{CHAT_SCROBBLER_EMBED_BACKFILL_ENABLED:"true",CHAT_SCROBBLER_EMBED_BACKFILL_INTERVAL_MS:"4000",CHAT_SCROBBLER_EMBED_BACKFILL_BATCH_SIZE:"5"}});
+    expect(cfg).toMatchObject({embeddingBackfillEnabled:true,embeddingBackfillIntervalMs:4000,embeddingBackfillBatchSize:5});
+    expect(loadConfig({configPath:file,env:{CHAT_SCROBBLER_EMBED_BACKFILL_ENABLED:"false",CHAT_SCROBBLER_EMBED_BACKFILL_INTERVAL_MS:"0",CHAT_SCROBBLER_EMBED_BACKFILL_BATCH_SIZE:"1.5"}})).toMatchObject({embeddingBackfillEnabled:false,embeddingBackfillIntervalMs:2000,embeddingBackfillBatchSize:3});
+    writeFileSync(file,JSON.stringify({embeddingBackfillEnabled:"yes",embeddingBackfillIntervalMs:-1,embeddingBackfillBatchSize:0}));
+    expect(loadConfig({configPath:file,env:{}})).toMatchObject({embeddingBackfillEnabled:true,embeddingBackfillIntervalMs:600_000,embeddingBackfillBatchSize:25});
+  } finally {rmSync(root,{recursive:true,force:true});}
+});

@@ -46,6 +46,10 @@ export interface ChatHistoryConfig extends MonitorConfig {
   ollamaBaseUrl: string;
   /** Gemini API key used when embeddingProvider = "gemini". Prefer env. */
   geminiApiKey: string | null;
+  /** Serve fills pending vectors when a provider is configured. */
+  embeddingBackfillEnabled: boolean;
+  embeddingBackfillIntervalMs: number;
+  embeddingBackfillBatchSize: number;
 }
 
 export type EmbeddingProviderKind = "none" | "gemini" | "ollama" | "embeddinggemma" | "hash";
@@ -71,6 +75,9 @@ export const DEFAULT_CONFIG: ChatHistoryConfig = {
   ollamaBaseUrl: "http://127.0.0.1:11434",
   geminiApiKey: null,
   ...monitorSettings(),
+  embeddingBackfillEnabled: true,
+  embeddingBackfillIntervalMs: 600_000,
+  embeddingBackfillBatchSize: 25,
 };
 
 export interface LoadConfigOptions {
@@ -105,6 +112,9 @@ const FILE_KEYS: Array<keyof ChatHistoryConfig> = [
   "embeddingBaseUrl",
   "ollamaBaseUrl",
   "geminiApiKey",
+  "embeddingBackfillEnabled",
+  "embeddingBackfillIntervalMs",
+  "embeddingBackfillBatchSize",
 ];
 
 /** Resolve the layered config. Pure given its options (env + fs are injectable). */
@@ -143,6 +153,20 @@ export function loadConfig(opts: LoadConfigOptions = {}): ChatHistoryConfig {
   applyString(cfg, "embeddingBaseUrl", env.CHAT_SCROBBLER_EMBED_BASE_URL);
   applyString(cfg, "ollamaBaseUrl", env.CHAT_SCROBBLER_OLLAMA_BASE_URL ?? env.OLLAMA_BASE_URL);
   applyNullableString(cfg, "geminiApiKey", env.GEMINI_API_KEY ?? env.GOOGLE_API_KEY);
+  for (const key of ["embeddingBackfillIntervalMs", "embeddingBackfillBatchSize"] as const) {
+    if (!Number.isSafeInteger(cfg[key]) || cfg[key] < 1) cfg[key]=DEFAULT_CONFIG[key];
+  }
+  if (typeof cfg.embeddingBackfillEnabled !== "boolean") cfg.embeddingBackfillEnabled=DEFAULT_CONFIG.embeddingBackfillEnabled;
+  const enabled=env.CHAT_SCROBBLER_EMBED_BACKFILL_ENABLED;
+  if (enabled === "true" || enabled === "1") cfg.embeddingBackfillEnabled=true;
+  if (enabled === "false" || enabled === "0") cfg.embeddingBackfillEnabled=false;
+  for (const [key,value] of [
+    ["embeddingBackfillIntervalMs",env.CHAT_SCROBBLER_EMBED_BACKFILL_INTERVAL_MS],
+    ["embeddingBackfillBatchSize",env.CHAT_SCROBBLER_EMBED_BACKFILL_BATCH_SIZE],
+  ] as const) {
+    const n=Number(value);
+    if (value !== undefined && Number.isSafeInteger(n) && n>0) cfg[key]=n;
+  }
   if (env.BACKUP_TARGET !== undefined && env.BACKUP_TARGET !== "") {
     const targets = env.BACKUP_TARGET.split(",").map(s => s.trim()).filter(Boolean);
     if (targets.length > 0) cfg.backupTargets = targets;

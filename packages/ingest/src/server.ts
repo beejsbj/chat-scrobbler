@@ -4,7 +4,8 @@ import { persistEmbeddingStatus } from "../../../src/indexer/embedding-status";
 import { monitorStatePath, recordCaptureReceipt } from "../../../src/monitor/state";
 import { cachedLiveMonitorReport } from "../../../src/monitor/live-report";
 import type { MonitorConfig } from "../../../src/monitor/config";
-import { cachedIngestHealth } from "./health";
+import { backfillHealth, cachedIngestHealth } from "./health";
+import type { BackfillSchedulerStatus } from "../../../src/indexer/backfill-scheduler";
 import { Database } from "bun:sqlite";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
@@ -47,6 +48,8 @@ export interface IngestServerOptions extends MonitorConfig {
   rawDir?: string;
   /** Used by deep health checks. Captures defer vector inference to backfill. */
   embeddingProvider?: EmbeddingProvider | null;
+  /** Live background coverage progress, only exposed through authenticated deep health. */
+  backfillStatus?: () => BackfillSchedulerStatus;
 }
 
 export interface IngestResponse {
@@ -112,7 +115,7 @@ export async function handleIngestRequest(req: Request, opts: IngestServerOption
   if (req.method === "GET" && url.pathname === `${HEALTH_PATH}/deep`) {
     if (!opts.ingestToken || req.headers.get("authorization") !== `Bearer ${opts.ingestToken}`) return json({ ok: false, error: "Unauthorized" }, 401);
     const health = await cachedIngestHealth(opts);
-    return json(health, health.ok ? 200 : 503);
+    return json({...health,backfill:backfillHealth(opts)}, health.ok ? 200 : 503);
   }
 
   if (req.method === "GET" && url.pathname === `${STATUS_PATH}/report`) {
