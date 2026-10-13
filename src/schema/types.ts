@@ -22,7 +22,9 @@ export type Block =
   | { type: "tool_result"; name: string; output?: unknown }
   | { type: "artifact"; artifact_id: string; kind: string; title: string | null; version: string | null; content: string;
       language?: string | null; operation?: string; previous_version?: string | null;
-      edits?: Array<{ old_str: string; new_str: string }> }
+      edits?: Array<{ old_str: string; new_str: string }>;
+      updates?: Array<{ pattern: string; replacement: string; multiple?: boolean }>;
+      comments?: Array<{ pattern: string; comment: string }> }
   | ({ type: "attachment"; kind: "image" | "audio" | "file" } & MediaReference)
   | ({ type: "image" | "audio" | "video" | "file" } & MediaReference)
   | { type: "citation"; provider_type: string; url: string | null; title: string | null; text: string | null }

@@ -7,7 +7,7 @@ import { SCHEMA_VERSION, makeSessionId } from "../schema/types";
 import { assetLookupFromRaw, type AssetLookup } from "./assets";
 import { renderText } from "./render";
 import { blocksFromContent } from "./chatgpt-parts";
-import { blocksFromCanvas } from "./chatgpt-artifacts";
+import { blocksFromCanvas, canvasAncestor, type CanvasArtifact } from "./chatgpt-artifacts";
 export { blocksFromContent } from "./chatgpt-parts";
 import { childLocation, limitUnknownJson, toolCall, unknownBlock, type ParserContext } from "./parts";
 
@@ -90,6 +90,7 @@ export function sessionFromChatgptConversation(conv: RawConversation, opts: Chat
   // Pass 1: collect all emitted messages in DFS order.
   // Track which raw node ids were emitted and what message id each maps to.
   const rawToEmittedId = new Map<string, string>(); // rawNodeId -> emitted message id
+  const canvasArtifacts = new Map<string, CanvasArtifact>();
   const messages: Message[] = [];
 
   for (const node of depthFirstNodes(conv.mapping)) {
@@ -104,7 +105,12 @@ export function sessionFromChatgptConversation(conv: RawConversation, opts: Chat
     const blocks = recipient || role === "tool"
       ? [toolCall(name), ...contentBlocks.filter(block => !["text", "reasoning", "tool_call", "tool_result"].includes(block.type))]
       : contentBlocks;
-    if (role === "assistant") blocks.push(...blocksFromCanvas(recipient, m.content, m.id ?? node.id, childLocation(location, "content")));
+    if (role === "assistant") {
+      const canvasBlocks = blocksFromCanvas(recipient, m.content, m.id ?? node.id, childLocation(location, "content"),
+        canvasAncestor(node.parent, conv.mapping, canvasArtifacts));
+      blocks.push(...canvasBlocks);
+      for (const block of canvasBlocks) if (block.type === "artifact") canvasArtifacts.set(node.id, block);
+    }
     for (const key of ["citations", "content_references", "attachments"]) {
       const entries = m.metadata?.[key];
       if (Array.isArray(entries)) entries.forEach((entry: unknown, i: number) =>

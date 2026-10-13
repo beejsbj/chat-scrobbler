@@ -88,7 +88,7 @@ test("retains every unrecognized ChatGPT part and caps its inline JSON in UTF-8 
 });
 
 test("classifies recipients and tool replies without storing their inputs or outputs", () => {
-  for (const [recipient, family] of [["canmore.update_textdoc", "canvas"], ["image_gen.text2im", "image_gen"], ["web.run", "browsing"], ["python", "python"]]) {
+  for (const [recipient, family] of [["image_gen.text2im", "image_gen"], ["web.run", "browsing"], ["python", "python"]]) {
     const capture = structuredClone(sample) as any;
     const message = capture.payload.mapping.n3.message;
     message.recipient = recipient;
