@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { handleIngestRequest } from "../packages/ingest/src/server";
@@ -9,6 +9,7 @@ import { listRawCaptures, storeRawCapture } from "../src/store/raw";
 import { writeSession } from "../src/store/sessions";
 import { createBackup, restoreBackup } from "../src/backup/backup";
 import { LocalDirTarget } from "../src/backup/local";
+import { indexSession, listSessions, openIndex } from "../src/indexer/sqlite";
 import type { Session } from "../src/schema/types";
 
 const roots: string[] = [];
@@ -96,4 +97,38 @@ test("mixed capture batches archive and index live entries while acknowledging d
   const refs = listRawCaptures(opts.rawDir, fixture.source, fixture.source_id);
   expect(refs).toHaveLength(1);
   expect(Buffer.from(Bun.gunzipSync(readFileSync(join(opts.rawDir, refs[0])))).toString()).toBe(exactLive);
+});
+
+
+test("corrupt canonical, raw or asset metadata cannot prevent deleting projections and archive files", async () => {
+  const logs = (await import("bun:test")).spyOn(console, "error").mockImplementation(() => {});
+  try {
+    for (const broken of ["canonical", "raw-gzip", "raw-json", "metadata"]) {
+      const opts = setup();
+      const file = writeSession(opts.canonicalDir, session("gone"));
+      const db = openIndex(opts.indexPath);
+      try {
+        indexSession(db, session("gone"));
+        const asset = storeCanonicalAsset({ canonicalDir: opts.canonicalDir, source: "chatgpt", sourceId: "gone", pointer: "p", bytes: Buffer.from("private") });
+        const ref = storeRawCapture(opts.rawDir, buildRawCapture({ source: "chatgpt", sourceId: "gone", endpoint: "/detail", payload: {} }));
+        const blob = assetBlobPath(opts.canonicalDir, asset.sha256);
+        if (broken === "canonical") writeFileSync(file, '{"private-token');
+        if (broken === "raw-gzip") writeFileSync(join(opts.rawDir, ref), "invalid gzip private-token");
+        if (broken === "raw-json") writeFileSync(join(opts.rawDir, ref), Bun.gzipSync(Buffer.from('{"private-token')));
+        if (broken === "metadata") writeFileSync(`${blob}.json`, '{"private-token');
+        for (let attempt = 0; attempt < 2; attempt++) {
+          const response = await handleIngestRequest(new Request("http://local/captures?source=chatgpt&source_id=gone", { method: "DELETE" }), opts);
+          expect(response.status).toBe(200);
+          expect(listSessions(db)).toHaveLength(0);
+          expect(existsSync(file)).toBe(false);
+          expect(existsSync(join(opts.rawDir, "chatgpt", "gone"))).toBe(false);
+          expect(existsSync(join(opts.root, "canonical", asset.local_path))).toBe(false);
+          // The corrupt run cannot establish safe ownership, so retains uncertain CAS bytes.
+          if (attempt === 0) expect(existsSync(blob)).toBe(true);
+        }
+      } finally { db.close(); }
+    }
+    expect(JSON.stringify(logs.mock.calls)).toContain("asset_cleanup_deferred");
+    expect(JSON.stringify(logs.mock.calls)).not.toContain("private-token");
+  } finally { logs.mockRestore(); }
 });

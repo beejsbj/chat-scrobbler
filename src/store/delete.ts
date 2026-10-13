@@ -12,17 +12,22 @@ export function deleteSessionArchive(canonicalDir: string, source: string, sourc
   markSessionDeleted(canonicalDir, { source, source_id: sourceId, deleted_at: new Date().toISOString() });
   const rawSessionDir = join(rawDir, encodedSegment(source), encodedSegment(sourceId));
   const candidates = new Set<string>();
-  if (existsSync(sessionPath)) captureHashes(sessionPath, candidates);
-  for (const file of filesUnder(rawSessionDir, "*.json.gz")) captureHashes(file, candidates);
-  for (const file of filesUnder(assetsDirForSession(canonicalDir, source, sourceId))) collectAssetHashes(basename(file), candidates);
-  for (const file of filesUnder(join(assetsDirForCanonicalDir(canonicalDir), "sha256"), "**/*.json")) {
+  let collectionFailed = false;
+  const collect = (step: () => void) => {
+    try { step(); } catch { collectionFailed = true; }
+  };
+  collect(() => { if (existsSync(sessionPath)) captureHashes(sessionPath, candidates); });
+  collect(() => { for (const file of filesUnder(rawSessionDir, "*.json.gz")) collect(() => captureHashes(file, candidates)); });
+  collect(() => { for (const file of filesUnder(assetsDirForSession(canonicalDir, source, sourceId))) collect(() => collectAssetHashes(basename(file), candidates)); });
+  collect(() => { for (const file of filesUnder(join(assetsDirForCanonicalDir(canonicalDir), "sha256"), "**/*.json")) collect(() => {
     const metadata = JSON.parse(readFileSync(file, "utf8"));
     if (metadata.first_seen?.session_id === `${source}:${sourceId}`) collectAssetHashes(metadata.sha256, candidates);
-  }
+  }); });
+  if (collectionFailed) console.error(JSON.stringify({ event: "asset_cleanup_deferred", reason: "unreadable_deleted_reference" }));
   const result = deleteSession(canonicalDir, source, sourceId);
   const rawDeleted = existsSync(rawSessionDir);
   if (rawDeleted) { rmSync(rawSessionDir, { recursive: true, force: true }); syncDirectory(dirname(rawSessionDir)); }
-  const survivors = survivingAssetHashes(canonicalDir, rawDir);
+  const survivors = collectionFailed ? null : survivingAssetHashes(canonicalDir, rawDir);
   let blobsDeleted = 0;
   if (survivors) for (const hash of candidates) {
     if (survivors.has(hash)) continue;
