@@ -59,9 +59,9 @@ export function indexSession(db: Database, s: Session, opts: IndexSessionOptions
   try {
     const rows = collectSyncEmbeddingRows(s, embeddingProvider);
     db.transaction(() => replaceEmbeddingRows(db, s.id, rows))();
-    embeddingSucceeded(embeddingProvider);
+    embeddingSucceeded(embeddingProvider, "ingest");
   } catch {
-    embeddingFailed(embeddingProvider, "embedding_document_failed");
+    embeddingFailed(embeddingProvider, "embedding_document_failed", "ingest");
   }
 }
 
@@ -73,9 +73,9 @@ export async function indexSessionWithEmbeddings(db: Database, s: Session, opts:
   try {
     const rows = await collectAsyncEmbeddingRows(s, embeddingProvider);
     db.transaction(() => replaceEmbeddingRows(db, s.id, rows))();
-    embeddingSucceeded(embeddingProvider);
+    embeddingSucceeded(embeddingProvider, "ingest");
   } catch {
-    embeddingFailed(embeddingProvider, "embedding_document_failed");
+    embeddingFailed(embeddingProvider, "embedding_document_failed", "ingest");
   }
 }
 

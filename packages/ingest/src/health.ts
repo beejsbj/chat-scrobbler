@@ -49,9 +49,9 @@ async function probeEmbedding(provider: EmbeddingProvider | null) {
     });
     const vector = await Promise.race([provider.embed("chat-scrobbler health check", { kind: "query", signal: controller.signal }), deadline]);
     validateEmbedding(vector);
-    return { semantic: "available" as const, embedding_failures: embeddingStatus(provider).embedding_failures };
+    return { semantic: "available" as const, embedding_failures: embeddingStatus(provider, "ingest").embedding_failures };
   } catch {
-    return { semantic: "unavailable" as const, reason: "embedding_health_failed", embedding_failures: embeddingStatus(provider).embedding_failures };
+    return { semantic: "unavailable" as const, reason: "embedding_health_failed", embedding_failures: embeddingStatus(provider, "ingest").embedding_failures };
   }
   finally { clearTimeout(timer); }
 }
