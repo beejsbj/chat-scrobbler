@@ -21,7 +21,7 @@ test("parses a Gemini hNvQHb capture (RawCapture envelope) into a canonical sess
   expect(s.source).toBe("gemini");
   expect(s.capture_method).toBe("api");
   expect(s.source_id).toBe("98a3d78ec6ddbe15");
-  expect(s.schema_version).toBe(1);
+  expect(s.schema_version).toBe(2);
   expect(s.raw_ref).toBe("raw/api/gemini:98a3d78ec6ddbe15");
 });
 
@@ -129,8 +129,7 @@ test("adds Gemini uploaded asset sidecar records as attachment blocks", () => {
   });
 
   expect(s.messages[0].blocks).toContainEqual(expect.objectContaining({
-    type: "attachment",
-    kind: "image",
+    type: "image",
     filename: "image.png",
     pointer: "https://gemini.google.com/blob/asset-1",
     local_path: "assets/gemini/98a3d78ec6ddbe15/hash.png",
@@ -167,4 +166,23 @@ test("Gemini capture folds into canonical + index and is searchable", () => {
     db.close();
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("retains opaque Gemini candidate and user parts, including candidates with no text", () => {
+  const capture = structuredClone(sample) as any;
+  capture.title = "Captured sidebar title";
+  const turn = capture.payload[0][0];
+  turn[2][0].push({ type: "future_upload", pointer: "provider-only" });
+  const candidate = turn[3][0][0];
+  candidate[1].push({ type: "interactive_visual", data: [1, 2] });
+  candidate[42] = { generated_image: "undocumented" };
+  turn[3][0].push(["rc_visual_only", [{ type: "video_overview", blob: "opaque" }]]);
+  const [s] = parseGemini(capture, { raw_ref: "gemini/id/version.json.gz" });
+  expect(s.schema_version).toBe(2);
+  expect(s.title).toBe("Captured sidebar title");
+  expect(s.messages[0].blocks).toContainEqual(expect.objectContaining({ type: "unknown", provider_type: "future_upload" }));
+  expect(s.messages[1].blocks).toContainEqual(expect.objectContaining({ type: "unknown", provider_type: "interactive_visual", raw_path: "/payload/0/0/3/0/0/1/1" }));
+  expect(s.messages[1].blocks).toContainEqual(expect.objectContaining({ type: "unknown", raw_json: candidate[42], raw_ref: "gemini/id/version.json.gz", raw_path: "/payload/0/0/3/0/0/42" }));
+  expect(s.messages.find(m => m.id === "rc_visual_only")?.blocks).toContainEqual(expect.objectContaining({ type: "unknown", provider_type: "video_overview" }));
+  expect(s.messages[1].text).not.toContain("undocumented");
 });

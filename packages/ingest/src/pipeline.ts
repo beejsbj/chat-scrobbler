@@ -27,7 +27,7 @@ export interface SpineContext {
  *  Returns one result per canonical session produced (usually exactly one). */
 export function foldCaptureIntoSpine(capture: RawCapture, ctx: SpineContext): SpineResult[] {
   const parse = getParser(capture.source, "api");
-  const sessions = parse(capture);
+  const sessions = parse(capture, { raw_ref: ctx.rawRef });
   return sessions.map((session) => {
     if (ctx.rawRef) session.raw_ref = ctx.rawRef;
     writeSession(ctx.canonicalDir, session);
@@ -40,7 +40,7 @@ export async function foldCaptureIntoSpineWithEmbeddings(capture: RawCapture, ct
   if (!ctx.embeddingProvider) return foldCaptureIntoSpine(capture, ctx);
 
   const parse = getParser(capture.source, "api");
-  const sessions = parse(capture);
+  const sessions = parse(capture, { raw_ref: ctx.rawRef });
   const results: SpineResult[] = [];
   for (const session of sessions) {
     if (ctx.rawRef) session.raw_ref = ctx.rawRef;

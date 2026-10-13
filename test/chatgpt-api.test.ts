@@ -16,7 +16,7 @@ test("parses a chatgpt API capture (RawCapture envelope) into a canonical sessio
   expect(s.messages[1].blocks[0]).toMatchObject({ type: "reasoning", text: "Consider self-protection." });
   // multimodal: text + image attachment
   expect(s.messages[2].blocks[0]).toMatchObject({ type: "text", text: "Ego is a protective interface." });
-  expect(s.messages[2].blocks[1]).toMatchObject({ type: "attachment", kind: "image", pointer: "file-service://file-IMG1" });
+  expect(s.messages[2].blocks[1]).toMatchObject({ type: "image", pointer: "file-service://file-IMG1" });
 });
 
 test("handles API-only system/tool roles and code/execution_output content", () => {
@@ -41,8 +41,8 @@ test("handles API-only system/tool roles and code/execution_output content", () 
   const [s] = parseChatgpt(capture);
   expect(s.messages.map((m) => m.role)).toEqual(["user", "assistant", "tool"]);
   expect(s.messages[1].blocks[0]).toMatchObject({ type: "tool_call", name: "code" });
-  expect(s.messages[2].blocks[0]).toMatchObject({ type: "tool_result", name: "code" });
-  expect(s.messages[2].text).toContain("1");
+  expect(s.messages[2].blocks[0]).toMatchObject({ type: "tool_call", name: "code" });
+  expect(s.messages[2].text).not.toContain("1");
 });
 
 test("hydrates ChatGPT attachment local_path from uploaded asset sidecar", () => {
@@ -59,7 +59,7 @@ test("hydrates ChatGPT attachment local_path from uploaded asset sidecar", () =>
   };
   const [s] = parseChatgpt(capture);
   expect(s.messages[2].blocks[1]).toMatchObject({
-    type: "attachment",
+    type: "image",
     pointer: "file-service://file-IMG1",
     local_path: "assets/chatgpt/conv-1/hash.png",
   });
@@ -70,4 +70,49 @@ test("returns [] for empty or malformed input", () => {
   expect(parseChatgpt(null)).toEqual([]);
   expect(parseChatgpt({})).toEqual([]);
   expect(parseChatgpt({ payload: {} })).toEqual([]);
+});
+
+test("retains every unrecognized ChatGPT part and caps its inline JSON in UTF-8 bytes", () => {
+  const capture = structuredClone(sample) as any;
+  const parts = capture.payload.mapping.n3.message.content.parts;
+  parts.push({ content_type: "intelligent_ui", specification: { chart: [1, 2] } });
+  parts.push({ content_type: "future_large", data: "界".repeat(17000) });
+  const [s] = parseChatgpt(capture, { raw_ref: "chatgpt/conv-1/version.json.gz" });
+  const unknowns = s.messages[2].blocks.filter(b => b.type === "unknown");
+  expect(unknowns).toHaveLength(2);
+  expect(unknowns[0]).toMatchObject({ provider_type: "intelligent_ui", raw_json: parts[2], truncated: false,
+    raw_ref: "chatgpt/conv-1/version.json.gz", raw_path: "/payload/mapping/n3/message/content/parts/2" });
+  expect(unknowns[1]).toMatchObject({ provider_type: "future_large", raw_json: null, truncated: true });
+  expect(unknowns[1].size_bytes).toBeGreaterThan(50000);
+  expect(s.messages[2].text).not.toContain("chart:");
+});
+
+test("classifies recipients and tool replies without storing their inputs or outputs", () => {
+  for (const [recipient, family] of [["canmore.update_textdoc", "canvas"], ["image_gen.text2im", "image_gen"], ["web.run", "browsing"], ["python", "python"]]) {
+    const capture = structuredClone(sample) as any;
+    const message = capture.payload.mapping.n3.message;
+    message.recipient = recipient;
+    message.content = { content_type: "code", text: "tool-input-noise" };
+    const [s] = parseChatgpt(capture);
+    expect(s.messages[2].blocks).toEqual([{ type: "tool_call", name: recipient, tool_type: family }]);
+    expect(s.messages[2].text).not.toContain("tool-input-noise");
+    message.author = { role: "tool", name: recipient };
+    message.recipient = "all";
+    message.content = { content_type: "text", parts: ["tool-output-noise"] };
+    const [reply] = parseChatgpt(capture);
+    expect(reply.messages[2].blocks).toEqual([{ type: "tool_call", name: recipient, tool_type: family }]);
+    expect(reply.messages[2].text).not.toContain("tool-output-noise");
+  }
+});
+
+test("keeps undocumented references and unknown content even when it has string parts", () => {
+  const capture = structuredClone(sample) as any;
+  const message = capture.payload.mapping.n3.message;
+  message.content = { content_type: "new_visual", parts: ["caption", { data: 42 }] };
+  message.metadata.content_references = [{ type: "new_reference", url: "https://example.org" }];
+  message.metadata.citations = [{ source: "paper" }];
+  const [s] = parseChatgpt(capture);
+  expect(s.schema_version).toBe(2);
+  expect(s.messages[2].blocks.map(b => b.type)).toEqual(["unknown", "unknown", "unknown"]);
+  expect(s.messages[2].blocks[0]).toMatchObject({ raw_json: message.content });
 });

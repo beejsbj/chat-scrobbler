@@ -28,13 +28,15 @@
 //
 // The parser selects the FIRST candidate in turn[3][0] for the canonical text.
 // The conversation ID comes from the capture envelope source_id (no c_ prefix).
-// The title is not present in hNvQHb; the envelope may carry it via raw_url or
+// The title is not present in hNvQHb; the envelope may carry an explicit title or
 // be null -- parsers do not fabricate it.
 
 import type { Session, Message, Block } from "../schema/types";
-import { makeSessionId } from "../schema/types";
-import { assetLookupFromRaw, kindFromContentType } from "./assets";
+import { SCHEMA_VERSION, makeSessionId } from "../schema/types";
+import { assetLookupFromRaw } from "./assets";
 import { renderText } from "./render";
+import { childLocation, mediaBlock, type ParserContext } from "./parts";
+import { geminiTextParts, geminiOpaqueSlots, geminiCandidates } from "./gemini-parts";
 
 // Epoch seconds + nanoseconds [s, ns] array -- the timestamp type Gemini uses.
 type GeminiTimestamp = [number, number] | null | undefined;
@@ -46,17 +48,6 @@ function timestampToIso(ts: GeminiTimestamp): string | null {
 
 // Each turn is: [userRef, respRef | null, userMeta, respData, assistantTimestamp]
 type Turn = unknown[];
-
-function extractUserText(turn: Turn): string | null {
-  const meta = turn[2];
-  if (!Array.isArray(meta)) return null;
-  const textParts = meta[0];
-  if (!Array.isArray(textParts)) return null;
-  return textParts
-    .filter((p) => typeof p === "string" && p.trim().length > 0)
-    .join("\n")
-    .trim() || null;
-}
 
 function extractModel(turn: Turn): string | null {
   const respData = turn[3];
@@ -73,29 +64,6 @@ function extractUserMsgId(turn: Turn): string | null {
 
 function extractAssistantTimestamp(turn: Turn): string | null {
   return timestampToIso(turn[4] as GeminiTimestamp);
-}
-
-/** Extract all candidates from a turn's response data.
- *  Returns an array of { id, text } for each emittable candidate. */
-function extractCandidates(turn: Turn): Array<{ id: string; text: string }> {
-  const respData = turn[3];
-  if (!Array.isArray(respData)) return [];
-  const candidates = respData[0];
-  if (!Array.isArray(candidates)) return [];
-  const result: Array<{ id: string; text: string }> = [];
-  for (const cand of candidates) {
-    if (!Array.isArray(cand)) continue;
-    const rcId = typeof cand[0] === "string" ? cand[0] : null;
-    if (!rcId) continue;
-    const textParts = cand[1];
-    if (!Array.isArray(textParts)) continue;
-    const text = textParts
-      .filter((p) => typeof p === "string" && p.trim().length > 0)
-      .join("\n")
-      .trim();
-    if (text) result.push({ id: rcId, text });
-  }
-  return result;
 }
 
 /** Determine the selected candidate rc id for a turn.
@@ -118,6 +86,7 @@ function extractSelectedCandidateId(turn: Turn, emittedIds: Set<string>): string
 
 interface MaybeEnvelope {
   payload?: unknown;
+  title?: string | null;
   account?: string | null;
   source_id?: unknown;
   raw_url?: string | null;
@@ -130,7 +99,7 @@ interface MaybeEnvelope {
  *  that turn's user message id). Chains turns: each turn's user message parent_id =
  *  the PREVIOUS turn's selected assistant id. active_leaf_id = last turn's selected
  *  assistant id (or last user message id when no assistant was emitted for that turn). */
-export function parseGemini(raw: unknown): Session[] {
+export function parseGemini(raw: unknown, context: ParserContext = {}): Session[] {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return [];
   const env = raw as MaybeEnvelope;
   const account = typeof env.account === "string" ? env.account : null;
@@ -148,7 +117,9 @@ export function parseGemini(raw: unknown): Session[] {
   const turns = turnsRaw as Turn[];
 
   const messages: Message[] = [];
-  const assets = assetLookupFromRaw(raw).all();
+  const assetLookup = assetLookupFromRaw(raw);
+  const assets = assetLookup.all();
+  const loc = { raw_ref: context.raw_ref ?? `raw/api/gemini:${sourceId}`, raw_path: "/payload" };
   let firstTimestamp: string | null = null;
   let lastTimestamp: string | null = null;
   let defaultModel: string | null = null;
@@ -165,10 +136,12 @@ export function parseGemini(raw: unknown): Session[] {
     if (model && !defaultModel) defaultModel = model;
 
     // --- User message ---
-    const userText = extractUserText(turn);
+    const at = childLocation(loc, 0, i);
+    const userMeta = Array.isArray(turn[2]) ? turn[2] : [];
+    const userBlocks = [...geminiTextParts(userMeta[0], childLocation(at, 2, 0)),
+      ...geminiOpaqueSlots(userMeta, [0, 1, 3, 4, 5, 8], childLocation(at, 2), "gemini.user")];
     const userMsgId = extractUserMsgId(turn);
-    if (userText && userMsgId) {
-      const userBlocks: Block[] = [{ type: "text", text: userText }];
+    if (userBlocks.length && userMsgId) {
       const userMsg: Message = {
         id: userMsgId,
         role: "user",
@@ -183,13 +156,17 @@ export function parseGemini(raw: unknown): Session[] {
     }
 
     // --- Assistant messages: all candidates ---
-    const candidates = extractCandidates(turn);
+    const candidates = geminiCandidates(turn, at);
     const emittedCandidateIds = new Set<string>(candidates.map((c) => c.id));
     const assistantTs = extractAssistantTimestamp(turn);
     const selectedId = extractSelectedCandidateId(turn, emittedCandidateIds);
 
     for (const cand of candidates) {
-      const assistantBlocks: Block[] = [{ type: "text", text: cand.text }];
+      const assistantBlocks = cand.blocks;
+      if (cand.id === selectedId) {
+        if (Array.isArray(turn[3])) assistantBlocks.push(...geminiOpaqueSlots(turn[3], [0, 3, 21], childLocation(at, 3), "gemini.response"));
+        assistantBlocks.push(...geminiOpaqueSlots(turn, [0, 1, 2, 3, 4], at, "gemini.turn"));
+      }
       const assistantMsg: Message = {
         id: cand.id,
         role: "assistant",
@@ -219,14 +196,10 @@ export function parseGemini(raw: unknown): Session[] {
       const target = (asset.message_id ? byId.get(asset.message_id) : null)
         ?? (lastActiveTipId ? byId.get(lastActiveTipId) : null)
         ?? messages[messages.length - 1];
-      const block: Block = {
-        type: "attachment",
-        kind: kindFromContentType(asset.content_type),
-        filename: asset.filename ?? null,
-        pointer: asset.pointer,
-        local_path: asset.local_path,
-        sha256: asset.sha256 ?? null,
-      };
+      const mime = asset.content_type;
+      const type = mime?.startsWith("image/") ? "image" : mime?.startsWith("audio/") ? "audio"
+        : mime?.startsWith("video/") ? "video" : "file";
+      const block = mediaBlock(type, asset.pointer, assetLookup, asset.filename ?? null, mime ?? null);
       target.blocks.push(block);
       target.text = renderText(target.blocks);
     }
@@ -239,7 +212,9 @@ export function parseGemini(raw: unknown): Session[] {
   const updated = lastTimestamp ?? fetchedAt;
 
   // Title: not present in hNvQHb payload; left null unless the envelope carries it.
-  const title: string | null = null;
+  const title = typeof env.title === "string" ? env.title : null;
+  const activeMessage = messages.find(m => m.id === lastActiveTipId);
+  if (activeMessage) activeMessage.blocks.push(...geminiOpaqueSlots(payload, [0], loc, "gemini.payload"));
 
   const session: Session = {
     id: makeSessionId("gemini", sourceId),
@@ -253,8 +228,8 @@ export function parseGemini(raw: unknown): Session[] {
     account,
     messages,
     active_leaf_id: lastActiveTipId,
-    raw_ref: `raw/api/gemini:${sourceId}`,
-    schema_version: 1,
+    raw_ref: context.raw_ref ?? `raw/api/gemini:${sourceId}`,
+    schema_version: SCHEMA_VERSION,
   };
 
   return [session];
