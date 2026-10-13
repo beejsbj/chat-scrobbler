@@ -3,13 +3,31 @@ export type Source = "chatgpt" | "claude" | "gemini";
 export type CaptureMethod = "export" | "api" | "takeout";
 export type Role = "user" | "assistant" | "system" | "tool";
 
+/** Canonical version; the extension's raw envelope remains version 1. */
+export const SCHEMA_VERSION = 2;
+
+export interface MediaReference {
+  pointer: string;
+  filename: string | null;
+  local_path: string | null;
+  sha256?: string | null;
+  mime_type?: string | null;
+}
+
 export type Block =
   | { type: "text"; text: string }
-  | { type: "reasoning"; text: string }
-  | { type: "tool_call"; name: string; input: unknown }
-  | { type: "tool_result"; name: string; output: unknown }
-  | { type: "artifact"; artifact_id: string; kind: string; title: string | null; version: string | null; content: string }
-  | { type: "attachment"; kind: "image" | "audio" | "file"; filename: string | null; pointer: string; local_path: string | null; sha256?: string | null };
+  | { type: "reasoning"; text: string; summary?: boolean }
+  // Deprecated input/output fields allow historical canonical files to load.
+  | { type: "tool_call"; name: string; tool_type?: string; input?: unknown }
+  | { type: "tool_result"; name: string; output?: unknown }
+  | { type: "artifact"; artifact_id: string; kind: string; title: string | null; version: string | null; content: string;
+      operation?: string; previous_version?: string | null; edits?: Array<{ old_str: string; new_str: string }> }
+  | ({ type: "attachment"; kind: "image" | "audio" | "file" } & MediaReference)
+  | ({ type: "image" | "audio" | "video" | "file" } & MediaReference)
+  | { type: "citation"; provider_type: string; url: string | null; title: string | null; text: string | null }
+  | { type: "ui_widget"; kind: string; pointer: string }
+  | { type: "unknown"; provider_type: string; raw_json: unknown; raw_ref: string; raw_path: string;
+      truncated: boolean; size_bytes: number };
 
 export interface Message {
   id: string;
