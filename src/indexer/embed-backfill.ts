@@ -4,7 +4,8 @@ import { assetBlobPath } from "../store/assets";
 import type { EmbeddingProvider } from "./sqlite";
 import { assetCoverage, embedAsset } from "./asset-embeddings";
 import { ensureMessageLookup } from "./message-lookup";
-import { EmbeddingGemmaProvider, embeddingGemmaDocumentWorkEstimate } from "./embedding-providers";
+import { validateEmbedding } from "./embedding-status";
+import { EmbeddingGemmaProvider, embeddingGemmaDocumentWorkEstimate, type EmbeddingGemmaContext } from "./embedding-providers";
 import { decodeVector, putTextVector, reusableBinaryTextVector, reusableTextVector, textVectorHash, vectorScope } from "./vector-store";
 
 export interface BackfillReport {
@@ -102,6 +103,30 @@ export async function embedBackfill(db: Database, opts: {
     if (needsPacing) { await sleep(1000/rate); needsPacing=false; }
     await wait();
   };
+  const startRequest = () => { needsPacing=true; requests++; requestStartedAt=now(); };
+  const infer = async (call: (context: EmbeddingGemmaContext) => number[] | Promise<number[]>, checkCurrent: () => void, title?: string | null) => {
+    const usesDispatchHooks=provider instanceof EmbeddingGemmaProvider;
+    const beforeRequest=async()=> { await throttle(); checkCurrent(); };
+    const context: EmbeddingGemmaContext = {
+      kind:"document", title, signal,
+      beforeRequest,
+      onRequest:usesDispatchHooks ? startRequest : undefined,
+      onRequestSuccess:usesDispatchHooks ? finishRequest : undefined,
+    };
+    if (!usesDispatchHooks) {
+      await beforeRequest();
+      startRequest();
+      // Generic providers may ignore the HTTP hook; count the call exactly once.
+      context.beforeRequest=async()=> { signal?.throwIfAborted(); checkCurrent(); };
+    }
+    try {
+      const embedding=validateEmbedding(await call(context));
+      signal?.throwIfAborted();
+      vectorScope(provider,embedding.length);
+      if (!usesDispatchHooks) finishRequest();
+      return embedding;
+    } finally { requestStartedAt=null; }
+  };
   await wait();
   ensureMessageLookup(db);
   estimatedRequests=0; estimatedComputeChunks=0;
@@ -126,7 +151,7 @@ export async function embedBackfill(db: Database, opts: {
       if (reusableBinaryTextVector(db,row.session_id,row.message_id,row.text,row.title ?? null,provider)) { skipped++; continue; }
       const cached=reusableTextVector(db,row.session_id,row.message_id,row.text,row.title ?? null,provider);
       if (attempted >= limit) break;
-      await wait();
+      if (cached) await wait();
       const current=db.query("SELECT f.text,f.title FROM message_lookup k JOIN messages_fts f ON f.rowid=k.fts_rowid WHERE k.session_id=? AND k.message_id=?").get(row.session_id,row.message_id) as MessageRow|null;
       if (!current || current.text!==row.text || (current.title ?? null)!==(row.title ?? null)) { stale++; continue; }
       attempted++;
@@ -136,21 +161,7 @@ export async function embedBackfill(db: Database, opts: {
           const live=db.query("SELECT f.text,f.title FROM message_lookup k JOIN messages_fts f ON f.rowid=k.fts_rowid WHERE k.session_id=? AND k.message_id=?").get(row.session_id,row.message_id) as MessageRow|null;
           if(!live || live.text!==row.text || (live.title ?? null)!==(row.title ?? null)) throw new StaleEmbeddingInput();
         };
-        const beforeRequest=async()=> {
-          finishRequest(); await throttle(); checkCurrent();
-          needsPacing=true; requests++; requestStartedAt=now();
-        };
-        let firstHook=true;
-        let embedding=cached;
-        if (!embedding) {
-          await beforeRequest();
-          try {
-            embedding=await provider.embed(row.text,{kind:"document",title:row.title,signal,beforeRequest:async()=> {
-              if (firstHook) { firstHook=false; await wait(); checkCurrent(); requestStartedAt=now(); }
-              else await beforeRequest();
-            }});
-          } finally { finishRequest(); }
-        }
+        const embedding=cached ?? await infer(context=>provider.embed(row.text,context),checkCurrent,row.title);
         signal?.throwIfAborted();
         const written=db.transaction(()=> {
           const live=db.query("SELECT f.text,f.title FROM message_lookup k JOIN messages_fts f ON f.rowid=k.fts_rowid WHERE k.session_id=? AND k.message_id=?").get(row.session_id,row.message_id) as MessageRow|null;
@@ -178,10 +189,17 @@ export async function embedBackfill(db: Database, opts: {
         const exists=db.query("SELECT embedding FROM asset_vectors WHERE sha256=? AND provider_kind=? AND provider_model=? AND dimension=? AND length(embedding)=dimension*4")
           .get(sha256,scope.provider_kind,scope.provider_model,scope.dimension) as {embedding:Uint8Array}|null;
         if (exists) { try {decodeVector(exists.embedding,scope.dimension);skipped++;continue;} catch { /* Rebuild corruption. */ } }
-        await throttle(); attempted++; needsPacing=true; requests++; requestStartedAt=now();
-        try { const result=await embedAsset(db,sha256,assetBlobPath(opts.canonicalDir,sha256),provider,signal);
+        attempted++;
+        const requestProvider: EmbeddingProvider = {
+          kind:provider.kind, model:provider.model, dimensions:provider.dimensions,
+          embed:(text,context)=>provider.embed(text,context),
+          embedAsset:input=>infer(context=>provider.embedAsset!(input,context),()=> {
+            if (!db.query("SELECT 1 FROM asset_embedding_links WHERE sha256=?").get(sha256)) throw new StaleEmbeddingInput();
+          }),
+        };
+        try { const result=await embedAsset(db,sha256,assetBlobPath(opts.canonicalDir,sha256),requestProvider,signal);
           if(result==="indexed") { embedded++; completedRequests++; completedComputeChunks++; } else if(result==="skipped") skipped++; else stale++;
-        } catch { signal?.throwIfAborted(); failed++; } finally { finishRequest(); }
+        } catch (error) { signal?.throwIfAborted(); if(error instanceof StaleEmbeddingInput) stale++;else failed++; }
         if(attempted%25===0) opts.progress?.(report("progress"));
       }
     }

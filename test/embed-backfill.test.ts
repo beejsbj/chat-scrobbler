@@ -68,8 +68,8 @@ test("a deletion during the per-request load wait prevents dispatch", async () =
   const {deleteIndexedSession}=await import("../src/indexer/sqlite");const db=openIndex(":memory:");
   try {
     indexSession(db,fixture());let checks=0,dispatched=0;
-    const report=await embedBackfill(db,{provider:{...p,embed:async(_text,context)=>{await context?.beforeRequest?.();dispatched++;return[1,0];}},loadThreshold:8,load:()=>++checks===3 ? 9 : 0,sleep:async()=>{deleteIndexedSession(db,"chatgpt","test");}});
-    expect(dispatched).toBe(0);expect(report.stale).toBe(1);
+    const report=await embedBackfill(db,{provider:{...p,embed:async(_text,context)=>{await context?.beforeRequest?.();dispatched++;return[1,0];}},loadThreshold:8,load:()=>++checks===2 ? 9 : 0,sleep:async()=>{deleteIndexedSession(db,"chatgpt","test");}});
+    expect(dispatched).toBe(0);expect(report).toMatchObject({ stale:1, requests:0, mean_request_seconds:null });
   } finally {db.close();}
 });
 test("limit includes lazy legacy conversions and those writes wait for low load", async () => {
@@ -286,4 +286,93 @@ test("an explicit emergency load brake runs before lookup and coverage preparati
     expect(pauses[0]).toMatchObject({ text: null, assets: null, estimated_requests: null, eta_seconds: null });
     expect(report.embedded).toBe(1);
   } finally { db.close(); }
+});
+
+test("a load pause deleting a document before its first HTTP dispatch does not count or sample a request", async () => {
+  const { deleteIndexedSession } = await import("../src/indexer/sqlite");
+  const db = openIndex(":memory:");
+  const originalFetch = globalThis.fetch;
+  try {
+    indexSession(db, fixture());
+    let clock = 0, dispatched = 0, pauseNext = false;
+    globalThis.fetch = (async (_url: string | URL | Request, _init?: RequestInit) => {
+      dispatched++;
+      return new Response(JSON.stringify({ data: [{ embedding: new Array(768).fill(0.25) }] }));
+    }) as typeof fetch;
+    const provider = new class extends EmbeddingGemmaProvider {
+      override embed(text: string, context?: Parameters<EmbeddingGemmaProvider["embed"]>[1]) {
+        // Load rises when inference is entered, before the provider's dispatch hook.
+        pauseNext = true;
+        return super.embed(text, context);
+      }
+    }({ baseUrl: "http://fixture.invalid", model: "test" });
+    const report = await embedBackfill(db, {
+      provider, now: () => clock, loadThreshold: 32,
+      load: () => { if (!pauseNext) return 0; pauseNext = false; return 33; },
+      sleep: async ms => { clock += ms; deleteIndexedSession(db, "chatgpt", "test"); },
+    });
+    expect(dispatched).toBe(0);
+    expect(report).toMatchObject({ stale: 1, requests: 0, mean_request_seconds: null, eta_basis: "assumed_2s_per_compute_chunk" });
+  } finally { globalThis.fetch = originalFetch; db.close(); }
+});
+
+test("a fast HTTP failure preserves the initial native chunk ETA until a successful response", async () => {
+  const db = openIndex(":memory:");
+  const originalFetch = globalThis.fetch;
+  try {
+    const session = fixture("x".repeat(9000));
+    session.messages.push({ ...session.messages[0], id:"second", text:"short" });
+    indexSession(db,session);
+    let clock=0;
+    globalThis.fetch = (async (_url: string | URL | Request, _init?: RequestInit) => {
+      clock+=10;
+      return new Response("unavailable",{status:503});
+    }) as typeof fetch;
+    const provider = new EmbeddingGemmaProvider({ baseUrl:"http://fixture.invalid", model:"test" });
+    const report = await embedBackfill(db,{provider,limit:1,now:()=>clock,sleep:async ms=>{clock+=ms;}});
+    expect(report).toMatchObject({ failed:1, requests:1, remaining_requests:3, mean_request_seconds:null, eta_basis:"assumed_2s_per_compute_chunk" });
+    expect(report.eta_seconds).toBeCloseTo(14.3,8);
+  } finally { globalThis.fetch=originalFetch; db.close(); }
+});
+
+test("generic providers without dispatch hooks count calls but sample only successful vectors", async () => {
+  const db=openIndex(":memory:");
+  try {
+    const session=fixture();
+    session.messages.push({...session.messages[0],id:"second",text:"second"});
+    indexSession(db,session);
+    let clock=0;
+    const report=await embedBackfill(db,{
+      provider:{...p,embed:async text=> {
+        if (text === "archived words") { clock+=10; throw new Error("unavailable"); }
+        clock+=2000; return [1,0];
+      }},
+      now:()=>clock,sleep:async ms=>{clock+=ms;},
+    });
+    expect(report).toMatchObject({ failed:1, embedded:1, requests:2, mean_request_seconds:2, remaining_requests:1, eta_basis:"observed" });
+    expect(report.eta_seconds).toBeCloseTo(2.1,8);
+  } finally {db.close();}
+});
+
+test("deleting an asset during its pacing yield does not count or sample a media request", async () => {
+  const {deleteIndexedSession}=await import("../src/indexer/sqlite");
+  const db=openIndex(":memory:");
+  const originalFetch=globalThis.fetch;
+  try {
+    const session=fixture();
+    session.messages[0].blocks=[{type:"attachment",kind:"image",filename:"fixture.png",pointer:"fixture",local_path:null,sha256:"a".repeat(64)}];
+    indexSession(db,session);
+    let clock=0,dispatched=0;
+    globalThis.fetch=(async (_url: string | URL | Request,_init?: RequestInit)=> {
+      dispatched++; clock+=2000;
+      return new Response(JSON.stringify({data:[{embedding:new Array(768).fill(0.25)}]}));
+    }) as typeof fetch;
+    const provider=new EmbeddingGemmaProvider({baseUrl:"http://fixture.invalid",model:"test"});
+    const report=await embedBackfill(db,{
+      provider,canonicalDir:"/synthetic/canonical/sessions",now:()=>clock,
+      sleep:async ms=>{clock+=ms;deleteIndexedSession(db,"chatgpt","test");},
+    });
+    expect(dispatched).toBe(1);
+    expect(report).toMatchObject({embedded:1,stale:1,failed:0,requests:1,mean_request_seconds:2,assets:{total:0,embedded:0}});
+  } finally {globalThis.fetch=originalFetch;db.close();}
 });

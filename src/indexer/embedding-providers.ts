@@ -6,6 +6,13 @@ import type { EmbeddingProvider, EmbeddingContext } from "./sqlite";
 const GEMINI_EMBED_URL = "https://generativelanguage.googleapis.com/v1beta/models";
 const EMBEDDINGGEMMA_DOCUMENT_BYTES = 8 * 1024;
 
+export interface EmbeddingGemmaContext extends EmbeddingContext {
+  /** Called immediately before fetch, after pacing and cancellation checks. */
+  onRequest?: () => void;
+  /** Called only after a successful response passes vector validation. */
+  onRequestSuccess?: () => void;
+}
+
 export function embeddingProviderFromConfig(cfg: ChatHistoryConfig): EmbeddingProvider | null {
   const provider = configuredProvider(cfg);
   if (provider) persistEmbeddingStatus(provider, monitorStatePath(cfg.indexPath, cfg.monitorStatePath));
@@ -129,7 +136,7 @@ export class EmbeddingGemmaProvider implements EmbeddingProvider {
     this.model = opts.model;
   }
 
-  async embed(text: string, context: EmbeddingContext = { kind: "document" }): Promise<number[]> {
+  async embed(text: string, context: EmbeddingGemmaContext = { kind: "document" }): Promise<number[]> {
     const chunks = context.kind === "document" ? splitEmbeddingGemmaDocument(text) : [text];
     if (context.kind === "document") context = { ...context, title: embeddingGemmaTitle(context.title) };
     // The explicit title lets the service disambiguate delimiters inside titles.
@@ -150,18 +157,19 @@ export class EmbeddingGemmaProvider implements EmbeddingProvider {
 
   async embedAsset(
     input: { type: "image" | "audio" | "video"; path?: string; base64?: string },
-    context: EmbeddingContext = { kind: "document" },
+    context: EmbeddingGemmaContext = { kind: "document" },
   ): Promise<number[]> {
     return this.request({ input }, context);
   }
 
-  private async request(body: object, context: EmbeddingContext): Promise<number[]> {
+  private async request(body: object, context: EmbeddingGemmaContext): Promise<number[]> {
     await context.beforeRequest?.();
     context.signal?.throwIfAborted();
     // Queries share the service queue with slower document and media requests.
     const timeout = AbortSignal.timeout(120000);
     const signal = context.signal ? AbortSignal.any([context.signal, timeout]) : timeout;
     signal.throwIfAborted();
+    context.onRequest?.();
     const response = await fetch(`${this.baseUrl}/v1/embeddings`, {
       method: "POST",
       signal,
@@ -183,6 +191,7 @@ export class EmbeddingGemmaProvider implements EmbeddingProvider {
       !vector.every(value => typeof value === "number" && Number.isFinite(value))) {
       throw new Error("EmbeddingGemma provider response must include exactly 768 finite numbers in data[0].embedding");
     }
+    context.onRequestSuccess?.();
     return vector;
   }
 }
