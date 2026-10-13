@@ -25,5 +25,14 @@ services:
   ollama:
     image: ollama/ollama:latest
     restart: unless-stopped
+    # bjslab is shared and already short on memory. Uncapped, this sidecar
+    # overloaded the host in August (BJS-359). Embeddings are queued, not urgent.
+    cpus: 1
+    mem_limit: 1200m
+    memswap_limit: 1200m
+    environment:
+      OLLAMA_MAX_LOADED_MODELS: "1"
+      OLLAMA_NUM_PARALLEL: "1"
+      OLLAMA_KEEP_ALIVE: 5m
     volumes:
       - /mnt/server-ssd/ollama:/root/.ollama
