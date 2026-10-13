@@ -227,3 +227,46 @@ test("bjslab compose supplies tunable provider freshness defaults", () => {
   expect(compose).toContain('${CHAT_SCROBBLER_MONITOR_STALE_DAYS_CLAUDE:-14}');
   expect(compose).toContain('${CHAT_SCROBBLER_MONITOR_STALE_DAYS_GEMINI:-21}');
 });
+
+test("EmbeddingGemma config resolves defaults, file values, and env overrides", () => {
+  const defaults = loadConfig({ env: {}, configPath: null });
+  expect(defaults.embeddingBaseUrl).toBe("http://127.0.0.1:4320");
+  expect(loadConfig({
+    env: { CHAT_SCROBBLER_EMBED_PROVIDER: "embeddinggemma" },
+    configPath: null,
+  }).embeddingProvider).toBe("embeddinggemma");
+
+  const dir = mkdtempSync(join(tmpdir(), "ch-config-"));
+  try {
+    const file = join(dir, "embeddinggemma.json");
+    writeFileSync(file, JSON.stringify({
+      embeddingProvider: "embeddinggemma",
+      embeddingBaseUrl: "http://file.example:4320",
+      embeddingModel: "file-model",
+    }));
+    const fromFile = loadConfig({ env: {}, configPath: file });
+    expect(fromFile.embeddingProvider).toBe("embeddinggemma");
+    expect(fromFile.embeddingBaseUrl).toBe("http://file.example:4320");
+    expect(fromFile.embeddingModel).toBe("file-model");
+
+    const fromEnv = loadConfig({
+      env: {
+        CHAT_SCROBBLER_EMBED_PROVIDER: "hash",
+        CHAT_SCROBBLER_EMBED_BASE_URL: "http://env.example:4321",
+        CHAT_SCROBBLER_EMBED_MODEL: "env-model",
+      },
+      configPath: file,
+    });
+    expect(fromEnv.embeddingProvider).toBe("hash");
+    expect(fromEnv.embeddingBaseUrl).toBe("http://env.example:4321");
+    expect(fromEnv.embeddingModel).toBe("env-model");
+    expect(loadConfig({
+      env: { CHAT_SCROBBLER_EMBED_BASE_URL: "" }, configPath: file,
+    }).embeddingBaseUrl).toBe("http://file.example:4320");
+    expect(loadConfig({
+      env: { CHAT_SCROBBLER_EMBED_BASE_URL: "" }, configPath: null,
+    }).embeddingBaseUrl).toBe("http://127.0.0.1:4320");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

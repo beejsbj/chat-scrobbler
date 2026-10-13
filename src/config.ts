@@ -40,14 +40,16 @@ export interface ChatHistoryConfig extends MonitorConfig {
   embeddingProvider: EmbeddingProviderKind;
   /** Provider model override. Defaults depend on the selected provider. */
   embeddingModel: string | null;
+  /** Local EmbeddingGemma service used when embeddingProvider = "embeddinggemma". */
+  embeddingBaseUrl: string;
   /** Local Ollama server used when embeddingProvider = "ollama". */
   ollamaBaseUrl: string;
   /** Gemini API key used when embeddingProvider = "gemini". Prefer env. */
   geminiApiKey: string | null;
 }
 
-export type EmbeddingProviderKind = "none" | "gemini" | "ollama" | "hash";
-const EMBEDDING_PROVIDER_KINDS: readonly EmbeddingProviderKind[] = ["none", "gemini", "ollama", "hash"];
+export type EmbeddingProviderKind = "none" | "gemini" | "ollama" | "embeddinggemma" | "hash";
+const EMBEDDING_PROVIDER_KINDS: readonly EmbeddingProviderKind[] = ["none", "gemini", "ollama", "embeddinggemma", "hash"];
 
 /** Default data home: keeps user data out of whatever repo/cwd the tool runs from. */
 const DATA_HOME = join(homedir(), ".local", "share", "chat-scrobbler");
@@ -65,6 +67,7 @@ export const DEFAULT_CONFIG: ChatHistoryConfig = {
   backupTargets: [join(DATA_HOME, "backups")],
   embeddingProvider: "none",
   embeddingModel: null,
+  embeddingBaseUrl: "http://127.0.0.1:4320",
   ollamaBaseUrl: "http://127.0.0.1:11434",
   geminiApiKey: null,
   ...monitorSettings(),
@@ -99,6 +102,7 @@ const FILE_KEYS: Array<keyof ChatHistoryConfig> = [
   "backupTargets",
   "embeddingProvider",
   "embeddingModel",
+  "embeddingBaseUrl",
   "ollamaBaseUrl",
   "geminiApiKey",
 ];
@@ -136,6 +140,7 @@ export function loadConfig(opts: LoadConfigOptions = {}): ChatHistoryConfig {
   applyNullableString(cfg, "mcpPublicBaseUrl", env.MCP_PUBLIC_BASE_URL ?? env.CHAT_SCROBBLER_MCP_PUBLIC_BASE_URL);
   applyEmbeddingProvider(cfg, env.CHAT_SCROBBLER_EMBED_PROVIDER ?? env.EMBED_PROVIDER);
   applyNullableString(cfg, "embeddingModel", env.CHAT_SCROBBLER_EMBED_MODEL ?? env.EMBED_MODEL);
+  applyString(cfg, "embeddingBaseUrl", env.CHAT_SCROBBLER_EMBED_BASE_URL);
   applyString(cfg, "ollamaBaseUrl", env.CHAT_SCROBBLER_OLLAMA_BASE_URL ?? env.OLLAMA_BASE_URL);
   applyNullableString(cfg, "geminiApiKey", env.GEMINI_API_KEY ?? env.GOOGLE_API_KEY);
   if (env.BACKUP_TARGET !== undefined && env.BACKUP_TARGET !== "") {
@@ -193,7 +198,7 @@ function readConfigFile(path: string | null): PartialConfig {
   }
 }
 
-function applyString(cfg: ChatHistoryConfig, key: "canonicalDir" | "indexPath" | "ollamaBaseUrl" | "bindHost", v: string | undefined): void {
+function applyString(cfg: ChatHistoryConfig, key: "canonicalDir" | "indexPath" | "ollamaBaseUrl" | "embeddingBaseUrl" | "bindHost", v: string | undefined): void {
   if (v !== undefined && v !== "") cfg[key] = v;
 }
 

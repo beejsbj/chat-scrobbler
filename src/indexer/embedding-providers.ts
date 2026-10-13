@@ -27,6 +27,11 @@ function configuredProvider(cfg: ChatHistoryConfig): EmbeddingProvider | null {
         baseUrl: cfg.ollamaBaseUrl,
         model: cfg.embeddingModel ?? "mxbai-embed-large",
       });
+    case "embeddinggemma":
+      return new EmbeddingGemmaProvider({
+        baseUrl: cfg.embeddingBaseUrl,
+        model: cfg.embeddingModel ?? "litert-community/embeddinggemma-2-740m-litert-lm",
+      });
     default:
       assertNever(cfg.embeddingProvider);
   }
@@ -109,6 +114,55 @@ export class OllamaEmbeddingProvider implements EmbeddingProvider {
       throw new Error(`Ollama embedding request failed (${response.status}): ${detail}`);
     }
     return embeddingValues(await response.json());
+  }
+}
+
+export class EmbeddingGemmaProvider implements EmbeddingProvider {
+  readonly kind: EmbeddingProviderKind = "embeddinggemma";
+  readonly dimensions = 768;
+  readonly baseUrl: string;
+  readonly model: string;
+
+  constructor(opts: { baseUrl: string; model: string }) {
+    this.baseUrl = opts.baseUrl.replace(/\/+$/, "");
+    this.model = opts.model;
+  }
+
+  async embed(text: string, context: EmbeddingContext = { kind: "document" }): Promise<number[]> {
+    return this.request({ input: formatGeminiText(text, context), input_format: "prefixed" }, context);
+  }
+
+  async embedAsset(
+    input: { type: "image" | "audio" | "video"; path?: string; base64?: string },
+    context: EmbeddingContext = { kind: "document" },
+  ): Promise<number[]> {
+    return this.request({ input }, context);
+  }
+
+  private async request(body: object, context: EmbeddingContext): Promise<number[]> {
+    // Queries share the service queue with slower document and media requests.
+    const timeout = AbortSignal.timeout(120000);
+    const response = await fetch(`${this.baseUrl}/v1/embeddings`, {
+      method: "POST",
+      signal: context.signal ? AbortSignal.any([context.signal, timeout]) : timeout,
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: this.model,
+        ...body,
+        role: context.kind,
+      }),
+    });
+    if (!response.ok) {
+      const detail = await safeResponseText(response);
+      throw new Error(`EmbeddingGemma embedding request failed (${response.status}): ${detail}`);
+    }
+    const payload = await response.json() as { data?: Array<{ embedding?: unknown }> } | null;
+    const vector = payload?.data?.[0]?.embedding;
+    if (!Array.isArray(vector) || vector.length !== this.dimensions ||
+      !vector.every(value => typeof value === "number" && Number.isFinite(value))) {
+      throw new Error("EmbeddingGemma provider response must include exactly 768 finite numbers in data[0].embedding");
+    }
+    return vector;
   }
 }
 
