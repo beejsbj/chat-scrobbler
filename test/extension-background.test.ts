@@ -1,8 +1,16 @@
-import { beforeAll, beforeEach, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, beforeEach, expect, test } from "bun:test";
 import { buildRawCapture } from "../packages/shared/src";
 import type { RuntimeMessage } from "../packages/extension/src/messages";
 
 type RuntimeListener = (message: RuntimeMessage, sender: unknown, sendResponse: (response: unknown) => void) => boolean;
+
+const originalFetch = globalThis.fetch;
+const originalChrome = Object.getOwnPropertyDescriptor(globalThis, "chrome");
+afterEach(() => { globalThis.fetch = originalFetch; });
+afterAll(() => {
+  if (originalChrome) Object.defineProperty(globalThis, "chrome", originalChrome);
+  else Reflect.deleteProperty(globalThis, "chrome");
+});
 
 const storageData: Record<string, unknown> = {};
 let runtimeListener: RuntimeListener | null = null;
@@ -145,6 +153,7 @@ function installChromeStub(): void {
   const addListener = () => undefined;
   Object.defineProperty(globalThis, "chrome", {
     configurable: true,
+    writable: true,
     value: {
       action: {
         setBadgeBackgroundColor: () => undefined,
