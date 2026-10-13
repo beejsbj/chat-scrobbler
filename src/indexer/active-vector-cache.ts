@@ -1,12 +1,12 @@
 import type { Database } from "bun:sqlite";
 import { ensureMessageLookup } from "./message-lookup";
-import { searchRevision } from "./search-revision";
+import { searchRevision, changedSearchSessions } from "./search-revision";
 import { decodeVector, textVectorHash, type VectorScope } from "./vector-store";
 
 interface Entry { session_id:string; message_id:string; rowid:number; source:string; hash:string;title:string|null; }
 interface Cache {
   scope:string; revision:number; changes:number; dataVersion:number; dimension:number;
-  matrix:Float32Array; entries:Array<Entry|null>; identities:Map<string,number>; free:number[];
+  session_refreshes:number; matrix:Float32Array; entries:Array<Entry|null>; identities:Map<string,number>; free:number[];
 }
 const active=new WeakMap<Database,Cache>();
 const identity=(s:string,m:string)=>`${s}\0${m}`;
@@ -19,7 +19,7 @@ function fill(db:Database,cache:Cache,scope:VectorScope,session?:string):void {
     const binary=table==="message_vectors";
     const rows=db.query(`SELECT v.session_id,v.message_id,${binary ? "v.embedding" : "NULL"} AS embedding,
       ${binary ? "v.text_hash" : "NULL"} AS text_hash,f.rowid,f.text,f.source,f.title
-      FROM ${table} v JOIN message_lookup k ON k.session_id=v.session_id AND k.message_id=v.message_id
+      FROM ${table} v ${session ? `INDEXED BY ${binary ? "message_vector_session" : "legacy_vector_session"}` : ""} JOIN message_lookup k ON k.session_id=v.session_id AND k.message_id=v.message_id
       JOIN messages_fts f ON f.rowid=k.fts_rowid AND f.session_id=v.session_id AND f.message_id=v.message_id
       WHERE v.provider_kind=? AND ${binary ? "v.provider_model" : "COALESCE(v.provider_model,'')"}=? AND v.dimension=?
       ${session ? "AND v.session_id=?" : ""} AND v.title IS f.title
@@ -60,10 +60,11 @@ function load(db:Database,scope:VectorScope):Cache {
       SELECT session_id,message_id FROM message_vectors WHERE provider_kind=? AND provider_model=? AND dimension=?
       UNION SELECT session_id,message_id FROM message_embeddings WHERE provider_kind=? AND COALESCE(provider_model,'')=? AND dimension=?)`)
       .get(scope.provider_kind,scope.provider_model,scope.dimension,scope.provider_kind,scope.provider_model,scope.dimension) as {n:number}).n;
-    cache={scope:key,revision,dimension:scope.dimension,...state,matrix:new Float32Array(Math.max(1,Math.ceil(count/1024))*1024*scope.dimension),entries:[],identities:new Map(),free:[]};
+    cache={scope:key,revision,session_refreshes:0,dimension:scope.dimension,...state,matrix:new Float32Array(Math.max(1,Math.ceil(count/1024))*1024*scope.dimension),entries:[],identities:new Map(),free:[]};
     fill(db,cache,scope);active.set(db,cache);
   } else if(revision!==cache.revision) {
-    const dirty=new Set((db.query("SELECT session_id FROM search_changes WHERE revision>?").all(cache.revision) as Array<{session_id:string}>).map(r=>r.session_id));
+    const dirty=changedSearchSessions(db,cache.revision,scope);
+    cache.session_refreshes+=dirty.size;
     for(let i=0;i<cache.entries.length;i++) {
       const entry=cache.entries[i];
       if(entry && dirty.has(entry.session_id)) {cache.identities.delete(identity(entry.session_id,entry.message_id));cache.entries[i]=null;cache.free.push(i);}
@@ -101,4 +102,10 @@ function candidatesSnapshot(db:Database,query:number[],scope:VectorScope,source:
     if(!row || row.title!==entry.title || textVectorHash(row.text)!==entry.hash)return [];
     return [{...entry,...row,similarity}];
   });
+}
+
+/** Lightweight diagnostics for refresh profiling and service health. */
+export function activeVectorCacheStatus(db:Database) {
+  const cache=active.get(db);
+  return cache ? {scope:JSON.parse(cache.scope) as VectorScope,rows:cache.identities.size,session_refreshes:cache.session_refreshes} : null;
 }

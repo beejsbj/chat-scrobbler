@@ -1,6 +1,6 @@
 import type {Database} from "bun:sqlite";
 import {ensureMessageLookup} from "./message-lookup";
-import {searchRevision} from "./search-revision";
+import {searchRevision,changedSearchSessions} from "./search-revision";
 
 interface Row {rowid:number;session_id:string;message_id:string;text:string;source:string;}
 interface Cache {revision:number;changes:number;version:number;rows:Map<number,Row>;sessions:Map<string,Set<number>>;}
@@ -26,7 +26,7 @@ export function cachedSubstringCandidates(db:Database,literal:string,source:stri
     append(cache,db.query("SELECT rowid,session_id,message_id,lower(text) AS text,source FROM messages_fts ORDER BY rowid").iterate() as Iterable<Row>);
     caches.set(db,cache);
   } else if(cache.revision!==state.revision) {
-    for(const {session_id} of db.query("SELECT session_id FROM search_changes WHERE revision>?").all(cache.revision) as Array<{session_id:string}>) {
+    for(const session_id of changedSearchSessions(db,cache.revision)) {
       for(const id of cache.sessions.get(session_id) ?? [])cache.rows.delete(id);
       cache.sessions.delete(session_id);
       append(cache,db.query(`SELECT f.rowid,f.session_id,f.message_id,lower(f.text) AS text,f.source FROM message_lookup k

@@ -46,6 +46,8 @@ export function createVectorTables(db: Database): void {
     text TEXT NOT NULL, role TEXT, created_at TEXT, source TEXT, title TEXT,
     PRIMARY KEY(session_id,message_id,provider_kind,provider_model,dimension))`);
   db.run(`CREATE INDEX IF NOT EXISTS message_vector_scope ON message_vectors(provider_kind,provider_model,dimension,source)`);
+  db.run("CREATE INDEX IF NOT EXISTS message_vector_session ON message_vectors(session_id,provider_kind,provider_model,dimension)");
+  db.run("CREATE INDEX IF NOT EXISTS legacy_vector_session ON message_embeddings(session_id,provider_kind,dimension)");
   if (!(db.query("PRAGMA table_info(message_vectors)").all() as Array<{name:string}>).some(c=>c.name==="text_hash"))
     db.run("ALTER TABLE message_vectors ADD COLUMN text_hash TEXT");
   db.run(`CREATE TABLE IF NOT EXISTS vector_migration (name TEXT PRIMARY KEY, cursor INTEGER NOT NULL)`);
