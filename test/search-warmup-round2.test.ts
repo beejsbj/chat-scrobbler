@@ -49,3 +49,19 @@ test('initial lookup warmup covers existing dirty sessions without rescanning FT
   expect((await searchMessagesReport(db,'writer')).hits).toHaveLength(20);
  }finally{db.close();}
 });
+
+test('sparse stale vector pages still yield and can be cancelled before scanning the whole set',async()=> {
+ const db=openIndex(':memory:'),p={kind:'test',model:'sparse',dimensions:2,embed:()=>[1,0]};
+ try {
+  indexSession(db,fixture(),{embeddingProvider:p});
+  db.transaction(()=> {
+   for(let i=0;i<1000;i++)db.run(`INSERT INTO message_vectors(session_id,message_id,provider_kind,provider_model,dimension,embedding,text) VALUES (?,?,?,?,?,?,?)`,['missing',String(i),'test','sparse',2,new Uint8Array(8),'stale']);
+  })();
+  let yields=0;
+  await warmSearchCaches(db,p,{batchSize:10,yield:async()=>{yields++;await Bun.sleep(0);}});
+  expect(yields).toBeGreaterThan(100);
+  const abort=new AbortController();yields=0;
+  await expect(warmSearchCaches(db,p,{batchSize:10,signal:abort.signal,yield:async()=>{if(++yields===5)abort.abort();await Bun.sleep(0);}})).rejects.toThrow();
+  expect(yields).toBe(5);
+ }finally{db.close();}
+});

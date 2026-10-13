@@ -15,22 +15,24 @@ const identity=(s:string,m:string)=>`${s}\0${m}`;
 const counters=(db:Database)=>({changes:(db.query("SELECT total_changes() AS n").get() as {n:number}).n,
   dataVersion:(db.query("PRAGMA data_version").get() as {data_version:number}).data_version});
 
-function vectorRows(db:Database,scope:VectorScope,table:string,session?:string,after?:number,limit?:number,message?:string) {
+function vectorRows(db:Database,scope:VectorScope,table:string,session?:string,after?:number,limit?:number,message?:string,ids?:number[]) {
   const binary=table==="message_vectors";
   const params:any[]=[scope.provider_kind,scope.provider_model,scope.dimension];
   if(session!==undefined)params.push(session);
   if(message!==undefined)params.push(message);
   if(after!==undefined)params.push(after,limit);
+  if(ids)params.push(...ids);
   // Startup uses indexed rowid batches; refresh uses the session index rather
   // than rescanning every legacy row in this model for each affected session.
   const index=message!==undefined ? `INDEXED BY sqlite_autoindex_${table}_1`
-    : session!==undefined ? `INDEXED BY ${binary ? "message_vector_session" : "legacy_vector_session"}` : after!==undefined ? "NOT INDEXED" : "";
+    : session!==undefined ? `INDEXED BY ${binary ? "message_vector_session" : "legacy_vector_session"}` : after!==undefined || ids ? "NOT INDEXED" : "";
   if(!binary) {
     // Valid binary identities are already in the matrix. Reading legacy FTS
     // text for those duplicates adds I/O to every dirty-session refresh.
     const statement=db.query(`SELECT v.rowid AS vector_rowid,v.session_id,v.message_id FROM ${table} v ${index}
       WHERE v.provider_kind=? AND COALESCE(v.provider_model,'')=? AND v.dimension=?
       ${session!==undefined ? "AND v.session_id=?" : ""} ${message!==undefined ? "AND v.message_id=?" : ""}
+      ${ids ? `AND v.rowid IN (${ids.map(()=>"?").join(",")})` : ""}
       ${after!==undefined ? "AND v.rowid>? ORDER BY v.rowid LIMIT ?" : ""}`);
     return after===undefined ? statement.iterate(...params) : statement.all(...params);
   }
@@ -41,7 +43,8 @@ function vectorRows(db:Database,scope:VectorScope,table:string,session?:string,a
     WHERE v.provider_kind=? AND ${binary ? "v.provider_model" : "COALESCE(v.provider_model,'')"}=? AND v.dimension=?
     ${session!==undefined ? "AND v.session_id=?" : ""} ${message!==undefined ? "AND v.message_id=?" : ""} AND v.title IS f.title
     AND ${binary ? "(v.text_hash IS NOT NULL OR v.text=f.text)" : "v.text=f.text"}
-    ${after!==undefined ? "AND v.rowid>? ORDER BY v.rowid LIMIT ?" : ""}`);
+    ${ids ? `AND v.rowid IN (${ids.map(()=>"?").join(",")})` : ""}
+      ${after!==undefined ? "AND v.rowid>? ORDER BY v.rowid LIMIT ?" : ""}`);
   return after===undefined ? statement.iterate(...params) : statement.all(...params);
 }
 function appendVectors(db:Database,cache:Cache,scope:VectorScope,table:string,rows:Iterable<any>):void {
@@ -108,10 +111,15 @@ export async function warmActiveVectorCache(db:Database,scope:VectorScope,opts:W
       let cursor=0;
       while(true) {
         opts.signal?.throwIfAborted();
-        const rows=Array.from(vectorRows(db,scope,table,session,cursor,batch)) as any[];
+        // Bound physical rows BEFORE freshness joins/filters. A sparse/stale
+        // model must still yield and honour cancellation after each raw page.
+        const raw=db.query(`SELECT rowid FROM ${table} WHERE rowid>? ${session!==undefined ? "AND session_id=?" : ""} ORDER BY rowid LIMIT ?`)
+          .all(...(session!==undefined ? [cursor,session,batch] : [cursor,batch])) as Array<{rowid:number}>;
+        if(!raw.length)break;
+        const rows=vectorRows(db,scope,table,session,undefined,undefined,undefined,raw.map(row=>row.rowid));
         appendVectors(db,cache,scope,table,rows);onProgress(cache.identities.size);
-        if(rows.length<batch)break;
-        cursor=rows.at(-1).vector_rowid;
+        if(raw.length<batch)break;
+        cursor=raw.at(-1)!.rowid;
         await (opts.yield?.() ?? Bun.sleep(0));
       }
       await (opts.yield?.() ?? Bun.sleep(0));
