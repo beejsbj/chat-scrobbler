@@ -144,6 +144,39 @@ test("EmbeddingGemma supplies the exact document title when it contains prefix d
   }
 });
 
+test("EmbeddingGemma trims document titles and substitutes none for blank titles", async () => {
+  const calls = mockEmbeddingGemmaFetch();
+  const provider = new EmbeddingGemmaProvider({ baseUrl: "http://embed.example:4320", model: "gemma-test" });
+  for (const title of ["  Recall \n", "", " \t\r\n", null, undefined]) {
+    await provider.embed("notes", { kind: "document", title });
+  }
+  expect(calls.map(call => JSON.parse(call.init?.body as string).title)).toEqual([
+    "Recall", "none", "none", "none", "none",
+  ]);
+  expect(calls.map(call => JSON.parse(call.init?.body as string).input)).toEqual([
+    "title: Recall | text: notes", ...new Array(4).fill("title: none | text: notes"),
+  ]);
+});
+
+test("EmbeddingGemma caps the title at 256 UTF-8 bytes without splitting code points in every chunk", async () => {
+  const provider = new EmbeddingGemmaProvider({ baseUrl: "http://embed.example:4320", model: "gemma-test" });
+  for (const [title, expected] of [
+    ["x".repeat(257), "x".repeat(256)],
+    ["é".repeat(129), "é".repeat(128)],
+    ["a" + "🙂".repeat(64), "a" + "🙂".repeat(63)],
+  ]) {
+    const calls = mockEmbeddingGemmaFetch();
+    await provider.embed("x".repeat(9000), { kind: "document", title });
+    expect(calls).toHaveLength(2);
+    for (const call of calls) {
+      const body = JSON.parse(call.init?.body as string);
+      expect(body.title).toBe(expected);
+      expect(body.input.startsWith(`title: ${expected} | text: `)).toBe(true);
+      expect(body.title.includes("\ufffd")).toBe(false);
+    }
+  }
+});
+
 test("EmbeddingGemma sends image, audio, and video objects without text prefixes", async () => {
   const calls = mockEmbeddingGemmaFetch();
   const provider = new EmbeddingGemmaProvider({ baseUrl: "http://embed.example:4320", model: "gemma-test" });

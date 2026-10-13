@@ -131,6 +131,7 @@ export class EmbeddingGemmaProvider implements EmbeddingProvider {
 
   async embed(text: string, context: EmbeddingContext = { kind: "document" }): Promise<number[]> {
     const chunks = context.kind === "document" ? splitEmbeddingGemmaDocument(text) : [text];
+    if (context.kind === "document") context = { ...context, title: embeddingGemmaTitle(context.title) };
     // The explicit title lets the service disambiguate delimiters inside titles.
     const title = context.kind === "document" ? { title: context.title ?? "none" } : {};
     if (chunks.length === 1) {
@@ -184,6 +185,18 @@ export class EmbeddingGemmaProvider implements EmbeddingProvider {
     }
     return vector;
   }
+}
+
+function embeddingGemmaTitle(title: string | null | undefined): string {
+  const trimmed = title?.trim() || "none";
+  let bytes = 0, capped = "";
+  for (const point of trimmed) {
+    const size = Buffer.byteLength(point);
+    if (bytes + size > 256) break;
+    capped += point;
+    bytes += size;
+  }
+  return capped;
 }
 
 function splitEmbeddingGemmaDocument(text: string): string[] {
