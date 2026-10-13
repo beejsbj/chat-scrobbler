@@ -4,6 +4,7 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { foldCaptureIntoSpineWithEmbeddings, type SpineResult } from "./pipeline";
 import { recordAssetFailures } from "./asset-failures";
+import { captureFailureReports } from "./capture-failures";
 import { conversationStatuses } from "./status";
 import {
   ASSET_INGEST_PATH,
@@ -216,14 +217,15 @@ export async function handleIngestRequest(req: Request, opts: IngestServerOption
   if (isStatus) {
     if (!fat) return json({ ok: false, error: "status endpoint requires canonicalDir + indexPath" }, 400);
     try {
-      const body = await req.json() as { source?: string; asset_failures?: unknown; conversations?: Array<{ id: string; updated_at?: string | null }> };
+      const body = await req.json() as { source?: string; asset_failures?: unknown; capture_failures?: unknown; conversations?: Array<{ id: string; updated_at?: string | null }> };
       if (typeof body.source !== "string" || !Array.isArray(body.conversations)) {
         return json({ ok: false, error: "status requires { source, conversations[] }" }, 400);
       }
       const source = readSource(body.source);
+      const capture_failures = captureFailureReports(fat.indexPath, source, body.capture_failures);
       const count = recordAssetFailures(fat.indexPath, source, body.asset_failures);
       const statuses = conversationStatuses(indexFor(fat.indexPath), source, body.conversations);
-      return json({ ok: true, statuses, ...(body.asset_failures === undefined ? {} : { asset_failures: count }) });
+      return json({ ok: true, statuses, capture_failures, ...(body.asset_failures === undefined ? {} : { asset_failures: count }) });
     } catch (error) {
       return json({ ok: false, error: error instanceof Error ? error.message : String(error) }, 400);
     }

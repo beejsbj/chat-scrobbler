@@ -1,4 +1,4 @@
-import { logSyncFailure } from "./sync-failures";
+import { logSyncFailure, SyncFailureTracker } from "./sync-failures";
 import { buildRawCapture } from "../../../shared/src";
 import { uploadProviderAssets } from "./assets";
 import { claudeAssetCandidates } from "./claude-assets";
@@ -69,6 +69,7 @@ async function captureClaudeOne(
 async function syncClaude(fetcher: FetchLike, options: ProviderSyncOptions): Promise<ProviderSyncResult> {
   const org = await getOrganization(fetcher);
   let offset = 0;
+  const failures = new SyncFailureTracker(options.captureFailures);
   let scanned = 0;
   let captured = 0;
   let skipped = 0;
@@ -85,6 +86,11 @@ async function syncClaude(fetcher: FetchLike, options: ProviderSyncOptions): Pro
       scanned += 1;
       if (options.shouldIgnore?.("claude", item.id)) {
         skipped += 1;
+        continue;
+      }
+      if (failures.isQuarantined(item.id, item.updatedAt)) {
+        skipped++;
+        maxConversationUpdatedAt = maxIso(maxConversationUpdatedAt, item.updatedAt);
         continue;
       }
       if (!shouldCapture(item.updatedAt, options.lastSync)) {
@@ -114,6 +120,7 @@ async function syncClaude(fetcher: FetchLike, options: ProviderSyncOptions): Pro
           conversationUpdatedAt: item.updatedAt,
           rawUrl: `${currentOrigin()}${detailEndpoint}`,
         }));
+        failures.succeeded(item.id);
         if (didCapture === false) {
           skipped += 1;
           continue;
@@ -122,6 +129,8 @@ async function syncClaude(fetcher: FetchLike, options: ProviderSyncOptions): Pro
         maxConversationUpdatedAt = maxIso(maxConversationUpdatedAt, item.updatedAt);
       } catch {
         failed++;
+        failures.failed(item.id, item.updatedAt);
+        if (failures.isQuarantined(item.id, item.updatedAt)) maxConversationUpdatedAt = maxIso(maxConversationUpdatedAt, item.updatedAt);
         logSyncFailure("claude", item.id);
       }
     }
@@ -136,7 +145,7 @@ async function syncClaude(fetcher: FetchLike, options: ProviderSyncOptions): Pro
     captured,
     skipped,
     failed,
-    maxConversationUpdatedAt: failed ? options.lastSync ?? null : maxConversationUpdatedAt,
+    captureFailures: failures.list(), maxConversationUpdatedAt: failures.pending ? options.lastSync ?? null : maxConversationUpdatedAt,
     account: org.uuid,
   };
 }

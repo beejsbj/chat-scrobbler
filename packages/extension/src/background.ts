@@ -1,5 +1,5 @@
 import "./chrome-api";
-import { assetsUrl, capturesUrl, deleteCaptureUrl, statusUrl, DEFAULT_INGEST_BASE_URL, DEFAULT_SYNC_PERIOD_MINUTES, type ProviderSource } from "../../shared/src";
+import { assetsUrl, capturesUrl, deleteCaptureUrl, statusUrl, DEFAULT_INGEST_BASE_URL, DEFAULT_SYNC_PERIOD_MINUTES, type ProviderSource, type ConversationCaptureFailure } from "../../shared/src";
 import { collectCredentialSnapshot } from "./credentials";
 import { toolbarProgressView, aggregateTabProgress, type ToolbarProgressInput } from "./toolbar-progress";
 import { appendRecentCapture, RECENT_CAPTURES_KEY, type RecentCapture } from "./recent-captures";
@@ -36,6 +36,7 @@ interface Settings {
 
 interface ProviderState {
   lastSync: string | null;
+  captureFailures?: ConversationCaptureFailure[];
   lastVisitSync: string | null;
   lastResult: unknown;
   lastError: string | null;
@@ -357,17 +358,19 @@ async function syncTab(tab: any, provider: ProviderSource, reason: "manual" | "p
   // sendTabMessage resolves undefined when the tab has no live content script
   // (e.g. opened before the extension loaded / reloaded). Guard with optional
   // chaining so this surfaces a clear message instead of a "reading 'ok'" crash.
-  const response = await sendTabMessage(tab.id, { type: "SCROBBLER_SYNC_REQUEST", provider, lastSync }) as SyncResponse | undefined;
+  const response = await sendTabMessage(tab.id, { type: "SCROBBLER_SYNC_REQUEST", provider, lastSync, captureFailures: status.providers[provider]?.captureFailures ?? [] }) as SyncResponse | undefined;
   if (!response?.ok) throw new Error(response?.error ?? "Content script not active in that tab — reload the tab and try again.");
 
   await mutateStatus((next) => {
     next.providers[provider] = {
       lastSync: response.maxConversationUpdatedAt ?? lastSync,
+      captureFailures: response.captureFailures ?? [],
       lastVisitSync: reason === "visit" ? new Date().toISOString() : next.providers[provider]?.lastVisitSync ?? null,
       lastResult: { ...response, reason, tabId: tab.id, synced_at: new Date().toISOString() },
       lastError: null,
     };
   });
+  await reportSyncFailures(provider, response.captureFailures ?? []);
   return { ok: true, result: response };
 }
 
@@ -487,4 +490,13 @@ function queryTabs(queryInfo: Record<string, unknown>): Promise<any[]> {
 
 function sendTabMessage(tabId: number, message: unknown): Promise<unknown> {
   return new Promise((resolve) => chrome.tabs.sendMessage(tabId, message, resolve));
+}
+
+async function reportSyncFailures(source: ProviderSource, failures: ConversationCaptureFailure[]): Promise<void> {
+  const settings = await getSettings();
+  const headers: Record<string, string> = { "content-type": "application/json" };
+  if (settings.ingestToken) headers.authorization = `Bearer ${settings.ingestToken}`;
+  const res = await fetch(statusUrl(settings.ingestBaseUrl), { method: "POST", headers, credentials: "omit",
+    body: JSON.stringify({ source, conversations: [], capture_failures: failures }), signal: AbortSignal.timeout(30_000) });
+  if (!res.ok) throw new Error(`Capture failure report rejected (${res.status})`);
 }

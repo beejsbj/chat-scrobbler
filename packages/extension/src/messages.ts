@@ -1,4 +1,4 @@
-import type { AssetFailure, ProviderSource, RawCapture } from "../../shared/src";
+import type { AssetFailure, ProviderSource, RawCapture, ConversationCaptureFailure } from "../../shared/src";
 import type { ProviderSyncResult } from "./providers";
 import type { CaptureKind } from "./recent-captures";
 
@@ -6,6 +6,7 @@ export interface SyncRequest {
   type: "SCROBBLER_SYNC_REQUEST";
   provider: ProviderSource;
   lastSync?: string | null;
+  captureFailures?: ConversationCaptureFailure[];
 }
 
 export interface CaptureReadyMessage {

@@ -63,6 +63,7 @@ async function syncProvider(message: SyncRequest): Promise<SyncResponse> {
   await refreshIgnoredIds();
   const result = await provider!.sync({
     lastSync: message.lastSync ?? null,
+    captureFailures: message.captureFailures,
     emitCapture,
     shouldIgnore: (_source, sourceId) => ignoredIds.has(sourceId),
     uploadAsset,

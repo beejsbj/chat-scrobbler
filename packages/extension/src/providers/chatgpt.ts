@@ -1,4 +1,4 @@
-import { logSyncFailure } from "./sync-failures";
+import { logSyncFailure, SyncFailureTracker } from "./sync-failures";
 import { buildRawCapture } from "../../../shared/src";
 import { uploadProviderAssets } from "./assets";
 import { chatgptAssetCandidates, resolveChatgptAssetUrl } from "./chatgpt-assets";
@@ -72,6 +72,7 @@ async function syncChatgpt(fetcher: FetchLike, options: ProviderSyncOptions): Pr
   const token = await getAccessToken(fetcher);
   const headers = token ? { authorization: `Bearer ${token}` } : undefined;
   let offset = 0;
+  const failures = new SyncFailureTracker(options.captureFailures);
   let scanned = 0;
   let captured = 0;
   let skipped = 0;
@@ -101,6 +102,11 @@ async function syncChatgpt(fetcher: FetchLike, options: ProviderSyncOptions): Pr
         skipped += 1;
         continue;
       }
+      if (failures.isQuarantined(item.id, item.updatedAt)) {
+        skipped++;
+        maxConversationUpdatedAt = maxIso(maxConversationUpdatedAt, item.updatedAt);
+        continue;
+      }
       if (!shouldCapture(item.updatedAt, options.lastSync)) {
         skipped += 1;
         continue;
@@ -124,6 +130,7 @@ async function syncChatgpt(fetcher: FetchLike, options: ProviderSyncOptions): Pr
           conversationUpdatedAt: item.updatedAt,
           rawUrl: `${currentOrigin()}${detailEndpoint}`,
         }));
+        failures.succeeded(item.id);
         if (didCapture === false) {
           skipped += 1;
           continue;
@@ -132,6 +139,8 @@ async function syncChatgpt(fetcher: FetchLike, options: ProviderSyncOptions): Pr
         maxConversationUpdatedAt = maxIso(maxConversationUpdatedAt, item.updatedAt);
       } catch {
         failed++;
+        failures.failed(item.id, item.updatedAt);
+        if (failures.isQuarantined(item.id, item.updatedAt)) maxConversationUpdatedAt = maxIso(maxConversationUpdatedAt, item.updatedAt);
         logSyncFailure("chatgpt", item.id);
       }
     }
@@ -140,7 +149,7 @@ async function syncChatgpt(fetcher: FetchLike, options: ProviderSyncOptions): Pr
     if (items.length < LIST_LIMIT) break;
   }
 
-  return { source: "chatgpt", scanned, captured, skipped, failed, maxConversationUpdatedAt: failed ? options.lastSync ?? null : maxConversationUpdatedAt, account: null };
+  return { source: "chatgpt", scanned, captured, skipped, failed, captureFailures: failures.list(), maxConversationUpdatedAt: failures.pending ? options.lastSync ?? null : maxConversationUpdatedAt, account: null };
 }
 
 function currentOrigin(): string | null {

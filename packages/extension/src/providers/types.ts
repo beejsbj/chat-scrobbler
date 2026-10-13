@@ -1,8 +1,9 @@
-import type { ProviderSource, RawCapture, UploadedAsset } from "../../../shared/src";
+import type { ProviderSource, RawCapture, UploadedAsset, ConversationCaptureFailure } from "../../../shared/src";
 import type { AssetUploadRequest } from "../messages";
 
 export interface ProviderSyncOptions {
   lastSync?: string | null;
+  captureFailures?: ConversationCaptureFailure[];
   emitCapture: (capture: RawCapture) => Promise<EmitCaptureResult>;
   shouldIgnore?: (source: ProviderSource, sourceId: string) => boolean;
   uploadAsset?: (asset: AssetUploadRequest) => Promise<UploadedAsset>;
@@ -18,6 +19,7 @@ export interface ProviderSyncResult {
   captured: number;
   skipped: number;
   failed?: number;
+  captureFailures?: ConversationCaptureFailure[];
   maxConversationUpdatedAt: string | null;
   account: string | null;
 }

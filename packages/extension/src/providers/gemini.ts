@@ -1,4 +1,4 @@
-import { logSyncFailure } from "./sync-failures";
+import { logSyncFailure, SyncFailureTracker } from "./sync-failures";
 /**
  * Gemini scrobbler provider.
  *
@@ -254,6 +254,7 @@ async function syncGemini(
   pageCtx: GeminiPageContext,
   options: ProviderSyncOptions,
 ): Promise<ProviderSyncResult> {
+  const failures = new SyncFailureTracker(options.captureFailures);
   let scanned = 0;
   let captured = 0;
   let skipped = 0;
@@ -284,6 +285,7 @@ async function syncGemini(
     //
     // A future improvement: capture the list RPC (MaZiqc etc.) which likely
     // contains timestamps, replacing the DOM enumeration path.
+    if (failures.isQuarantined(id, null)) { skipped++; continue; }
     if (!shouldCapture(null, options.lastSync)) {
       skipped += 1;
       continue;
@@ -299,16 +301,19 @@ async function syncGemini(
         emitCapture: async capture => { const result = await options.emitCapture(capture); didCapture = result !== false; return result; },
         uploadAsset: options.uploadAsset,
       });
+      failures.succeeded(id);
       if (!didCapture) { skipped++; continue; }
       captured += 1;
       maxConversationUpdatedAt = maxIso(maxConversationUpdatedAt, fetchedAt);
     } catch {
       failed++;
+      failures.failed(id, null);
+      if (failures.isQuarantined(id, null)) maxConversationUpdatedAt = maxIso(maxConversationUpdatedAt, fetchedAt);
       logSyncFailure("gemini", id);
     }
   }
 
-  return { source: "gemini", scanned, captured, skipped, failed, maxConversationUpdatedAt: failed ? options.lastSync ?? null : maxConversationUpdatedAt, account: null };
+  return { source: "gemini", scanned, captured, skipped, failed, captureFailures: failures.list(), maxConversationUpdatedAt: failures.pending ? options.lastSync ?? null : maxConversationUpdatedAt, account: null };
 }
 
 /**
