@@ -295,11 +295,13 @@ async function postCapture(message: CaptureReadyMessage): Promise<unknown> {
     body: JSON.stringify(message.capture),
   });
   if (!res.ok) throw new Error(`Ingest rejected capture with HTTP ${res.status}: ${await res.text()}`);
+  const ingest = await res.json();
+  if (ingest.count === 0 && Array.isArray(ingest.skipped_deleted) && ingest.skipped_deleted.some((item: { source: string; source_id: string }) => item.source === message.capture.source && item.source_id === message.capture.source_id)) return { ok: true, captured: false, ingest };
   await mutateStatus((status) => {
     status.lastCaptureAt = new Date().toISOString();
     status.capturesPosted += 1;
   });
-  return { ok: true, captured: true, ingest: await res.json() };
+  return { ok: true, captured: true, ingest };
 }
 
 async function deleteCapture(message: DeleteCaptureMessage): Promise<unknown> {

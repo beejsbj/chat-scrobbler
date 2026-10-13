@@ -512,3 +512,19 @@ test("Gemini adapter returns empty result when sidebar has no conversations", as
   expect(result.captured).toBe(0);
   expect(result.maxConversationUpdatedAt).toBeNull();
 });
+
+test("Gemini sync continues after ingest failure without sending a DOM substitute", async () => {
+  const logs = (await import("bun:test")).spyOn(console, "error").mockImplementation(() => {});
+  const attempts: string[] = [];
+  try {
+    const result = await createGeminiAdapter(async () => new Response(makeBatchExecuteResponse("hNvQHb", [["conversation-data"]])), makeFakePageCtx(["bad", "good"])).sync({
+      lastSync: "2026-06-05T08:00:00Z", emitCapture: async capture => {
+        attempts.push(capture.source_id);
+        if (capture.source_id === "bad") throw new Error("private-token");
+      },
+    });
+    expect(attempts).toEqual(["bad", "good"]);
+    expect(result).toMatchObject({ captured: 1, failed: 1, maxConversationUpdatedAt: "2026-06-05T08:00:00Z" });
+    expect(JSON.stringify(logs.mock.calls)).not.toContain("private-token");
+  } finally { logs.mockRestore(); }
+});

@@ -1,3 +1,4 @@
+import { logSyncFailure } from "./sync-failures";
 import { buildRawCapture } from "../../../shared/src";
 import { uploadProviderAssets, type ProviderAssetCandidate } from "./assets";
 import {
@@ -70,6 +71,7 @@ async function syncClaude(fetcher: FetchLike, options: ProviderSyncOptions): Pro
   let scanned = 0;
   let captured = 0;
   let skipped = 0;
+  let failed = 0;
   let maxConversationUpdatedAt: string | null = null;
 
   while (true) {
@@ -93,29 +95,34 @@ async function syncClaude(fetcher: FetchLike, options: ProviderSyncOptions): Pro
       // messages with a flat `text` field but no typed `content[]` blocks, silently
       // dropping thinking/tool_use/tool_result/citations. Verified live 2026-06-05
       // (see docs/superpowers/specs/2026-06-05-api-vs-export-validation-diff.md).
-      const detailEndpoint = `/api/organizations/${encodeURIComponent(org.uuid)}/chat_conversations/${encodeURIComponent(item.id)}?tree=True&rendering_mode=messages&render_all_tools=true`;
-      const payload = await fetchJson(fetcher, detailEndpoint);
-      const assets = await uploadProviderAssets(
-        fetcher,
-        options.uploadAsset,
-        claudeAssetCandidates(payload, item.id, org.uuid),
-      );
-      const didCapture = await options.emitCapture(buildRawCapture({
-        source: "claude",
-        sourceId: item.id,
-        endpoint: detailEndpoint,
-        account: org.uuid,
-        payload,
-        assets,
-        conversationUpdatedAt: item.updatedAt,
-        rawUrl: `${currentOrigin()}${detailEndpoint}`,
-      }));
-      if (didCapture === false) {
-        skipped += 1;
-        continue;
+      try {
+        const detailEndpoint = `/api/organizations/${encodeURIComponent(org.uuid)}/chat_conversations/${encodeURIComponent(item.id)}?tree=True&rendering_mode=messages&render_all_tools=true`;
+        const payload = await fetchJson(fetcher, detailEndpoint);
+        const assets = await uploadProviderAssets(
+          fetcher,
+          options.uploadAsset,
+          claudeAssetCandidates(payload, item.id, org.uuid),
+        );
+        const didCapture = await options.emitCapture(buildRawCapture({
+          source: "claude",
+          sourceId: item.id,
+          endpoint: detailEndpoint,
+          account: org.uuid,
+          payload,
+          assets,
+          conversationUpdatedAt: item.updatedAt,
+          rawUrl: `${currentOrigin()}${detailEndpoint}`,
+        }));
+        if (didCapture === false) {
+          skipped += 1;
+          continue;
+        }
+        captured += 1;
+        maxConversationUpdatedAt = maxIso(maxConversationUpdatedAt, item.updatedAt);
+      } catch {
+        failed++;
+        logSyncFailure("claude", item.id);
       }
-      captured += 1;
-      maxConversationUpdatedAt = maxIso(maxConversationUpdatedAt, item.updatedAt);
     }
 
     offset += items.length;
@@ -127,7 +134,8 @@ async function syncClaude(fetcher: FetchLike, options: ProviderSyncOptions): Pro
     scanned,
     captured,
     skipped,
-    maxConversationUpdatedAt,
+    failed,
+    maxConversationUpdatedAt: failed ? options.lastSync ?? null : maxConversationUpdatedAt,
     account: org.uuid,
   };
 }

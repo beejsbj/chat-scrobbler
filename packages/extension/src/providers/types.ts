@@ -17,6 +17,7 @@ export interface ProviderSyncResult {
   scanned: number;
   captured: number;
   skipped: number;
+  failed?: number;
   maxConversationUpdatedAt: string | null;
   account: string | null;
 }

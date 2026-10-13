@@ -1,3 +1,4 @@
+import { logSyncFailure } from "./sync-failures";
 /**
  * Gemini scrobbler provider.
  *
@@ -192,8 +193,10 @@ async function captureGeminiOne(
 
   // PRIMARY PATH: batchexecute hNvQHb RPC.
   if (wizData) {
-    try {
-      const payload = await fetchConversationRpc(fetcher, id, wizData);
+    let payload: unknown;
+    try { payload = await fetchConversationRpc(fetcher, id, wizData); }
+    catch { /* Fall through to DOM only when the provider RPC fails. */ }
+    if (payload !== undefined) {
       const assets = await uploadProviderAssets(
         fetcher,
         options.uploadAsset,
@@ -211,8 +214,6 @@ async function captureGeminiOne(
         rawUrl: `https://gemini.google.com/app/${id}`,
       }));
       return;
-    } catch {
-      // Fall through to DOM fallback below.
     }
   }
 
@@ -254,6 +255,7 @@ async function syncGemini(
   let scanned = 0;
   let captured = 0;
   let skipped = 0;
+  let failed = 0;
   let maxConversationUpdatedAt: string | null = null;
 
   const ids = pageCtx.listConversationIds();
@@ -289,15 +291,22 @@ async function syncGemini(
     // sidebar exposes no timestamps. captureGeminiOne handles the RPC primary
     // path + DOM fallback; the cursor watermark advances using fetch time.
     const fetchedAt = new Date().toISOString();
-    await captureGeminiOne(fetcher, pageCtx, id, null, {
-      emitCapture: options.emitCapture,
-      uploadAsset: options.uploadAsset,
-    });
-    captured += 1;
-    maxConversationUpdatedAt = maxIso(maxConversationUpdatedAt, fetchedAt);
+    try {
+      let didCapture = true;
+      await captureGeminiOne(fetcher, pageCtx, id, null, {
+        emitCapture: async capture => { const result = await options.emitCapture(capture); didCapture = result !== false; return result; },
+        uploadAsset: options.uploadAsset,
+      });
+      if (!didCapture) { skipped++; continue; }
+      captured += 1;
+      maxConversationUpdatedAt = maxIso(maxConversationUpdatedAt, fetchedAt);
+    } catch {
+      failed++;
+      logSyncFailure("gemini", id);
+    }
   }
 
-  return { source: "gemini", scanned, captured, skipped, maxConversationUpdatedAt, account: null };
+  return { source: "gemini", scanned, captured, skipped, failed, maxConversationUpdatedAt: failed ? options.lastSync ?? null : maxConversationUpdatedAt, account: null };
 }
 
 /**
