@@ -1,6 +1,7 @@
 import { logSyncFailure } from "./sync-failures";
 import { buildRawCapture } from "../../../shared/src";
-import { uploadProviderAssets, type ProviderAssetCandidate } from "./assets";
+import { uploadProviderAssets } from "./assets";
+import { claudeAssetCandidates } from "./claude-assets";
 import {
   asArray,
   asObject,
@@ -138,48 +139,6 @@ async function syncClaude(fetcher: FetchLike, options: ProviderSyncOptions): Pro
     maxConversationUpdatedAt: failed ? options.lastSync ?? null : maxConversationUpdatedAt,
     account: org.uuid,
   };
-}
-
-function claudeAssetCandidates(payload: unknown, sourceId: string, orgId: string): ProviderAssetCandidate[] {
-  const out: ProviderAssetCandidate[] = [];
-  const messages = asArray(asObject(payload).chat_messages);
-  for (const rawMessage of messages) {
-    const message = asObject(rawMessage);
-    const messageId = typeof message.uuid === "string" ? message.uuid : null;
-    for (const rawFile of [...asArray(message.files), ...asArray(message.attachments)]) {
-      const file = asObject(rawFile);
-      const pointer = readClaudeFilePointer(file);
-      if (!pointer) continue;
-      out.push({
-        source: "claude",
-        sourceId,
-        pointer,
-        url: claudeAssetUrl(orgId, pointer),
-        filename: readClaudeFilename(file),
-        contentType: typeof file.content_type === "string" ? file.content_type : null,
-        messageId,
-      });
-    }
-  }
-  return out;
-}
-
-function readClaudeFilePointer(file: Record<string, unknown>): string | null {
-  for (const key of ["file_uuid", "uuid", "id", "attachment_uuid"]) {
-    if (typeof file[key] === "string" && file[key] !== "") return file[key];
-  }
-  return null;
-}
-
-function readClaudeFilename(file: Record<string, unknown>): string | null {
-  for (const key of ["file_name", "filename", "name"]) {
-    if (typeof file[key] === "string" && file[key] !== "") return file[key];
-  }
-  return null;
-}
-
-function claudeAssetUrl(orgId: string, pointer: string): string {
-  return `/api/organizations/${encodeURIComponent(orgId)}/files/${encodeURIComponent(pointer)}/download`;
 }
 
 function currentOrigin(): string | null {

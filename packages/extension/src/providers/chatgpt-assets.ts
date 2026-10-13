@@ -54,7 +54,7 @@ export function chatgptAssetCandidates(payload: unknown, sourceId: string, heade
 
 export async function resolveChatgptAssetUrl(fetcher: FetchLike, candidate: ProviderAssetCandidate): Promise<string | null> {
   if (!candidate.url) return null;
-  if (!candidate.url.includes("/download")) return candidate.url;
+  if (!candidate.url.startsWith("/backend-api/") || !candidate.url.includes("/download")) return candidate.url;
   let res = await fetcher(candidate.url, { credentials: "include", headers: candidate.headers, signal: AbortSignal.timeout(30_000) });
   if (res.status === 404 && candidate.pointer.startsWith("sediment://")) {
     const id = candidate.pointer.slice("sediment://".length);

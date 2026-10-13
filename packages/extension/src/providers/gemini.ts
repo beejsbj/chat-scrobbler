@@ -36,6 +36,7 @@ import { logSyncFailure } from "./sync-failures";
 
 import { buildRawCapture } from "../../../shared/src";
 import { uploadProviderAssets, type ProviderAssetCandidate } from "./assets";
+import { geminiApiAssetCandidates } from "./gemini-assets";
 import {
   maxIso,
   shouldCapture,
@@ -143,12 +144,13 @@ export function createBrowserPageContext(): GeminiPageContext {
     },
     readConversationAssets(id: string) {
       if (typeof document === "undefined") return [];
-      const conversationEl = document.querySelector(`[data-conversation-id="${id}"]`);
+      const conversationEl = document.querySelector(`[data-conversation-id="${id}"]`)
+        ?? (typeof location !== "undefined" && location.pathname === `/app/${id}` ? document.querySelector("main") : null);
       if (!conversationEl) return [];
-      return Array.from(conversationEl.querySelectorAll<HTMLImageElement>("img[src]")).flatMap((img) => {
-        const url = img.getAttribute("src");
-        if (!url || url.startsWith("data:")) return [];
-        return [{ pointer: url, url, filename: null }];
+      return Array.from(conversationEl.querySelectorAll<HTMLElement>("img[src], audio[src], video[src], source[src], a[download][href]")).flatMap((element) => {
+        const url = element.getAttribute("src") ?? element.getAttribute("href");
+        if (!url) return [];
+        return [{ pointer: url, url, filename: element.getAttribute("download") || null, contentType: element.getAttribute("type") }];
       });
     },
   };
@@ -200,7 +202,7 @@ async function captureGeminiOne(
       const assets = await uploadProviderAssets(
         fetcher,
         options.uploadAsset,
-        geminiAssetCandidates(pageCtx, id),
+        [...geminiApiAssetCandidates(payload, id), ...geminiAssetCandidates(pageCtx, id)],
       );
       await options.emitCapture(buildRawCapture({
         source: "gemini",
@@ -243,7 +245,7 @@ function geminiAssetCandidates(pageCtx: GeminiPageContext, sourceId: string): Pr
     url: asset.url,
     filename: asset.filename ?? null,
     contentType: asset.contentType ?? null,
-    fetchViaBackground: true,
+    fetchViaBackground: /^https?:/.test(asset.url) && !asset.url.startsWith("https://gemini.google.com/"),
   }));
 }
 
