@@ -1,5 +1,7 @@
 import { allowedAssetUrl, providerDownloadUrl } from "./asset-url";
 import { validateAssetResponse } from "./asset-response";
+import { TransientSyncError } from "./sync-errors";
+import { boundedAssetBuffer } from "./asset-bytes";
 import { asArray, asObject, type FetchLike } from "./types";
 import type { ProviderAssetCandidate } from "./assets";
 
@@ -60,13 +62,17 @@ export async function resolveChatgptAssetUrl(fetcher: FetchLike, candidate: Prov
   if (!providerDownloadUrl(candidate.url, "chatgpt")) return candidate.url;
   if (!candidate.url.startsWith("/backend-api/") || !candidate.url.includes("/download")) return candidate.url;
   let downloadEndpoint = candidate.url;
-  let res = await fetcher(downloadEndpoint, { credentials: "include", headers: candidate.headers, redirect: "manual", signal: AbortSignal.timeout(30_000) });
+  const fetchLink = async (url: string) => {
+    try { return await fetcher(url, { credentials: "include", headers: candidate.headers, redirect: "manual", signal: AbortSignal.timeout(30_000) }); }
+    catch { throw new TransientSyncError("Provider download link temporarily unavailable"); }
+  };
+  let res = await fetchLink(downloadEndpoint);
   validateAssetResponse(res, "chatgpt");
   if (res.status === 404 && candidate.pointer.startsWith("sediment://")) {
     const id = candidate.pointer.slice("sediment://".length);
     downloadEndpoint = `/backend-api/conversation/${encodeURIComponent(candidate.sourceId)}/attachment/${encodeURIComponent(id)}/download`;
     if (!allowedAssetUrl(downloadEndpoint, "chatgpt")) throw new Error("asset_url_unavailable");
-    res = await fetcher(downloadEndpoint, { credentials: "include", headers: candidate.headers, redirect: "manual", signal: AbortSignal.timeout(30_000) });
+    res = await fetchLink(downloadEndpoint);
     validateAssetResponse(res, "chatgpt");
   }
   if (!res.ok) throw new Error(res.status === 404 || res.status === 410 ? "asset_expired" : "asset_download_failed");
@@ -75,7 +81,7 @@ export async function resolveChatgptAssetUrl(fetcher: FetchLike, candidate: Prov
     await res.body?.cancel();
     return downloadEndpoint;
   }
-  const link = asObject(await res.json());
+  const link = asObject(JSON.parse(new TextDecoder().decode(await boundedAssetBuffer(res, 1024 * 1024))));
   const url = stringValue(link.download_url ?? link.url);
   if (!url || !allowedAssetUrl(url, "chatgpt")) throw new Error("asset_url_unavailable");
   if (!candidate.filename) candidate.filename = stringValue(link.file_name);

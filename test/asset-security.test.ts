@@ -31,7 +31,7 @@ test("ChatGPT session document from a conversation image field never reaches upl
 
 for (const [contentType, body] of [
   ["application/json", '{"accessToken":"SECRET"}'], ["text/html", "<!doctype html><html>login</html>"],
-  ["image/png", '{"accessToken":"SECRET"}'], ["application/octet-stream", '{"session":{"token":"SECRET"}}'],
+  ["image/png", '{"accessToken":"SECRET"}'], ["image/png", '{"user":{"email":"SECRET"},"expires":"tomorrow"}'], ["application/octet-stream", '{"session":{"token":"SECRET"}}'],
   ["image/png", "<html><body>Sign in</body></html>"],
 ]) test(`reject ${contentType} auth/document bytes before upload`, async () => {
   let uploads = 0;

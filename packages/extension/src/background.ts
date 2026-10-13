@@ -315,7 +315,8 @@ async function postCapture(message: CaptureReadyMessage): Promise<unknown> {
     body: JSON.stringify(message.capture),
   }); } catch { throw new TransientSyncError("Receiver network unavailable"); }
   if (res.status >= 500 || res.status === 429) throw new TransientSyncError(`Receiver temporarily unavailable (${res.status})`);
-  if (!res.ok) throw new DeterministicCaptureError(`Receiver rejected capture (${res.status})`, res.status);
+  if (res.status === 400 || res.status === 422) throw new DeterministicCaptureError(`Receiver rejected capture (${res.status})`, res.status);
+  if (!res.ok) throw new TransientSyncError(`Receiver unavailable (${res.status})`);
   const ingest = await res.json();
   if (ingest.count === 0 && Array.isArray(ingest.skipped_deleted) && ingest.skipped_deleted.some((item: { source: string; source_id: string }) => item.source === message.capture.source && item.source_id === message.capture.source_id)) return { ok: true, captured: false, ingest };
   await mutateStatus((status) => {

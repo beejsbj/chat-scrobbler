@@ -32,3 +32,10 @@ test("Gemini unchanged payload is not re-emitted or re-downloaded across fresh a
     expect({ captures, downloads }).toEqual({ captures: 1, downloads: 1 });
   } finally { if (savedChrome) Object.defineProperty(globalThis, "chrome", savedChrome); else delete (globalThis as any).chrome; }
 });
+
+test("a provider stream outage aborts sync instead of becoming a lost asset", async () => {
+  const stream = new ReadableStream<Uint8Array>({ start(controller) { controller.error(new TypeError("network disconnected")); } });
+  await expect(uploadProviderAssets(async () => new Response(stream), async () => { throw new Error("must not upload"); }, [{
+    source: "chatgpt", sourceId: "c", pointer: "file-1", url: "/backend-api/files/file-1/download",
+  }], { beforeFetch: async () => {}, reportFailure: async () => {} })).rejects.toMatchObject({ name: "TransientSyncError" });
+});

@@ -18,7 +18,7 @@ export function validateAssetBytes(bytes: Uint8Array, contentType?: string | nul
   while (start < bytes.length && [9, 10, 13, 32].includes(bytes[start])) start++;
   const prefix = new TextDecoder().decode(bytes.subarray(start, start + 16 * 1024)).replace(/^\uFEFF/, "").trimStart();
   if (/^(?:<!doctype\s+html|<html\b|<head\b|<body\b)/i.test(prefix)
-    || /^[{\[]/.test(prefix) && /"(?:access_?token|refresh_?token|session|authorization|csrf|cookies?|token)"\s*:/i.test(prefix)) {
+    || /^[{\[]/.test(prefix)) {
     throw new Error("asset_url_unavailable");
   }
 }

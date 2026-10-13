@@ -1,3 +1,5 @@
+import { TransientSyncError } from "./sync-errors";
+
 /** Bound the body while reading, including chunked responses without Content-Length. */
 export async function boundedAssetBuffer(res: Response, maxBytes: number): Promise<Uint8Array> {
   const length = Number(res.headers.get("content-length"));
@@ -20,6 +22,9 @@ export async function boundedAssetBuffer(res: Response, maxBytes: number): Promi
       }
       chunks.push(value);
     }
+  } catch (error) {
+    if ((error as Error)?.message === "asset_too_large") throw error;
+    throw new TransientSyncError("Provider asset stream interrupted");
   } finally { reader.releaseLock(); }
   const bytes = new Uint8Array(total);
   let offset = 0;
