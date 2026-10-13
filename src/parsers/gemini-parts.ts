@@ -1,3 +1,4 @@
+import { isGeminiMetadata } from "./gemini-metadata";
 import type { Block } from "../schema/types";
 import { childLocation, unknownBlock, type PartLocation } from "./parts";
 
@@ -9,23 +10,9 @@ export function geminiTextParts(value: unknown, loc: PartLocation): Block[] {
     : [unknownBlock(part, childLocation(loc, i), "gemini.part")]);
 }
 
-// Slots verified as control, locale, branding, suggestion or status metadata in
-// gemini-api-sample.json. Their bytes stay in raw. Objects in these slots are
-// not part of the verified metadata shape and must still be retained.
-const METADATA: Record<string, number[]> = {
-  "gemini.user": [1, 3, 4, 5, 8],
-  "gemini.candidate": [6, 8, 9, 12, 15, 21, 27, 37, 44],
-  "gemini.response": [1, 8, 14, 17, 24, 25],
-  "gemini.payload": [1, 2, 3],
-};
-function metadataValue(value: unknown, depth = 0): boolean {
-  if (value == null || ["string", "number", "boolean"].includes(typeof value)) return true;
-  return depth < 32 && Array.isArray(value) && value.every(item => metadataValue(item, depth + 1));
-}
-
 export function geminiOpaqueSlots(value: unknown[], known: number[], loc: PartLocation, prefix: string): Block[] {
   return value.flatMap((part, i): Block[] => known.includes(i) || part == null || (Array.isArray(part) && !part.length)
-    || (METADATA[prefix]?.includes(i) && metadataValue(part))
+    || isGeminiMetadata(prefix, i, part)
     ? [] : [unknownBlock(part, childLocation(loc, i), `${prefix}.content`)]);
 }
 

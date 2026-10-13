@@ -197,3 +197,11 @@ test("verified Gemini metadata stays raw-only while novel content is retained", 
   const session = parseGemini(capture)[0];
   expect(session.messages[1].blocks.filter(b => b.type === "unknown").map(b => b.provider_type)).toEqual(["new_locale_content", "new_visual"]);
 });
+
+test("new positional content inside a formerly empty metadata slot is not ignored", () => {
+  const capture = structuredClone(sample) as any;
+  const candidate = capture.payload[0][0][3][0][0];
+  candidate[12] = [["generated-image", "provider://new-media"]];
+  const blocks = parseGemini(capture, { raw_ref: "version" })[0].messages[1].blocks;
+  expect(blocks).toContainEqual(expect.objectContaining({ type: "unknown", raw_json: candidate[12], raw_path: "/payload/0/0/3/0/0/12" }));
+});
