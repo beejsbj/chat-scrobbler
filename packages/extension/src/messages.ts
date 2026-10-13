@@ -30,6 +30,10 @@ export interface AssetUploadMessage {
   type: "SCROBBLER_ASSET_UPLOAD";
   asset: AssetUploadRequest;
 }
+export interface AssetLookupMessage {
+  type: "SCROBBLER_ASSET_LOOKUP";
+  asset: Omit<AssetUploadRequest, "bytes"> & { sha256?: string | null };
+}
 
 export interface AssetFailureMessage {
   type: "SCROBBLER_ASSET_FAILURE";
@@ -135,6 +139,7 @@ export interface AssetUploadFinish { type: "SCROBBLER_ASSET_UPLOAD_FINISH"; uplo
 export interface AssetUploadCancel { type: "SCROBBLER_ASSET_UPLOAD_CANCEL"; uploadId: string; }
 
 export type RuntimeMessage =
+  | AssetLookupMessage
   | AssetUploadStart | AssetUploadChunk | AssetUploadFinish | AssetUploadCancel
   | BackfillRequest
   | BackfillOpenTabsMessage

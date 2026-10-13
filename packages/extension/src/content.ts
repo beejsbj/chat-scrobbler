@@ -4,6 +4,7 @@ import { runSidebarBadges } from "./sidebar";
 import type { ConversationState } from "./sidebar/reconcile";
 import { ASSET_CHUNK_BYTES } from "./asset-transfers";
 import { backfillProviderAssets } from "./asset-backfill";
+import { backgroundAssetError } from "./providers/asset-cache-client";
 import { SyncFailureTracker } from "./providers/sync-failures";
 import { DeterministicCaptureError, TransientSyncError } from "./providers/sync-errors";
 import type { RuntimeMessage, SyncRequest, SyncResponse } from "./messages";
@@ -102,7 +103,7 @@ async function uploadAsset(asset: AssetUploadRequest): Promise<UploadedAsset> {
       throw error;
     }
   }
-  if (!response?.ok) throw new Error(response?.error ?? "Background asset upload failed");
+  if (!response?.ok) throw backgroundAssetError(response);
   return response.asset as UploadedAsset;
 }
 

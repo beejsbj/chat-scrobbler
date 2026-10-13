@@ -4,6 +4,8 @@ import type { FetchLike, ProviderSyncOptions } from "./types";
 import { allowedAssetUrl, assetCredentials, providerDownloadUrl, useBackgroundForAsset } from "./asset-url";
 import { boundedAssetBuffer } from "./asset-bytes";
 import { validateAssetBytes, validateAssetResponse } from "./asset-response";
+import { lookupCapturedAsset, backgroundAssetError, paceAssetDownload } from "./asset-cache-client";
+import { TransientSyncError } from "./sync-errors";
 
 export const MAX_PROVIDER_ASSET_BYTES = 100 * 1024 * 1024;
 
@@ -34,6 +36,7 @@ export interface ProviderAssetCandidate {
   messageId?: string | null;
   fetchViaBackground?: boolean;
   inlineBytes?: Uint8Array;
+  sha256?: string | null;
 }
 
 export async function uploadProviderAssets(
@@ -51,7 +54,10 @@ export async function uploadProviderAssets(
     seen.add(`${candidate.messageId ?? ""}:${candidate.pointer}`);
     let reason: AssetFailureReason = "asset_download_failed";
     try {
-      await options.beforeFetch?.();
+      if (candidate.url && !allowedAssetUrl(candidate.url, candidate.source)) throw new Error("asset_url_unavailable");
+      const cached = await lookupCapturedAsset(candidate);
+      if (cached) { uploaded.push({ ...cached, pointer: candidate.pointer, message_id: candidate.messageId ?? null }); continue; }
+      await (options.beforeFetch ?? paceAssetDownload)();
       const url = options.resolveUrl ? await options.resolveUrl(candidate) : candidate.url;
       if (!candidate.inlineBytes && (!url || !allowedAssetUrl(url, candidate.source))) throw new Error("asset_url_unavailable");
       const downloaded = candidate.inlineBytes ? { bytes: candidate.inlineBytes, contentType: candidate.contentType } : (candidate.fetchViaBackground || useBackgroundForAsset(url!))
@@ -90,6 +96,7 @@ export async function uploadProviderAssets(
       console.error(JSON.stringify({ event: "asset_capture_failed", ...failure }));
       try { await (options.reportFailure ?? reportAssetFailure)(failure); }
       catch { console.error(JSON.stringify({ event: "asset_failure_report_failed", source: candidate.source, source_id: candidate.sourceId })); }
+      if (error instanceof TransientSyncError) throw error;
     }
   }
   return uploaded;
@@ -102,7 +109,7 @@ async function fetchAssetViaBackground(url: string, maxBytes: number, candidate:
   const response = await new Promise<any>((resolve) => {
     chrome.runtime.sendMessage({ type: "SCROBBLER_ASSET_FETCH", url, maxBytes, upload: { source: candidate.source, sourceId: candidate.sourceId, pointer: candidate.pointer, messageId: candidate.messageId, filename: candidate.filename, contentType: candidate.contentType, originalUrl: url } }, resolve);
   });
-  if (!response?.ok) throw new Error(response?.error ?? "Background asset fetch failed");
+  if (!response?.ok) throw backgroundAssetError(response);
   return {
     asset: response.asset,
     bytes: Array.isArray(response.bytes) ? response.bytes : [],
@@ -118,7 +125,9 @@ async function fetchCandidateBytes(
   headers?: Record<string, string>,
   source: ProviderSource = "chatgpt",
 ): Promise<ProviderAssetBytes> {
-  const res = await fetcher(url, { credentials: assetCredentials(url, source), headers: providerDownloadUrl(url, source) ? headers : undefined, redirect: "manual", signal: AbortSignal.timeout(60_000) });
+  let res: Response;
+  try { res = await fetcher(url, { credentials: assetCredentials(url, source), headers: providerDownloadUrl(url, source) ? headers : undefined, redirect: "manual", signal: AbortSignal.timeout(60_000) }); }
+  catch { throw new TransientSyncError("Provider asset network unavailable"); }
   validateAssetResponse(res, source);
   if (!res.ok) throw new Error(res.status === 404 || res.status === 410 ? "asset_expired" : "asset_download_failed");
   const bytes = await boundedAssetBuffer(res, maxBytes);

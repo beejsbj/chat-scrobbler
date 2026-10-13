@@ -9,6 +9,7 @@ import { boundedAssetBuffer } from "./providers/asset-bytes";
 import { validateAssetBytes, validateAssetResponse } from "./providers/asset-response";
 import { AssetTransfers } from "./asset-transfers";
 import { uploadAssetToIngest } from "./asset-upload";
+import { knownPointerAsset, rememberPointer } from "./asset-pointer-cache";
 import { DeterministicCaptureError, TransientSyncError } from "./providers/sync-errors";
 import type {
   AssetFetchMessage,
@@ -102,6 +103,7 @@ chrome.runtime.onMessage.addListener((message: RuntimeMessage, sender: any, send
 });
 
 async function handleRuntimeMessage(message: RuntimeMessage, sender: any): Promise<unknown> {
+  if (message.type === "SCROBBLER_ASSET_LOOKUP") return { ok: true, asset: await knownPointerAsset(fetch, await getSettings(), message.asset) };
   if (message.type === "SCROBBLER_ASSET_UPLOAD_START") return { ok: true, uploadId: assetTransfers.start(message.asset, message.sizeBytes, (await getSettings()).maxAssetBytes) };
   if (message.type === "SCROBBLER_ASSET_UPLOAD_CHUNK") { assetTransfers.append(message.uploadId, message.offset, message.bytes); return { ok: true }; }
   if (message.type === "SCROBBLER_ASSET_UPLOAD_FINISH") return postAsset(assetTransfers.finish(message.uploadId));
@@ -160,6 +162,7 @@ async function postAssetFailure(message: AssetFailureMessage): Promise<unknown> 
 async function postAsset(asset: AssetUploadRequest): Promise<unknown> {
   const settings = await getSettings();
   const uploaded = await uploadAssetToIngest(fetch, settings, asset);
+  await rememberPointer(asset, uploaded);
   return { ok: true, asset: uploaded };
 }
 
@@ -169,7 +172,9 @@ async function fetchAssetBytes(message: AssetFetchMessage): Promise<unknown> {
   if (!source || url.protocol !== "https:" || !allowedAssetUrl(url.toString(), source)) throw new Error("asset_url_unavailable");
   const settings = await getSettings();
   const maxBytes = Math.min(message.maxBytes ?? settings.maxAssetBytes, settings.maxAssetBytes);
-  const res = await fetch(url.toString(), { credentials: assetCredentials(url.toString(), source), redirect: "manual", signal: AbortSignal.timeout(60_000) });
+  let res: Response;
+  try { res = await fetch(url.toString(), { credentials: assetCredentials(url.toString(), source), redirect: "manual", signal: AbortSignal.timeout(60_000) }); }
+  catch { throw new TransientSyncError("Provider asset network unavailable"); }
   validateAssetResponse(res, source);
   if (!res.ok) throw new Error(res.status === 404 || res.status === 410 ? "asset_expired" : "asset_download_failed");
   const bytes = await boundedAssetBuffer(res, maxBytes);
@@ -180,7 +185,11 @@ async function fetchAssetBytes(message: AssetFetchMessage): Promise<unknown> {
     let asset;
     try { asset = await uploadAssetToIngest(fetch, settings, { ...message.upload, filename: message.upload.filename ?? filename,
       contentType: assetContentType(contentType, message.upload.contentType), bytes }); }
-    catch (error) { throw new Error(error instanceof Error && error.message === "asset_too_large" ? "asset_too_large" : "asset_upload_failed"); }
+    catch (error) {
+      if (error instanceof TransientSyncError) throw error;
+      throw new Error(error instanceof Error && error.message === "asset_too_large" ? "asset_too_large" : "asset_upload_failed");
+    }
+    await rememberPointer(message.upload, asset);
     return { ok: true, asset: { ...asset, filename: message.upload.filename ?? filename, content_type: assetContentType(contentType, message.upload.contentType) } };
   }
   return { ok: true, bytes: Array.from(bytes), filename, contentType };

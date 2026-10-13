@@ -1,5 +1,6 @@
 import { assetsUrl, type UploadedAsset } from "../../shared/src";
 import type { AssetUploadRequest } from "./messages";
+import { TransientSyncError } from "./providers/sync-errors";
 
 interface ReceiverSettings { ingestBaseUrl: string; ingestToken?: string | null; maxAssetBytes: number; }
 
@@ -14,7 +15,7 @@ export async function uploadAssetToIngest(fetcher: typeof fetch, settings: Recei
   if (settings.ingestToken) headers.authorization = `Bearer ${settings.ingestToken}`;
   const lookupUrl = new URL(assetsUrl(settings.ingestBaseUrl));
   lookupUrl.searchParams.set("sha256", sha256);
-  const lookup = await fetcher(lookupUrl.toString(), { headers, credentials: "omit", signal: AbortSignal.timeout(30_000) });
+  const lookup = await receiverFetch(fetcher, lookupUrl.toString(), { headers, credentials: "omit", signal: AbortSignal.timeout(30_000) });
   if (!lookup.ok && lookup.status !== 404 && lookup.status !== 405) throw new Error(`Asset lookup rejected (${lookup.status})`);
   const found = lookup.ok && (await lookup.json() as { exists?: boolean }).exists === true;
   const url = new URL(assetsUrl(settings.ingestBaseUrl));
@@ -26,13 +27,40 @@ export async function uploadAssetToIngest(fetcher: typeof fetch, settings: Recei
   if (asset.filename) url.searchParams.set("filename", asset.filename);
   if (asset.contentType) url.searchParams.set("content_type", asset.contentType);
   if (found) { url.pathname += "/reference"; url.searchParams.set("sha256", sha256); }
-  let response = await fetcher(url.toString(), { method: "POST", headers, credentials: "omit", body: found ? undefined : bytes, signal: AbortSignal.timeout(60_000) });
+  let response = await receiverFetch(fetcher, url.toString(), { method: "POST", headers, credentials: "omit", body: found ? undefined : bytes, signal: AbortSignal.timeout(60_000) });
   // Blob collection can race the lookup. Missing reference falls back to the bytes we already fetched.
   if (found && response.status === 404) {
     url.pathname = url.pathname.replace(/\/reference$/, "");
     url.searchParams.delete("sha256");
-    response = await fetcher(url.toString(), { method: "POST", headers, credentials: "omit", body: bytes, signal: AbortSignal.timeout(60_000) });
+    response = await receiverFetch(fetcher, url.toString(), { method: "POST", headers, credentials: "omit", body: bytes, signal: AbortSignal.timeout(60_000) });
   }
   if (!response.ok) throw new Error(response.status === 413 ? "asset_too_large" : `Ingest rejected asset (${response.status})`);
   return await response.json() as UploadedAsset;
+}
+
+export async function lookupAssetByHash(fetcher: typeof fetch, settings: ReceiverSettings, asset: Omit<AssetUploadRequest, "bytes">, sha256: string): Promise<UploadedAsset | null> {
+  const url = new URL(assetsUrl(settings.ingestBaseUrl));
+  url.searchParams.set("sha256", sha256);
+  const headers: Record<string, string> = settings.ingestToken ? { authorization: `Bearer ${settings.ingestToken}` } : {};
+  const lookup = await receiverFetch(fetcher, url.toString(), { headers, credentials: "omit", signal: AbortSignal.timeout(30_000) });
+  if (lookup.status === 404 || lookup.status === 405) return null;
+  if (!lookup.ok) throw new TransientSyncError("Receiver asset lookup rejected");
+  if (!(await lookup.json() as { exists?: boolean }).exists) return null;
+  url.pathname += "/reference";
+  url.searchParams.set("source", asset.source);
+  url.searchParams.set("source_id", asset.sourceId);
+  url.searchParams.set("pointer", asset.pointer);
+  if (asset.messageId) url.searchParams.set("message_id", asset.messageId);
+  if (asset.filename) url.searchParams.set("filename", asset.filename);
+  if (asset.contentType) url.searchParams.set("content_type", asset.contentType);
+  const response = await receiverFetch(fetcher, url.toString(), { method: "POST", headers, credentials: "omit", signal: AbortSignal.timeout(30_000) });
+  if (response.status === 404 || response.status === 410) return null;
+  if (!response.ok) throw new TransientSyncError("Receiver asset reference rejected");
+  return response.json();
+}
+async function receiverFetch(fetcher: typeof fetch, url: string, init: RequestInit): Promise<Response> {
+  let response: Response;
+  try { response = await fetcher(url, init); } catch { throw new TransientSyncError("Receiver asset network unavailable"); }
+  if (response.status >= 500 || response.status === 429) throw new TransientSyncError("Receiver asset temporarily unavailable");
+  return response;
 }

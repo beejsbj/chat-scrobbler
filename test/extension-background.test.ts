@@ -277,3 +277,22 @@ for (const status of [400, 500]) test(`background carries ${status} capture reje
   const result = await sendRuntimeMessage({ type: "SCROBBLER_CAPTURE_READY", capture: buildRawCapture({ source: "chatgpt", sourceId: "c", endpoint: "/detail", payload: {} }) });
   expect(result).toMatchObject({ ok: false, error_type: status === 400 ? "deterministic" : "transient" });
 });
+
+test("persistent pointer cache checks the receiver hash and reuses bytes across sessions", async () => {
+  const hash = "a".repeat(64);
+  const calls: Array<{ url: string; method: string; bytes: boolean }> = [];
+  globalThis.fetch = (async (input, init) => {
+    calls.push({ url: String(input), method: init?.method ?? "GET", bytes: !!init?.body });
+    if (!init?.method) return Response.json({ exists: calls.length > 2 });
+    return Response.json({ pointer: "https://lh3.googleusercontent.com/voice", local_path: "assets/gemini/c/hash.wav", sha256: hash });
+  }) as typeof fetch;
+  const identity = { source: "gemini" as const, sourceId: "c", pointer: "https://lh3.googleusercontent.com/voice" };
+  await sendRuntimeMessage({ type: "SCROBBLER_ASSET_UPLOAD", asset: { ...identity, bytes: [1, 2] } });
+  const result = await sendRuntimeMessage({ type: "SCROBBLER_ASSET_LOOKUP", asset: { ...identity, sourceId: "other" } });
+  expect(result).toMatchObject({ ok: true, asset: { sha256: hash } });
+  expect(calls).toHaveLength(4);
+  expect(calls[2].url).toContain(`sha256=${hash}`);
+  expect(calls[3]).toMatchObject({ method: "POST", bytes: false });
+  expect(calls[3].url).toContain("/assets/reference?");
+  expect(new URL(calls[3].url).searchParams.get("source_id")).toBe("other");
+});

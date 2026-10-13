@@ -38,6 +38,7 @@ import { logSyncFailure, SyncFailureTracker } from "./sync-failures";
 import { buildRawCapture } from "../../../shared/src";
 import { assetReferences, uploadProviderAssets, type ProviderAssetCandidate } from "./assets";
 import { geminiApiAssetCandidates } from "./gemini-assets";
+import { captureHash } from "./capture-hash";
 import {
   maxIso,
   parseRetryAfterMs,
@@ -174,7 +175,7 @@ export function createGeminiAdapter(
     })), { beforeFetch: options.beforeFetch }),
     sync: (options) => syncGemini(fetcher, pageCtx, options),
     listConversations: (pages = 1) => listGemini(pageCtx, pages),
-    captureOne: (id, updatedAt, options) => captureGeminiOne(fetcher, pageCtx, id, updatedAt, options),
+    captureOne: async (id, updatedAt, options) => { await captureGeminiOne(fetcher, pageCtx, id, updatedAt, options); },
   };
 }
 
@@ -199,7 +200,8 @@ async function captureGeminiOne(
   id: string,
   updatedAt: string | null,
   options: ProviderCaptureOneOptions,
-): Promise<void> {
+  skipUnchanged = false,
+): Promise<boolean> {
   const wizData = pageCtx.readWizData();
   const fetchedAt = new Date().toISOString();
 
@@ -210,12 +212,14 @@ async function captureGeminiOne(
       const apiCandidates = geminiApiAssetCandidates(payload, id);
       const apiPointers = new Set(apiCandidates.map(candidate => candidate.pointer));
       const candidates = [...apiCandidates, ...geminiAssetCandidates(pageCtx, id).filter(candidate => !apiPointers.has(candidate.pointer))];
+      const hash = await captureHash("gemini", id, { payload, pointers: candidates.map(c => c.pointer) });
+      if (skipUnchanged && hash.unchanged) return false;
       const assets = await uploadProviderAssets(
         fetcher,
         options.uploadAsset,
         candidates,
       );
-      await options.emitCapture(buildRawCapture({
+      const emitted = await options.emitCapture(buildRawCapture({
         source: "gemini",
         sourceId: id,
         // endpoint includes the RPC id so the spine parser knows which RPC
@@ -227,7 +231,8 @@ async function captureGeminiOne(
         conversationUpdatedAt: updatedAt,
         rawUrl: `https://gemini.google.com/app/${id}`,
       }));
-      return;
+      if (emitted !== false) await hash.remember();
+      return emitted !== false;
     }
   }
 
@@ -238,7 +243,7 @@ async function captureGeminiOne(
   const domText = pageCtx.readConversationDom(id);
   const candidates = geminiAssetCandidates(pageCtx, id);
   const assets = await uploadProviderAssets(fetcher, options.uploadAsset, candidates);
-  await options.emitCapture(buildRawCapture({
+  const emitted = await options.emitCapture(buildRawCapture({
     source: "gemini",
     sourceId: id,
     endpoint: `dom://gemini.google.com/app/${id}`,
@@ -249,6 +254,7 @@ async function captureGeminiOne(
     conversationUpdatedAt: updatedAt,
     rawUrl: `https://gemini.google.com/app/${id}`,
   }));
+  return emitted !== false;
 }
 
 function geminiAssetCandidates(pageCtx: GeminiPageContext, sourceId: string): ProviderAssetCandidate[] {
@@ -312,13 +318,12 @@ async function syncGemini(
     // path + DOM fallback; the cursor watermark advances using fetch time.
     const fetchedAt = new Date().toISOString();
     try {
-      let didCapture = true;
-      await captureGeminiOne(fetcher, pageCtx, id, null, {
-        emitCapture: async capture => { const result = await options.emitCapture(capture); didCapture = result !== false; return result; },
+      const didCapture = await captureGeminiOne(fetcher, pageCtx, id, null, {
+        emitCapture: options.emitCapture,
         uploadAsset: options.uploadAsset,
-      });
+      }, true);
       failures.succeeded(id);
-      if (!didCapture) { skipped++; continue; }
+      if (!didCapture) { skipped++; maxConversationUpdatedAt = maxIso(maxConversationUpdatedAt, fetchedAt); continue; }
       captured += 1;
       maxConversationUpdatedAt = maxIso(maxConversationUpdatedAt, fetchedAt);
     } catch (error) {
