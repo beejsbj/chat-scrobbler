@@ -261,9 +261,9 @@ function migrateMessageEmbeddings(db: Database): void {
 
 function indexLiteralSession(db: Database, s: Session, opts: IndexSessionOptions): boolean {
   if (opts.canonicalDir && isSessionDeleted(opts.canonicalDir, s.source, s.source_id)) return false;
-  // message_count reflects the active branch only; FTS indexes every message so
+  // message_count counts rendered active messages; FTS indexes every branch so
   // search can reach text on inactive (edited-away) branches too.
-  const activeCount = activePath(s).length;
+  const activeCount = activePath(s).filter(message => message.text.trim()).length;
   db.run(`INSERT OR REPLACE INTO sessions (id, source, source_id, title, created_at, updated_at, message_count)
           VALUES (?,?,?,?,?,?,?)`,
     [s.id, s.source, s.source_id, s.title, s.created_at, s.updated_at, activeCount]);

@@ -51,7 +51,7 @@ export function blocksFromClaude(m: RawClaudeMsg, assets: AssetLookup = assetLoo
       } else blocks.push(unknownBlock(citation, childLocation(at, "citations", j), "citation"));
     }
   }
-  if (!blocks.some(b => b.type === "text") && !m.content?.length && m.text?.trim()) blocks.push({ type: "text", text: m.text });
+  if (!blocks.length && m.text?.trim()) blocks.push({ type: "text", text: m.text });
   for (const key of ["files", "attachments"] as const) {
     for (const [i, file] of (m[key] ?? []).entries()) {
       const pointer = file?.file_uuid ?? file?.uuid ?? file?.id ?? file?.attachment_uuid;

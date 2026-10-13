@@ -109,3 +109,12 @@ test("preserves artifact edits, per-message model, citations and unfamiliar visu
   expect(s.messages[1].blocks).toContainEqual({ type: "citation", provider_type: "web_search_result_location", url: "https://example.org", title: "Study", text: "Restoration" });
   expect(s.messages[1].blocks).toContainEqual(expect.objectContaining({ type: "unknown", provider_type: "inline_visual", raw_json: message.content[4], raw_ref: "claude/cl-1/version.json.gz", raw_path: "/payload/chat_messages/1/content/4" }));
 });
+
+test("Claude falls back to message text when content has only empty text blocks", () => {
+  const capture = structuredClone(sample) as any;
+  capture.payload.chat_messages[1].content = [{ type: "text", text: "" }, { type: "text", text: "  " }];
+  capture.payload.chat_messages[1].text = "fallback prose";
+  const message = parseClaude(capture)[0].messages[1];
+  expect(message.text).toBe("fallback prose");
+  expect(message.blocks).toEqual([{ type: "text", text: "fallback prose" }]);
+});

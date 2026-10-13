@@ -6,6 +6,7 @@
 import { grepMessages, openIndex, searchMessagesWithEmbeddings, listSessions } from "../indexer/sqlite";
 import { embeddingProviderFromConfig } from "../indexer/embedding-providers";
 import { readSession, sessionToMarkdown, activePath } from "../store/sessions";
+import { renderText } from "../parsers/render";
 import type { Role, Block } from "../schema/types";
 import { runUnify } from "./unify";
 import { parseSessionId } from "../core/session-id";
@@ -85,7 +86,7 @@ export async function runSearch(opts: SearchOpts): Promise<void> {
 const VALID_ROLES: readonly Role[] = ["user", "assistant", "system", "tool"];
 
 function filterTextBlocks(blocks: Block[]): Block[] {
-  return blocks.filter((b) => b.type !== "reasoning" && b.type !== "tool_call" && b.type !== "tool_result");
+  return blocks.filter((b) => b.type !== "reasoning" && b.type !== "tool_call" && b.type !== "tool_result" && b.type !== "unknown");
 }
 
 export interface GetOpts {
@@ -126,10 +127,10 @@ export async function runGet(opts: GetOpts): Promise<void> {
     // Apply after role filtering so order is deterministic.
     session = {
       ...session,
-      messages: session.messages.map((m) => ({
-        ...m,
-        blocks: filterTextBlocks(m.blocks),
-      })),
+      messages: session.messages.map((m) => {
+        const blocks = filterTextBlocks(m.blocks);
+        return { ...m, blocks, text: renderText(blocks) };
+      }),
     };
   }
 
