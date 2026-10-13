@@ -3,7 +3,7 @@ import { ensureMessageLookup } from "./message-lookup";
 import { searchRevision } from "./search-revision";
 import { decodeVector, textVectorHash, type VectorScope } from "./vector-store";
 
-interface Entry { session_id:string; message_id:string; rowid:number; source:string; }
+interface Entry { session_id:string; message_id:string; rowid:number; source:string; hash:string;title:string|null; }
 interface Cache {
   scope:string; revision:number; changes:number; dataVersion:number; dimension:number;
   matrix:Float32Array; entries:Array<Entry|null>; identities:Map<string,number>; free:number[];
@@ -18,9 +18,9 @@ function fill(db:Database,cache:Cache,scope:VectorScope,session?:string):void {
   for(const table of ["message_vectors","message_embeddings"]) {
     const binary=table==="message_vectors";
     const rows=db.query(`SELECT v.session_id,v.message_id,${binary ? "v.embedding" : "NULL"} AS embedding,
-      ${binary ? "v.text_hash" : "NULL"} AS text_hash,f.rowid,f.text,f.source
+      ${binary ? "v.text_hash" : "NULL"} AS text_hash,f.rowid,f.text,f.source,f.title
       FROM ${table} v JOIN message_lookup k ON k.session_id=v.session_id AND k.message_id=v.message_id
-      JOIN messages_fts f ON f.rowid=k.fts_rowid
+      JOIN messages_fts f ON f.rowid=k.fts_rowid AND f.session_id=v.session_id AND f.message_id=v.message_id
       WHERE v.provider_kind=? AND ${binary ? "v.provider_model" : "COALESCE(v.provider_model,'')"}=? AND v.dimension=?
       ${session ? "AND v.session_id=?" : ""} AND v.title IS f.title
       AND ${binary ? "(v.text_hash IS NOT NULL OR v.text=f.text)" : "v.text=f.text"}`);
@@ -43,17 +43,17 @@ function fill(db:Database,cache:Cache,scope:VectorScope,session?:string):void {
       }
       const offset=index*scope.dimension;
       for(let i=0;i<scope.dimension;i++) cache.matrix[offset+i]=vector[i]/norm;
-      cache.entries[index]={session_id:row.session_id,message_id:row.message_id,rowid:row.rowid,source:row.source};
+      cache.entries[index]={session_id:row.session_id,message_id:row.message_id,rowid:row.rowid,source:row.source,
+        hash:row.text_hash ?? textVectorHash(row.text),title:row.title};
       cache.identities.set(key,index);
     }
   }
 }
 
 function load(db:Database,scope:VectorScope):Cache {
-  ensureMessageLookup(db);
   const key=JSON.stringify(scope), revision=searchRevision(db), state=counters(db);
   let cache=active.get(db);
-  if(!cache || cache.scope!==key || revision===cache.revision &&
+  if(!cache || cache.scope!==key || revision<cache.revision || revision===cache.revision &&
     (state.changes!==cache.changes || state.dataVersion!==cache.dataVersion)) {
     // Count distinct identities to avoid allocating twice for retained JSON.
     const count=(db.query(`SELECT COUNT(*) AS n FROM (
@@ -77,6 +77,11 @@ function load(db:Database,scope:VectorScope):Cache {
 /** One lazily loaded, normalized matrix per open index, replaced on model switch.
  * Only the winning rows fetch chat text; writes refresh affected sessions. */
 export function cachedSemanticCandidates(db:Database,query:number[],scope:VectorScope,source:string|undefined,limit:number) {
+  ensureMessageLookup(db);
+  return db.transaction(()=>candidatesSnapshot(db,query,scope,source,limit))();
+}
+
+function candidatesSnapshot(db:Database,query:number[],scope:VectorScope,source:string|undefined,limit:number) {
   const cache=load(db,scope), ranked:Array<{index:number;similarity:number}>=[];
   const q=Float64Array.from(query);let norm=0;for(const value of q) norm+=value*value;
   if(!norm)return [];
@@ -89,10 +94,11 @@ export function cachedSemanticCandidates(db:Database,query:number[],scope:Vector
     if(similarity<=0 || ranked.length>=limit && similarity<=ranked[ranked.length-1].similarity) continue;
     ranked.push({index,similarity});ranked.sort((a,b)=>b.similarity-a.similarity);if(ranked.length>limit)ranked.pop();
   }
-  const read=db.query("SELECT text,role,created_at,title FROM messages_fts WHERE rowid=?");
-  return ranked.map(({index,similarity})=>{
+  const read=db.query("SELECT text,role,created_at,title FROM messages_fts WHERE rowid=? AND session_id=? AND message_id=?");
+  return ranked.flatMap(({index,similarity})=>{
     const entry=cache.entries[index]!;
-    const row=read.get(entry.rowid) as {text:string;role:string;created_at:string|null;title:string|null};
-    return {...entry,...row,similarity};
+    const row=read.get(entry.rowid,entry.session_id,entry.message_id) as {text:string;role:string;created_at:string|null;title:string|null}|null;
+    if(!row || row.title!==entry.title || textVectorHash(row.text)!==entry.hash)return [];
+    return [{...entry,...row,similarity}];
   });
 }
