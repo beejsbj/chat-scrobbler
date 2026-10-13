@@ -12,7 +12,7 @@ import { AssetTransfers } from "./asset-transfers";
 import { uploadAssetToIngest } from "./asset-upload";
 import { knownPointerAsset, rememberPointer } from "./asset-pointer-cache";
 import { getInstallId } from "./install-id";
-import { DeterministicCaptureError, TransientSyncError } from "./providers/sync-errors";
+import { DeterministicCaptureError, TransientSyncError, ReceiverSyncError } from "./providers/sync-errors";
 import type {
   AssetFetchMessage,
   AssetFailureMessage,
@@ -48,6 +48,7 @@ interface ProviderState {
   lastVisitSync: string | null;
   lastResult: unknown;
   lastError: string | null;
+  lastSyncError?: import("../../shared/src").SyncIssue;
 }
 
 interface Status {
@@ -312,13 +313,16 @@ async function postCapture(message: CaptureReadyMessage): Promise<unknown> {
     method: "POST",
     headers,
     body: JSON.stringify(message.capture),
-  }); } catch { throw new TransientSyncError("Receiver network unavailable"); }
-  if (res.status >= 500 || res.status === 429) throw new TransientSyncError(`Receiver temporarily unavailable (${res.status})`);
-  if (!res.ok) throw new DeterministicCaptureError(`Receiver rejected capture (${res.status})`, res.status);
+  }); } catch { throw new ReceiverSyncError("Receiver network unavailable"); }
+  if ([400, 413, 422].includes(res.status)) throw new DeterministicCaptureError(`Receiver rejected capture (${res.status})`, res.status);
+  if (!res.ok) throw new ReceiverSyncError(
+    [401, 403].includes(res.status) ? `Receiver authentication failed (${res.status}); check the ingest token`
+      : [404, 405, 407, 408].includes(res.status) ? `Receiver route unavailable (${res.status}); check the receiver URL and proxy`
+      : `Receiver temporarily unavailable (${res.status})`, res.status);
   let ingest;
   try { ingest = await res.json(); } catch (error) {
     if (error instanceof SyntaxError) throw error;
-    throw new TransientSyncError("Receiver response interrupted");
+    throw new ReceiverSyncError("Receiver response interrupted");
   }
   if (ingest.count === 0 && Array.isArray(ingest.skipped_deleted) && ingest.skipped_deleted.some((item: { source: string; source_id: string }) => item.source === message.capture.source && item.source_id === message.capture.source_id)) return { ok: true, captured: false, ingest };
   await mutateStatus((status) => {
@@ -401,7 +405,16 @@ async function syncTab(tab: any, provider: ProviderSource, reason: "manual" | "p
   // (e.g. opened before the extension loaded / reloaded). Guard with optional
   // chaining so this surfaces a clear message instead of a "reading 'ok'" crash.
   const response = await sendTabMessage(tab.id, { type: "SCROBBLER_SYNC_REQUEST", provider, lastSync, captureFailures: status.providers[provider]?.captureFailures ?? [], retryFailed: reason === "retry" }) as SyncResponse | undefined;
-  if (!response?.ok) throw new Error(response?.error ?? "Content script not active in that tab — reload the tab and try again.");
+  if (!response?.ok) {
+    const error = response?.error ?? "Content script not active in that tab; reload the tab and try again.";
+    await mutateStatus(next => {
+      const previous = next.providers[provider] ?? { lastSync, lastVisitSync: null, lastResult: null, captureFailures: [] };
+      next.providers[provider] = { ...previous, lastError: error,
+        lastSyncError: response?.syncIssue ?? { reason: "sync_unavailable", occurred_at: new Date().toISOString() } };
+    });
+    await reportSyncFailuresBestEffort(provider, status.providers[provider]?.captureFailures ?? []);
+    throw new Error(error);
+  }
 
   await mutateStatus((next) => {
     next.providers[provider] = {
@@ -413,8 +426,7 @@ async function syncTab(tab: any, provider: ProviderSource, reason: "manual" | "p
       lastError: null,
     };
   });
-  try { await reportSyncFailures(provider, response.captureFailures ?? []); }
-  catch { console.error(JSON.stringify({ event: "capture_failure_report_failed", source: provider })); }
+  await reportSyncFailuresBestEffort(provider, response.captureFailures ?? []);
   return { ok: true, result: response };
 }
 
@@ -536,12 +548,18 @@ function sendTabMessage(tabId: number, message: unknown): Promise<unknown> {
   return new Promise((resolve) => chrome.tabs.sendMessage(tabId, message, resolve));
 }
 
+async function reportSyncFailuresBestEffort(source: ProviderSource, failures: ConversationCaptureFailure[]): Promise<void> {
+  try { await reportSyncFailures(source, failures); }
+  catch { console.error(JSON.stringify({ event: "capture_failure_report_failed", source })); }
+}
+
 async function reportSyncFailures(source: ProviderSource, failures: ConversationCaptureFailure[]): Promise<void> {
   const settings = await getSettings();
   const headers: Record<string, string> = { "content-type": "application/json" };
   if (settings.ingestToken) headers.authorization = `Bearer ${settings.ingestToken}`;
+  const issue = (await getStatus()).providers[source]?.lastSyncError;
   const res = await fetch(statusUrl(settings.ingestBaseUrl), { method: "POST", headers, credentials: "omit",
-    body: JSON.stringify({ source, install_id: await getInstallId(), conversations: [], capture_failures: failures }), signal: AbortSignal.timeout(30_000) });
+    body: JSON.stringify({ ...(issue ? { last_sync_error: issue } : {}), source, install_id: await getInstallId(), conversations: [], capture_failures: failures }), signal: AbortSignal.timeout(30_000) });
   if (!res.ok) throw new Error(`Capture failure report rejected (${res.status})`);
 }
 

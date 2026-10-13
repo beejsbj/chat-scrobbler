@@ -1,3 +1,4 @@
+import { syncIssueReports } from "./sync-issues";
 import { cachedIngestHealth } from "./health";
 import { Database } from "bun:sqlite";
 import { mkdirSync } from "node:fs";
@@ -230,6 +231,7 @@ export async function handleIngestRequest(req: Request, opts: IngestServerOption
         install_id?: string;
         asset_failures?: unknown;
         capture_failures?: unknown;
+        last_sync_error?: unknown;
         conversations?: Array<{ id: string; updated_at?: string | null }>;
       };
       if (typeof body.source !== "string" || !Array.isArray(body.conversations)) {
@@ -237,9 +239,10 @@ export async function handleIngestRequest(req: Request, opts: IngestServerOption
       }
       const source = readSource(body.source);
       const capture_failures = captureFailureReports(fat.indexPath, source, body.capture_failures, body.install_id);
+      const sync_errors = syncIssueReports(fat.indexPath, source, body.last_sync_error, body.install_id);
       const count = recordAssetFailures(fat.indexPath, source, body.asset_failures);
       const statuses = conversationStatuses(indexFor(fat.indexPath), source, body.conversations);
-      return json({ ok: true, statuses, capture_failures, ...(body.asset_failures === undefined ? {} : { asset_failures: count }) });
+      return json({ ok: true, statuses, capture_failures, sync_errors, ...(body.asset_failures === undefined ? {} : { asset_failures: count }) });
     } catch (error) {
       return json({ ok: false, error: error instanceof Error ? error.message : String(error) }, 400);
     }

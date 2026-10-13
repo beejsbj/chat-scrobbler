@@ -272,10 +272,10 @@ test("background media fetch rejects cross-provider and auth-document probes", a
   expect(uploads).toBe(0);
 });
 
-for (const status of [400, 401, 403, 404, 413, 429, 500, 503]) test(`background carries ${status} capture rejection classification to the tab`, async () => {
+for (const status of [400, 401, 403, 404, 405, 407, 408, 409, 413, 422, 429, 500, 503]) test(`background carries ${status} capture rejection classification to the tab`, async () => {
   globalThis.fetch = (async () => new Response("rejected", { status })) as unknown as typeof fetch;
   const result = await sendRuntimeMessage({ type: "SCROBBLER_CAPTURE_READY", capture: buildRawCapture({ source: "chatgpt", sourceId: "c", endpoint: "/detail", payload: {} }) });
-  expect(result).toMatchObject({ ok: false, error_type: status < 500 && status !== 429 ? "deterministic" : "transient" });
+  expect(result).toMatchObject({ ok: false, error_type: [400, 413, 422].includes(status) ? "deterministic" : "transient" });
 });
 
 for (const identity of [
@@ -387,4 +387,45 @@ test("background follows only visible allowlisted media redirect hops and valida
   expect(await sendRuntimeMessage({ type: "SCROBBLER_ASSET_FETCH", url: "https://lh3.googleusercontent.com/media/audio", upload: { source: "gemini", sourceId: "c", pointer: "file-audio" } })).toMatchObject({ ok: true });
   expect(mediaRequests).toEqual(["https://lh3.googleusercontent.com/media/audio", "https://lh4.googleusercontent.com/media/audio"]);
   expect(uploads).toBe(1);
+});
+
+for (const status of [401, 403, 404, 405, 407, 408]) test(`receiver ${status} aborts four syncs with no attempts and surfaces its error locally and through /status`, async () => {
+  const { createChatgptAdapter } = await import("../packages/extension/src/providers/chatgpt");
+  const { ReceiverSyncError, DeterministicCaptureError } = await import("../packages/extension/src/providers/sync-errors");
+  const { syncErrorResponse } = await import("../packages/extension/src/sync-error-response");
+  const tabs = chrome.tabs as any;
+  const oldQuery = tabs.query, oldSend = tabs.sendMessage;
+  const previous = { lastSync: "2026-06-04T00:00:00Z", captureFailures: [], lastError: null, lastResult: null, lastVisitSync: null };
+  storageData["scrobbler.status"] = { capturesPosted: 0, providers: { chatgpt: previous }, lastCaptureAt: null };
+  const reports: any[] = [];
+  let details = 0;
+  globalThis.fetch = (async (input, init) => {
+    if (String(input).endsWith("/captures")) return new Response("rejected", { status });
+    reports.push(JSON.parse(String(init?.body)));
+    return Response.json({ ok: true });
+  }) as typeof fetch;
+  const adapter = createChatgptAdapter(async url => {
+    if (url === "/api/auth/session") return Response.json({});
+    if (url.includes("conversations?")) return Response.json({ items: ["a", "b"].map(id => ({ id, update_time: "2026-06-05T00:00:00Z" })) });
+    details++;
+    return Response.json({ mapping: {} });
+  });
+  tabs.query = (_query: any, done: any) => done([{ id: 1, url: "https://chatgpt.com/" }]);
+  tabs.sendMessage = (_id: any, request: any, done: any) => {
+    adapter.sync({ ...request, emitCapture: async capture => {
+      const response = await sendRuntimeMessage({ type: "SCROBBLER_CAPTURE_READY", capture }) as any;
+      if (!response.ok) throw response.error_type === "deterministic" ? new DeterministicCaptureError(response.error, status) : new ReceiverSyncError(response.error, status);
+    } }).then(result => done({ ok: true, ...result }), error => done(syncErrorResponse(error)));
+  };
+  try {
+    for (let run = 0; run < 4; run++) expect(await sendRuntimeMessage({ type: "SCROBBLER_SYNC_ACTIVE_TAB" })).toMatchObject({ ok: false });
+    const current = (await sendRuntimeMessage({ type: "SCROBBLER_GET_STATUS" }) as any).status.providers.chatgpt;
+    expect(current.captureFailures).toEqual([]);
+    expect(current.lastSync).toBe(previous.lastSync);
+    expect(current.lastError).toContain(String(status));
+    expect(current.lastSyncError).toMatchObject({ reason: "receiver_unavailable", status });
+    expect(details).toBe(4);
+    expect(reports).toHaveLength(4);
+    expect(reports[3]).toMatchObject({ capture_failures: [], last_sync_error: { reason: "receiver_unavailable", status } });
+  } finally { tabs.query = oldQuery; tabs.sendMessage = oldSend; }
 });

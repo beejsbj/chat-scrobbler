@@ -151,6 +151,8 @@ async function refreshStatus(): Promise<void> {
       : failed ? `${source}: ${failed} chats need retry.` : "";
   }).filter(Boolean);
   assetStatusEl.textContent = reports.join(" ");
+  const syncErrors = Object.entries(s.providers ?? {}).flatMap(([source, state]: [string, any]) => state.lastError ? [`${source}: ${state.lastError}`] : []);
+  if (syncErrors.length) showError(syncErrors.join(" "));
 
   // Footer stats
   const count = s.capturesPosted ?? 0;

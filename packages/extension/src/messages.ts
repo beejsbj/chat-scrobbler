@@ -1,4 +1,4 @@
-import type { AssetFailure, ProviderSource, RawCapture, ConversationCaptureFailure, AssetBackfillPage, AssetBackfillCommit, UploadedAsset } from "../../shared/src";
+import type { AssetFailure, ProviderSource, RawCapture, ConversationCaptureFailure, AssetBackfillPage, AssetBackfillCommit, UploadedAsset, SyncIssue } from "../../shared/src";
 import type { ProviderSyncResult } from "./providers";
 import type { CaptureKind } from "./recent-captures";
 
@@ -175,6 +175,7 @@ export interface ContentSyncResponse extends ProviderSyncResult {
 export interface ErrorResponse {
   ok: false;
   error: string;
+  syncIssue?: SyncIssue;
 }
 
 export type SyncResponse = ContentSyncResponse | ErrorResponse;

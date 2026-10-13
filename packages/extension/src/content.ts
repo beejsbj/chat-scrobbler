@@ -1,3 +1,4 @@
+import { syncErrorResponse } from "./sync-error-response";
 import "./chrome-api";
 import { detectProvider } from "./providers";
 import { runSidebarBadges } from "./sidebar";
@@ -6,7 +7,7 @@ import { ASSET_CHUNK_BYTES } from "./asset-transfers";
 import { backfillProviderAssets } from "./asset-backfill";
 import { backgroundAssetError } from "./providers/asset-cache-client";
 import { retryCapturedFailures } from "./retry-captures";
-import { DeterministicCaptureError, TransientSyncError } from "./providers/sync-errors";
+import { DeterministicCaptureError, ReceiverSyncError } from "./providers/sync-errors";
 import type { RuntimeMessage, SyncRequest, SyncResponse } from "./messages";
 import type { RawCapture, UploadedAsset } from "../../shared/src";
 import type { AssetUploadRequest } from "./messages";
@@ -26,7 +27,7 @@ if (provider) {
     }
     if (message.type !== "SCROBBLER_SYNC_REQUEST" || message.provider !== provider.source) return false;
     syncProvider(message).then(sendResponse, (error) => {
-      sendResponse({ ok: false, error: error instanceof Error ? error.message : String(error) });
+      sendResponse(syncErrorResponse(error));
     });
     return true;
   });
@@ -111,7 +112,7 @@ async function emitCapture(capture: RawCapture): Promise<boolean> {
   const response = await sendRuntimeMessage({ type: "SCROBBLER_CAPTURE_READY", capture });
   if (response?.ignored || response?.captured === false) return false;
   if (!response?.ok) throw response?.error_type === "deterministic"
-    ? new DeterministicCaptureError("Receiver rejected capture") : new TransientSyncError("Receiver temporarily unavailable");
+    ? new DeterministicCaptureError("Receiver rejected capture") : new ReceiverSyncError(response?.error ?? "Receiver temporarily unavailable", response?.status);
   return true;
 }
 

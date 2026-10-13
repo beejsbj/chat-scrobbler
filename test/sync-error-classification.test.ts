@@ -81,7 +81,7 @@ test("invalid Claude base64 is an asset failure: text and the following chat sti
   expect(uploads).toBe(0);
 });
 
-for (const status of [404, 413]) test(`ingest ${status} is counted per chat and does not block the following chat`, async () => {
+for (const status of [400, 413, 422]) test(`ingest ${status} is counted per chat and does not block the following chat`, async () => {
   const { DeterministicCaptureError } = await import("../packages/extension/src/providers/sync-errors");
   const captured: string[] = [];
   const result = await adapterFor("chatgpt", ["bad", "good"], async () => goodDetail("chatgpt")).sync({

@@ -1,6 +1,9 @@
 /** An outage must never become a permanent conversation failure. */
 export class TransientSyncError extends Error {
-  constructor(message = "Capture temporarily unavailable") { super(message); this.name = "TransientSyncError"; }
+  constructor(message = "Capture temporarily unavailable", readonly status?: number) { super(message); this.name = "TransientSyncError"; }
+}
+export class ReceiverSyncError extends TransientSyncError {
+  constructor(message: string, status?: number) { super(message, status); this.name = "ReceiverSyncError"; }
 }
 export class DeterministicCaptureError extends Error {
   constructor(message: string, readonly status?: number) { super(message); this.name = "DeterministicCaptureError"; }
