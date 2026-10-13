@@ -47,7 +47,7 @@ export function assetCoverage(db: Database, provider: EmbeddingProvider) {
   }
   return {total,embedded};
 }
-export async function embedAsset(db: Database, sha256: string, path: string, provider: EmbeddingProvider, signal?: AbortSignal): Promise<"indexed"|"skipped"|"stale"> {
+export async function embedAsset(db: Database, sha256: string, path: string, provider: EmbeddingProvider, signal?: AbortSignal, assertLease?: () => void): Promise<"indexed"|"skipped"|"stale"> {
   if (!provider.embedAsset) throw new Error("provider has no multimodal support");
   if (!/^[a-f0-9]{64}$/.test(sha256)) throw new Error("invalid asset hash");
   const scope = vectorScope(provider);
@@ -60,11 +60,12 @@ export async function embedAsset(db: Database, sha256: string, path: string, pro
   if (embedding.byteLength !== scope.dimension * 4) throw new Error("asset embedding dimension mismatch");
   signal?.throwIfAborted();
   return db.transaction(() => {
+    assertLease?.();
     if (!db.query("SELECT 1 FROM asset_embedding_links WHERE sha256=?").get(sha256)) return "stale" as const;
     db.run("INSERT OR REPLACE INTO asset_vectors(sha256,provider_kind,provider_model,dimension,embedding) VALUES (?,?,?,?,?)",
       [sha256,scope.provider_kind,scope.provider_model,scope.dimension,embedding]);
-    return "indexed" as const;
-  })();
+    assertLease?.();return "indexed" as const;
+  }).immediate();
 }
 export function assetSemanticCandidates(db: Database, query: number[], scope: {provider_kind:string;provider_model:string|null;dimension:number}, source: string | undefined, limit: number) {
   const params = [scope.provider_kind,scope.provider_model ?? "",scope.dimension,...(source ? [source] : [])];

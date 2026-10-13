@@ -87,10 +87,11 @@ export function reusableTextVector(db: Database, sessionId: string, messageId: s
 }
 
 /** A stored rowid cursor avoids retrying corrupt legacy rows forever. JSON stays intact. */
-export function migrateLegacyVectors(db: Database, opts: { limit?: number } = {}) {
+export function migrateLegacyVectors(db: Database, opts: { limit?: number; assertLease?: () => void } = {}) {
   const limit = opts.limit ?? 100;
   if (!Number.isInteger(limit) || limit < 1) throw new Error("migration limit must be a positive integer");
   return db.transaction(() => {
+    opts.assertLease?.();
     let cursor = (db.query("SELECT cursor FROM vector_migration WHERE name='json-f32'").get() as any)?.cursor ?? 0;
     let converted = 0, invalid = 0;
     const rows = db.query("SELECT rowid AS cursor,* FROM message_embeddings WHERE rowid>? ORDER BY rowid LIMIT ?").all(cursor, limit) as any[];
@@ -107,6 +108,6 @@ export function migrateLegacyVectors(db: Database, opts: { limit?: number } = {}
       } catch { invalid++; }
     }
     db.run("INSERT OR REPLACE INTO vector_migration(name,cursor) VALUES ('json-f32',?)", [cursor]);
-    return { scanned: rows.length, converted, invalid, cursor };
-  })();
+    opts.assertLease?.();return { scanned: rows.length, converted, invalid, cursor };
+  }).immediate();
 }

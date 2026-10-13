@@ -1,3 +1,4 @@
+import { BackfillLeaseLost, type BackfillLeaseStatus } from "./backfill-lock";
 import type { Database } from "bun:sqlite";
 import { loadavg } from "node:os";
 import { assetBlobPath } from "../store/assets";
@@ -9,6 +10,7 @@ import { EmbeddingGemmaProvider, embeddingGemmaDocumentWorkEstimate, type Embedd
 import { decodeVector, putTextVector, reusableBinaryTextVector, reusableTextVector, textVectorHash, vectorScope } from "./vector-store";
 
 export interface BackfillReport {
+  lease?: BackfillLeaseStatus;
   /** Background scan progress, without an archive-wide coverage probe. */
   scan?: { cursor: number; asset_cursor: string; scanned: number; exhausted: boolean };
   event: "progress" | "load_pause" | "complete";
@@ -54,6 +56,8 @@ export async function embedBackfill(db: Database, opts: {
   provider: EmbeddingProvider; canonicalDir?: string; limit?: number; rate?: number; loadThreshold?: number;
   signal?: AbortSignal; load?: () => number; sleep?: (ms:number)=>Promise<void>; now?: () => number;
   progress?: (report: BackfillReport)=>void;
+  assertLease?: () => void;
+  leaseStatus?: () => BackfillLeaseStatus;
   background?: { cursor: number; assetCursor?: string; scanLimit: number };
   /** Yields between scan pages and before each provider request/chunk. */
   yieldToQueries?: () => Promise<void>;
@@ -100,6 +104,7 @@ export async function embedBackfill(db: Database, opts: {
     const eta = remainingRequests === null ? null : meanRequestSeconds === null
       ? remainingComputeChunks!*2+remainingRequests/rate : remainingRequests*(meanRequestSeconds+1/rate);
     return {event,embedded,converted,skipped,failed,stale,attempted,...coverage,
+      ...(opts.leaseStatus ? {lease:opts.leaseStatus()} : {}),
       ...(background ? {scan:{cursor,asset_cursor:shaCursor,scanned,exhausted:textExhausted && assetsExhausted}} : {}),
       requests,estimated_requests:estimatedRequests,remaining_requests:remainingRequests,elapsed_seconds:elapsedSeconds,
       estimated_compute_chunks:estimatedComputeChunks,remaining_compute_chunks:remainingComputeChunks,
@@ -107,7 +112,7 @@ export async function embedBackfill(db: Database, opts: {
       eta_basis:meanRequestSeconds === null ? "assumed_2s_per_compute_chunk" : "observed"};
   };
   const wait = async () => {
-    signal?.throwIfAborted();
+    signal?.throwIfAborted();opts.assertLease?.();
     while (threshold !== undefined && load() > threshold) { opts.progress?.(report("load_pause")); await sleep(5000); signal?.throwIfAborted(); }
   };
   let needsPacing = false;
@@ -163,7 +168,7 @@ export async function embedBackfill(db: Database, opts: {
     if (!rows.length) {textExhausted=true;break;}
     for (const row of rows) {
       if (background && attempted >= limit) break;
-      cursor=row.rowid; scanned++; signal?.throwIfAborted();
+      cursor=row.rowid; scanned++; signal?.throwIfAborted();opts.assertLease?.();
       if (!row.text.trim()) { skipped++; continue; }
       if (background && db.query(`SELECT 1 FROM message_vectors WHERE session_id=? AND message_id=?
         AND provider_kind=? AND provider_model=? AND (? IS NULL OR dimension=?) AND dimension>0
@@ -186,15 +191,17 @@ export async function embedBackfill(db: Database, opts: {
         const embedding=cached ?? await infer(context=>provider.embed(row.text,context),checkCurrent,row.title);
         signal?.throwIfAborted();
         const written=db.transaction(()=> {
+          opts.assertLease?.();
           const live=currentRow(row);
           if (!live || live.text!==row.text || (live.title ?? null)!==(row.title ?? null)) return false;
-          putTextVector(db,{...row,...vectorScope(provider,embedding.length),embedding}); return true;
-        })();
+          putTextVector(db,{...row,...vectorScope(provider,embedding.length),embedding});
+          opts.assertLease?.();return true;
+        }).immediate();
         if (written) {
           if(cached) converted++;
           else { embedded++; completedRequests+=requests-requestsBefore; completedComputeChunks+=workEstimate(row).computeChunks; }
         } else stale++;
-      } catch (error) { signal?.throwIfAborted(); if(error instanceof StaleEmbeddingInput) stale++;else failed++; }
+      } catch (error) { signal?.throwIfAborted(); if(error instanceof BackfillLeaseLost) throw error; if(error instanceof StaleEmbeddingInput) stale++;else failed++; }
       // Coverage scans are once per 25 attempted items, plus start/end.
       if (attempted % 25===0) opts.progress?.(report("progress"));
       if (background && failed) break;
@@ -209,7 +216,7 @@ export async function embedBackfill(db: Database, opts: {
       if (!rows.length) {assetsExhausted=true;break;}
       for (const {sha256} of rows) {
         if (attempted>=limit) break;
-        shaCursor=sha256; scanned++;
+        shaCursor=sha256; scanned++;signal?.throwIfAborted();opts.assertLease?.();
         if(background && db.query("SELECT 1 FROM asset_vectors WHERE sha256=? AND provider_kind=? AND provider_model=? AND dimension=? AND length(embedding)=dimension*4")
           .get(sha256,scope.provider_kind,scope.provider_model,scope.dimension)) {skipped++;continue;}
         const exists=db.query("SELECT embedding FROM asset_vectors WHERE sha256=? AND provider_kind=? AND provider_model=? AND dimension=? AND length(embedding)=dimension*4")
@@ -223,9 +230,9 @@ export async function embedBackfill(db: Database, opts: {
             if (!db.query("SELECT 1 FROM asset_embedding_links WHERE sha256=?").get(sha256)) throw new StaleEmbeddingInput();
           }),
         };
-        try { const result=await embedAsset(db,sha256,assetBlobPath(opts.canonicalDir,sha256),requestProvider,signal);
+        try { const result=await embedAsset(db,sha256,assetBlobPath(opts.canonicalDir,sha256),requestProvider,signal,opts.assertLease);
           if(result==="indexed") { embedded++; completedRequests++; completedComputeChunks++; } else if(result==="skipped") skipped++; else stale++;
-        } catch (error) { signal?.throwIfAborted(); if(error instanceof StaleEmbeddingInput) stale++;else failed++; }
+        } catch (error) { signal?.throwIfAborted(); if(error instanceof BackfillLeaseLost) throw error; if(error instanceof StaleEmbeddingInput) stale++;else failed++; }
         if(attempted%25===0) opts.progress?.(report("progress"));
         if(background && failed) break;
       }

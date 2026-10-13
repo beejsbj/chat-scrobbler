@@ -3,6 +3,7 @@ import { cachedSubstringCandidates } from "./literal-cache";
 import { createMessageLookup, ensureMessageLookup } from "./message-lookup";
 import { createAssetVectorTables, replaceAssetLinks, linkedAssetHashes, pruneUnownedAssetVectors, assetSemanticCandidates } from "./asset-embeddings";
 import { cachedSemanticCandidates } from "./active-vector-cache";
+import { createBackfillLockTable } from "./backfill-lock";
 import { createSearchRevision } from "./search-revision";
 // src/indexer/sqlite.ts
 import { embeddingFailed, embeddingStatus, embeddingSucceeded, validateEmbedding, type SemanticStatus } from "./embedding-status";
@@ -63,6 +64,7 @@ export function openIndex(path: string): Database {
   createMessageLookup(db);
   createVectorTables(db);
   createAssetVectorTables(db);
+  createBackfillLockTable(db);
   createSearchRevision(db);
   return db;
 }

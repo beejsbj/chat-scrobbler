@@ -1,64 +1,84 @@
 import { expect, test } from "bun:test";
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync, existsSync, readdirSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { acquireBackfillLock, backfillLockPath } from "../src/indexer/backfill-lock";
+import { acquireBackfillLock, readBackfillLease } from "../src/indexer/backfill-lock";
 
-test("backfill locks exclude same-process and separate-process writers for one index", async () => {
-  const root = mkdtempSync(join(tmpdir(), "backfill-lock-"));
-  const index = join(root, "index.db");
+function setup() {
+  const root=mkdtempSync(join(tmpdir(),"backfill-lease-"));
+  return {root,index:join(root,"index.db")};
+}
+const modulePath=join(import.meta.dir,"../src/indexer/backfill-lock.ts");
+
+test("concurrent SQLite lease acquisitions admit exactly one process", async () => {
+  const {root,index}=setup();
   try {
-    const lock = acquireBackfillLock(index)!;
-    expect(lock).toBeTruthy();
-    expect(acquireBackfillLock(join(root, ".", "index.db"))).toBeNull();
-    const child = Bun.spawn([process.execPath, "-e", `import {acquireBackfillLock} from ${JSON.stringify(join(import.meta.dir, "../src/indexer/backfill-lock.ts"))}; const l=acquireBackfillLock(${JSON.stringify(index)}); l?.release(); process.exit(l?1:0);`], { stdout: "pipe", stderr: "pipe" });
-    expect(await child.exited).toBe(0);
-    lock.release();
-    const again = acquireBackfillLock(index)!;
-    expect(again).toBeTruthy();
-    again.release();
-    expect(existsSync(backfillLockPath(index))).toBe(false);
-  } finally { rmSync(root, { recursive: true, force: true }); }
-});
-
-test("dead PID lock recovers, live PID never expires, and release verifies ownership", async () => {
-  const root = mkdtempSync(join(tmpdir(), "backfill-stale-"));
-  const index = join(root, "index.db"), path = backfillLockPath(index);
-  try {
-    const initial=acquireBackfillLock(index)!;
-    const namespace=JSON.parse(await Bun.file(join(path,readdirSync(path)[0])).text()).namespace;
-    initial.release();
-    mkdirSync(path);
-    const dead = Bun.spawn([process.execPath, "-e", ""], {stdout:"ignore",stderr:"ignore"});
-    await dead.exited;
-    writeFileSync(join(path, `${dead.pid}-dead.json`), JSON.stringify({pid:dead.pid,token:"dead",namespace,started_at:"2000-01-01"}));
-    const lock = acquireBackfillLock(index)!;
-    expect(lock).toBeTruthy();
-    lock.release();
-    mkdirSync(path);
-    writeFileSync(join(path, `${process.pid}-live.json`), JSON.stringify({pid:process.pid,token:"live",namespace,started_at:"2000-01-01"}));
-    expect(acquireBackfillLock(index)).toBeNull();
-    rmSync(path, {recursive:true});
-    const owned = acquireBackfillLock(index)!;
-    const file = readdirSync(path)[0];
-    writeFileSync(join(path,file), JSON.stringify({pid:process.pid,token:"replacement"}));
-    owned.release();
-    expect(existsSync(join(path,file))).toBe(true);
-  } finally { rmSync(root, {recursive:true,force:true}); }
-});
-
-
-test("foreign or missing PID namespaces fail closed even when their PID is dead locally", async () => {
-  const root=mkdtempSync(join(tmpdir(),"backfill-namespace-")),index=join(root,"index.db");
-  const path=backfillLockPath(index);
-  const child=Bun.spawn([process.execPath,"-e",""],{stdout:"ignore",stderr:"ignore"});await child.exited;
-  try {
-    for(const namespace of [undefined,"pid:[foreign]"]) {
-      mkdirSync(path);
-      const file=join(path,`${child.pid}-foreign.json`);
-      writeFileSync(file,JSON.stringify({pid:child.pid,token:"foreign",namespace}));
-      expect(acquireBackfillLock(index)).toBeNull();expect(existsSync(file)).toBe(true);
-      rmSync(path,{recursive:true});
-    }
+    // Initialize schema before racing independent connections.
+    acquireBackfillLock(index)!.release();
+    const children=Array.from({length:4},()=>Bun.spawn([process.execPath,"-e",`
+      import {acquireBackfillLock} from ${JSON.stringify(modulePath)};
+      const lease=acquireBackfillLock(${JSON.stringify(index)});
+      console.log(lease ? 'held' : 'busy');
+      if(lease) {await Bun.sleep(500);lease.release();}
+    `],{stdout:"pipe",stderr:"pipe"}));
+    const output=await Promise.all(children.map(async child=>{
+      const text=await new Response(child.stdout).text();
+      expect(await child.exited).toBe(0);return text.trim();
+    }));
+    expect(output.filter(value=>value==="held")).toHaveLength(1);
+    expect(readBackfillLease(index)).toBeNull();
   } finally {rmSync(root,{recursive:true,force:true});}
+});
+
+test("expiry permits CAS takeover and an old holder cannot renew or release its replacement", () => {
+  const {root,index}=setup();let clock=1000;
+  const opts={now:()=>clock};
+  const first=acquireBackfillLock(index,opts)!;
+  let second: ReturnType<typeof acquireBackfillLock>=null;
+  try {
+    expect(first.status()).toMatchObject({state:"held",recovered:false,expires_at:61_000});
+    expect(acquireBackfillLock(index,opts)).toBeNull();
+    clock=61_000;
+    expect(readBackfillLease(index,clock)).toMatchObject({state:"stale"});
+    second=acquireBackfillLock(index,opts)!;
+    expect(second.status()).toMatchObject({state:"held",recovered:true,recoveries:1,recovered_at:61_000});
+    expect(first.renew()).toBe(false);
+    expect(first.signal.aborted).toBe(true);
+    expect(()=>first.assertOwned()).toThrow("backfill lease lost");
+    first.release();
+    expect(readBackfillLease(index,clock)).toMatchObject({state:"held",expires_at:121_000});
+    second.assertOwned();
+  } finally {first.release();second?.release();rmSync(root,{recursive:true,force:true});}
+});
+
+test("heartbeat extends a live holder beyond the original expiry without displacement", async () => {
+  const {root,index}=setup();
+  const lease=acquireBackfillLock(index,{leaseMs:180,heartbeatMs:30})!;
+  try {
+    const initial=lease.status().expires_at!;
+    await Bun.sleep(240);
+    expect(lease.status().expires_at!).toBeGreaterThan(initial);
+    expect(acquireBackfillLock(index)).toBeNull();
+    lease.assertOwned();
+  } finally {lease.release();rmSync(root,{recursive:true,force:true});}
+});
+
+test("a process killed without release is recovered automatically after its heartbeat expires", async () => {
+  const {root,index}=setup();
+  const child=Bun.spawn([process.execPath,"-e",`
+    import {acquireBackfillLock} from ${JSON.stringify(modulePath)};
+    acquireBackfillLock(${JSON.stringify(index)},{leaseMs:250,heartbeatMs:40});
+    console.log('ready');await Bun.sleep(10000);
+  `],{stdout:"pipe",stderr:"pipe"});
+  let replacement: ReturnType<typeof acquireBackfillLock>=null;
+  try {
+    const reader=child.stdout.getReader();await reader.read();reader.releaseLock();
+    expect(acquireBackfillLock(index)).toBeNull();
+    child.kill("SIGKILL");await child.exited;
+    const expiry=readBackfillLease(index)!.expires_at!;
+    await Bun.sleep(Math.max(0,expiry-Date.now())+30);
+    replacement=acquireBackfillLock(index)!;
+    expect(replacement.status()).toMatchObject({recovered:true,recoveries:1});
+    replacement.assertOwned();
+  } finally {child.kill();await child.exited;replacement?.release();rmSync(root,{recursive:true,force:true});}
 });

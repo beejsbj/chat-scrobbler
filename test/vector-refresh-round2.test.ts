@@ -50,3 +50,23 @@ test('asset vector writes do not rebuild the unrelated text matrix',()=> {
   expect(activeVectorCacheStatus(db)).toEqual(before);
  }finally{db.close();}
 });
+
+test('lease acquisition, heartbeats and release from another connection keep the active matrix cached',async()=> {
+ const {mkdtempSync,rmSync}=await import('node:fs'),{tmpdir}=await import('node:os'),{join}=await import('node:path');
+ const {acquireBackfillLock}=await import('../src/indexer/backfill-lock');
+ const root=mkdtempSync(join(tmpdir(),'lease-cache-')),path=join(root,'index.db');
+ const db=openIndex(path),s=fixture(),p={kind:'test',model:'active',dimensions:2,embed:()=>[1,0]};
+ let lease:ReturnType<typeof acquireBackfillLock>=null;
+ try {
+  indexSession(db,s,{embeddingProvider:p});searchMessages(db,'unmatched',{embeddingProvider:p});
+  const before=activeVectorCacheStatus(db);
+  lease=acquireBackfillLock(path)!;
+  for(let i=0;i<3;i++) {
+   expect(lease.renew()).toBe(true);
+   expect(searchMessages(db,'unmatched',{embeddingProvider:p})).toHaveLength(1);
+   expect(activeVectorCacheStatus(db)).toEqual(before);
+  }
+  lease.release();
+  searchMessages(db,'unmatched',{embeddingProvider:p});expect(activeVectorCacheStatus(db)).toEqual(before);
+ }finally{lease?.release();db.close();rmSync(root,{recursive:true,force:true});}
+});

@@ -34,10 +34,10 @@ export function createSearchRevision(db: Database): void {
         ${marks}
       END`);
     }
-  // Asset ranking currently streams its own set. Track these commits so a
-  // text cache does not mistake them for untracked FTS edits and rebuild.
-  for(const event of ["INSERT","UPDATE","DELETE"])
-    db.run(`CREATE TRIGGER IF NOT EXISTS search_asset_vectors_${event.toLowerCase()} AFTER ${event} ON asset_vectors BEGIN
+  // Asset ranking and coordination leases do not dirty text/model caches.
+  // Track their commits to avoid mistaking them for untracked FTS edits.
+  for(const table of ["asset_vectors","locks"]) for(const event of ["INSERT","UPDATE","DELETE"])
+    db.run(`CREATE TRIGGER IF NOT EXISTS search_${table}_${event.toLowerCase()} AFTER ${event} ON ${table} BEGIN
       UPDATE search_revision SET revision=revision+1 WHERE id=1; END`);
   })();
 }
