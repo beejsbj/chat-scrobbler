@@ -450,7 +450,7 @@ timestamp-free `FAILED <check> <detail>` lines. It reads local raw, canonical an
 index stores without contacting the ingest server, so it works while that server
 is down. It checks directory permissions with access checks, opens the index and
 existing monitoring state read-only, and uses a real embedding probe with a
-two-second deadline. Ordinary monitoring creates no state or store directories;
+ten-second deadline (reported as `slow` after two seconds). Ordinary monitoring creates no state or store directories;
 `--ack` intentionally writes acknowledgement state. It leaves a missing index
 missing. Paid embedding providers incur a diagnostic request per CLI invocation.
 Cockpit delivery and the Hermes schedule are supplied separately.

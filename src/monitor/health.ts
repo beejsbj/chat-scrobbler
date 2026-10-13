@@ -30,6 +30,6 @@ export async function monitorHealth(opts: IngestServerOptions) {
   const canonical = directoryHealth(opts.canonicalDir);
   const raw = directoryHealth(opts.rawDir ?? (opts.canonicalDir ? rawDirForCanonicalDir(opts.canonicalDir) : undefined));
   const assets = directoryHealth(opts.canonicalDir ? assetsDirForCanonicalDir(opts.canonicalDir) : undefined);
-  const semantic = await probeEmbedding(opts.embeddingProvider ?? null);
+  const semantic = await probeEmbedding(opts.embeddingProvider ?? null, 10_000, 2000);
   return { ok: index.ok && canonical.ok && raw.ok && assets.ok, probe: "readonly", index, canonical, raw, assets, ...semantic };
 }

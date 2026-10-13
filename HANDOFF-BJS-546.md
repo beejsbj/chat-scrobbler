@@ -150,3 +150,7 @@ No production data was read, no deployment was performed, and no branch was push
 - Attachment recency now uses session/message timestamps instead of canonical
   mtime. A regression rewrites an old session twice and confirms no renewed alert,
   then adds a recent message timestamp and confirms the attachment is checked.
+- The CLI embedding diagnostic now allows ten seconds. A usable response taking
+  more than two seconds produces `FAILED semantic slow`, preserving semantic
+  availability. HTTP does no embedding diagnostic; deep health retains its own
+  two-second bound.

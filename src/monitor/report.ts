@@ -35,6 +35,7 @@ export async function monitorReport(opts: IngestServerOptions, ack = false) {
   for (const store of ["index", "canonical", "raw", "assets"] as const) {
     if (!health[store].ok) fail(`store.${store}`, health[store].reason ?? "unavailable");
   }
+  if (health.embedding_responsiveness === "slow") fail("semantic", "slow");
   if (health.semantic !== "available") fail("semantic", health.semantic === "disabled" ? "disabled" : "unavailable");
   const canonicalDir = opts.canonicalDir ?? "";
   const rawDir = opts.rawDir ?? (canonicalDir ? rawDirForCanonicalDir(canonicalDir) : "");

@@ -6,7 +6,7 @@ import { assetsDirForCanonicalDir } from "../../../src/store/assets";
 import { rawDirForCanonicalDir } from "../../../src/store/raw";
 import { writeImmutableFile } from "../../../src/store/immutable-file";
 import { type EmbeddingProvider } from "../../../src/indexer/sqlite";
-import { embeddingStatus, validateEmbedding } from "../../../src/indexer/embedding-status";
+import { embeddingStatus, validateEmbedding, type SemanticStatus } from "../../../src/indexer/embedding-status";
 import { assetFailureCount } from "./asset-failures";
 import type { IngestServerOptions } from "./server";
 
@@ -40,17 +40,18 @@ function writableIndex(path: string | undefined): StoreHealth {
 }
 
 /** Bounded real embedding call verifies that the configured model is usable. */
-export async function probeEmbedding(provider: EmbeddingProvider | null) {
+export async function probeEmbedding(provider: EmbeddingProvider | null, timeoutMs = 2000, slowAfterMs = timeoutMs): Promise<SemanticStatus & { embedding_dimension?: number; embedding_responsiveness?: "ok" | "slow" }> {
   if (!provider) return embeddingStatus(null);
+  const start = performance.now();
   const controller = new AbortController();
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     const deadline = new Promise<never>((_, reject) => {
-      timer = setTimeout(() => { controller.abort(); reject(new Error("embedding timeout")); }, 2000);
+      timer = setTimeout(() => { controller.abort(); reject(new Error("embedding timeout")); }, timeoutMs);
     });
     const vector = await Promise.race([provider.embed("chat-scrobbler health check", { kind: "query", signal: controller.signal }), deadline]);
     validateEmbedding(vector);
-    return { semantic: "available" as const, embedding_dimension: vector.length, embedding_failures: embeddingStatus(provider, "ingest").embedding_failures };
+    return { semantic: "available" as const, embedding_dimension: vector.length, embedding_responsiveness: performance.now() - start > slowAfterMs ? "slow" : "ok", embedding_failures: embeddingStatus(provider, "ingest").embedding_failures };
   } catch {
     return { semantic: "unavailable" as const, reason: "embedding_health_failed", embedding_failures: embeddingStatus(provider, "ingest").embedding_failures };
   }

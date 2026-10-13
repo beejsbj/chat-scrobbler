@@ -414,3 +414,14 @@ test("rewriting old canonical sessions does not make missing attachments recent"
     expect((await monitorReport(opts)).assets.missing_recent_blocks).toBe(1);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
+
+test("an embedder responding after two seconds is slow rather than unavailable", async () => {
+  const { root, opts } = setup();
+  const provider = { kind: "hash", model: "hash-v1", dimensions: 64, async embed() { await new Promise(resolve => setTimeout(resolve, 2100)); return opts.embeddingProvider.embed("health"); } };
+  try {
+    const report = await monitorReport({ ...opts, embeddingProvider: provider });
+    expect(report.health.semantic).toBe("available");
+    expect(report.failures).toContain("FAILED semantic slow");
+    expect(report.failures).not.toContain("FAILED semantic unavailable");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+}, 15000);
