@@ -14,6 +14,8 @@ import {
 } from "../../shared/src";
 import { deleteIndexedSession, openIndex } from "../../../src/indexer/sqlite";
 import { MAX_ASSET_BYTES, storeCanonicalAsset } from "../../../src/store/assets";
+import { captureJsonEntries } from "../../../src/store/raw-json";
+import { rawDirForCanonicalDir, storeRawCapture } from "../../../src/store/raw";
 import { deleteSession } from "../../../src/store/sessions";
 import type { EmbeddingProvider } from "../../../src/indexer/sqlite";
 
@@ -33,6 +35,7 @@ export interface IngestServerOptions {
    */
   canonicalDir?: string;
   indexPath?: string;
+  rawDir?: string;
   embeddingProvider?: EmbeddingProvider | null;
 }
 
@@ -180,15 +183,20 @@ export async function handleIngestRequest(req: Request, opts: IngestServerOption
   }
 
   try {
-    const body = await req.json();
+    const serialized = await req.text();
+    const body = JSON.parse(serialized);
     const captures = toCaptureArray(body);
+    const rawDir = opts.rawDir ?? (opts.canonicalDir ? rawDirForCanonicalDir(opts.canonicalDir) : null);
+    const entries = captureJsonEntries(serialized);
+    const rawRefs = rawDir ? captures.map((capture, i) => storeRawCapture(rawDir, capture, entries[i])) : [];
     const spine: SpineResult[] = [];
     if (fat) {
       const db = indexFor(fat.indexPath);
-      for (const capture of captures) {
+      for (const [i, capture] of captures.entries()) {
         try {
           spine.push(...await foldCaptureIntoSpineWithEmbeddings(capture, {
             canonicalDir: fat.canonicalDir,
+            rawRef: rawRefs[i],
             db,
             embeddingProvider: opts.embeddingProvider ?? null,
           }));
