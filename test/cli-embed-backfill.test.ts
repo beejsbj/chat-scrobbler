@@ -82,3 +82,25 @@ test("embed-backfill --help describes controls without opening an index or requi
   expect(output.join("\n")).toContain("--model");
   expect(output.join("\n")).toContain("docker exec");
 });
+
+test("manual CLI reports recovery and fences a lease stolen during inference", async () => {
+  const {acquireBackfillLock}=await import("../src/indexer/backfill-lock");
+  const root=mkdtempSync(join(tmpdir(),"cli-lease-fence-"));
+  const cfg={...DEFAULT_CONFIG,indexPath:join(root,"index.db"),embeddingProvider:"ollama" as const,embeddingModel:"test"};
+  const db=openIndex(cfg.indexPath);indexSession(db,fixture());db.close();
+  const dead=acquireBackfillLock(cfg.indexPath,{now:()=>1000})!;
+  const originalFetch=globalThis.fetch,output:string[]=[];
+  globalThis.fetch=(async(_url:string|URL|Request,_init?:RequestInit)=>{
+    const replacement=openIndex(cfg.indexPath);
+    try {replacement.run("UPDATE locks SET owner_token='replacement'");}finally{replacement.close();}
+    return new Response(JSON.stringify({embeddings:[[1,0]]}));
+  }) as typeof fetch;
+  try {
+    await expect(runEmbedBackfill(["--model","test"],cfg,line=>output.push(line))).rejects.toThrow("backfill lease lost");
+    expect(output.map(line=>JSON.parse(line))).toContainEqual(expect.objectContaining({event:"lease_acquired",lease:expect.objectContaining({recovered:true})}));
+    expect(JSON.parse(output.at(-1)!)).toMatchObject({event:"lease_lost",lease:{state:"lost"}});
+    const inspect=openIndex(cfg.indexPath);
+    try {expect(inspect.query("SELECT * FROM message_vectors").all()).toHaveLength(0);}
+    finally {inspect.close();}
+  }finally{globalThis.fetch=originalFetch;dead.release();rmSync(root,{recursive:true,force:true});}
+});

@@ -27,8 +27,8 @@ test("serve exposes its configured scheduler through deep health and stops it wi
 });
 
 test("serve CLI releases a live background lock and closes on SIGTERM and SIGINT", async () => {
-  const {existsSync,writeFileSync}=await import("node:fs");
-  const {backfillLockPath}=await import("../src/indexer/backfill-lock");
+  const {writeFileSync}=await import("node:fs");
+  const {readBackfillLease}=await import("../src/indexer/backfill-lock");
   for(const [signal,code] of [["SIGTERM",0],["SIGINT",130]] as const) {
     const root=mkdtempSync(join(tmpdir(),"serve-shutdown-"));
     let enter!:()=>void,release!:()=>void;
@@ -47,12 +47,28 @@ test("serve CLI releases a live background lock and closes on SIGTERM and SIGINT
     try {
       await Promise.race([entered,new Promise<never>((_,reject)=>{watchdog=setTimeout(()=>reject(new Error("provider not entered")),3000);})]);
       clearTimeout(watchdog);
-      expect(existsSync(backfillLockPath(cfg.indexPath))).toBe(true);
+      expect(readBackfillLease(cfg.indexPath)).toMatchObject({state:"held"});
       child.kill(signal);
       const exit=await Promise.race([child.exited,new Promise<never>((_,reject)=>{watchdog=setTimeout(()=>reject(new Error("shutdown did not abort provider")),3000);})]);
       expect(exit).toBe(code);
-      expect(existsSync(backfillLockPath(cfg.indexPath))).toBe(false);
+      expect(readBackfillLease(cfg.indexPath)).toBeNull();
       expect(await new Response(child.stderr).text()).not.toContain("Error:");
     } finally {clearTimeout(watchdog);if(child.exitCode===null)child.kill("SIGKILL");await child.exited;release();providerServer.stop(true);rmSync(root,{recursive:true,force:true});}
   }
 },10000);
+
+test("deep health exposes stale and recovered leases without waiting for cached provider health", async () => {
+  const {acquireBackfillLock}=await import("../src/indexer/backfill-lock");
+  const root=mkdtempSync(join(tmpdir(),"serve-lease-health-"));
+  const cfg={...DEFAULT_CONFIG,indexPath:join(root,"index.db"),canonicalDir:join(root,"canonical","sessions"),
+    ingestPort:0,mcpHttpPort:0,ingestToken:"test",embeddingProvider:"hash" as const};
+  const db=openIndex(cfg.indexPath);indexSession(db,fixture());db.close();
+  const dead=acquireBackfillLock(cfg.indexPath,{now:()=>1000})!;
+  const handles=await startServe(cfg);
+  try {
+    const deep=()=>fetch(`http://127.0.0.1:${handles.ingestServer.port}/health/deep`,{headers:{authorization:"Bearer test"}});
+    expect(await (await deep()).json()).toMatchObject({backfill:{lease:{state:"stale"},last_run:null}});
+    await handles.backfillScheduler!.runNow();
+    expect(await (await deep()).json()).toMatchObject({backfill:{lease:{state:"released",recovered:true},last_run:{lease:{recovered:true,recoveries:1}}}});
+  } finally {dead.release();await handles.stop!();rmSync(root,{recursive:true,force:true});}
+});

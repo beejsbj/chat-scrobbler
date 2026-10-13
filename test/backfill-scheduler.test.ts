@@ -139,16 +139,44 @@ test("a failing item does not hold the cursor ahead of later healthy pending mes
 });
 
 test("cleanup failures are contained in scheduler status instead of rejecting a timer run", async () => {
-  const fs=await import("node:fs"),{spyOn}=await import("bun:test");
-  const {root,cfg}=setup(),original=fs.rmdirSync;
-  const remove=spyOn(fs,"rmdirSync").mockImplementation(((path:Parameters<typeof fs.rmdirSync>[0],...args:unknown[])=> {
-    if(String(path).endsWith(".embed-backfill.lock")) throw new Error("private cleanup error");
-    return original(path,...args as []);
-  }) as typeof fs.rmdirSync);
+  const {Database}=await import("bun:sqlite"),{spyOn}=await import("bun:test");
+  const {root,cfg}=setup(),original=Database.prototype.run;
+  const remove=spyOn(Database.prototype,"run").mockImplementation(function(this:InstanceType<typeof Database>,...args:Parameters<typeof original>) {
+    if(String(args[0]).startsWith("DELETE FROM locks")) throw new Error("private cleanup error");
+    return original.apply(this,args);
+  });
   const scheduler=startEmbeddingBackfillScheduler({cfg,provider:p});
   try {
     expect(await scheduler.runNow()).toBeNull();
     expect(scheduler.status()).toMatchObject({running:false,state:"backoff",last_run:{outcome:"failed"}});
     expect(JSON.stringify(scheduler.status())).not.toContain("private cleanup");
   } finally {remove.mockRestore();await scheduler.stop();rmSync(root,{recursive:true,force:true});}
+});
+
+test("expired leases are recovered and reported in background backfill status", async () => {
+  const {acquireBackfillLock}=await import("../src/indexer/backfill-lock");
+  const {root,cfg}=setup(),dead=acquireBackfillLock(cfg.indexPath,{now:()=>1000})!;
+  const scheduler=startEmbeddingBackfillScheduler({cfg,provider:p});
+  try {
+    expect(await scheduler.runNow()).toMatchObject({embedded:4,lease:{recovered:true,recoveries:1}});
+    expect(scheduler.status()).toMatchObject({lease:{state:"released",recovered:true,recoveries:1},last_run:{outcome:"complete",lease:{recovered:true}}});
+    dead.release();
+    expect(await scheduler.runNow()).toMatchObject({attempted:0});
+  } finally {dead.release();await scheduler.stop();rmSync(root,{recursive:true,force:true});}
+});
+
+test("a displaced scheduler aborts inference and reports a lost lease instead of writing", async () => {
+  const {root,cfg}=setup();
+  const scheduler=startEmbeddingBackfillScheduler({cfg,provider:{...p,embed:async()=>{
+    const db=openIndex(cfg.indexPath);
+    try {db.run("UPDATE locks SET owner_token='replacement'");} finally {db.close();}
+    return [1,0];
+  }}});
+  try {
+    expect(await scheduler.runNow()).toBeNull();
+    expect(scheduler.status()).toMatchObject({lease:{state:"lost"},last_run:{outcome:"lease_lost"}});
+    const db=openIndex(cfg.indexPath);
+    try {expect(db.query("SELECT * FROM message_vectors").all()).toHaveLength(0);}
+    finally {db.close();}
+  } finally {await scheduler.stop();rmSync(root,{recursive:true,force:true});}
 });

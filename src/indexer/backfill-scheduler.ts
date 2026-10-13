@@ -1,6 +1,6 @@
 import type { ChatHistoryConfig } from "../config";
 import { openIndex, type EmbeddingProvider } from "./sqlite";
-import { acquireBackfillLock } from "./backfill-lock";
+import { acquireBackfillLock, readBackfillLease, type BackfillLeaseStatus } from "./backfill-lock";
 import { embedBackfill, type BackfillReport } from "./embed-backfill";
 
 export interface BackfillSchedulerStatus {
@@ -12,10 +12,13 @@ export interface BackfillSchedulerStatus {
   next_run_at: string | null;
   consecutive_failures: number;
   progress: BackfillReport | null;
+  lease: BackfillLeaseStatus | null;
+  lease_probe?: "unavailable";
   last_run: {
     started_at: string; finished_at: string;
-    outcome: "complete" | "provider_unavailable" | "failed" | "locked" | "interrupted";
+    outcome: "complete" | "provider_unavailable" | "failed" | "locked" | "interrupted" | "lease_lost";
     report: BackfillReport | null;
+    lease: BackfillLeaseStatus | null;
   } | null;
 }
 export interface BackfillScheduler {
@@ -36,13 +39,13 @@ interface SchedulerOptions {
 /** One serial batch per interval, starting after listeners and cache warmup.
  * Unfinished, underfilled sweeps continue after 1s; a full batch or full sweep
  * waits the configured interval. This keeps covered prefixes from hiding new work.
- * Database and provider work stay lazy. CLI and other servers share the PID lock. */
+ * Database and provider work stay lazy. CLI and other servers share the SQLite heartbeat lease. */
 export function startEmbeddingBackfillScheduler(opts: SchedulerOptions): BackfillScheduler {
   const {cfg,provider}=opts, now=opts.now ?? Date.now;
   const interval=cfg.embeddingBackfillIntervalMs, batch=cfg.embeddingBackfillBatchSize;
   const enabled=cfg.embeddingBackfillEnabled && provider !== null;
   const status: BackfillSchedulerStatus={enabled,state:enabled ? "scheduled" : "disabled",running:false,
-    interval_ms:interval,batch_size:batch,next_run_at:null,consecutive_failures:0,progress:null,last_run:null};
+    interval_ms:interval,batch_size:batch,next_run_at:null,consecutive_failures:0,progress:null,lease:null,last_run:null};
   let timer: ReturnType<typeof setTimeout> | undefined, active: Promise<BackfillReport|null> | undefined;
   let stopped=false, controller: AbortController | undefined, cursor=0, assetCursor="", delay=interval;
   const clear=()=> {clearTimeout(timer);timer=undefined;status.next_run_at=null;};
@@ -66,12 +69,18 @@ export function startEmbeddingBackfillScheduler(opts: SchedulerOptions): Backfil
     try {
       if(stopped) {outcome="interrupted";return null;}
       lock=acquireBackfillLock(cfg.indexPath);
-      if(!lock) {outcome="locked";status.state="locked";delay=interval;return null;}
+      if(!lock) {
+        outcome="locked";status.state="locked";status.lease=readBackfillLease(cfg.indexPath);
+        // Retry live/recoverable leases promptly rather than waiting ten minutes.
+        delay=Math.min(interval,15_000);return null;
+      }
+      status.lease=lock.status();
       controller=new AbortController();
       db=openIndex(cfg.indexPath);
       report=await embedBackfill(db,{provider:provider!,canonicalDir:cfg.canonicalDir,limit:batch,
-        background:{cursor,assetCursor,scanLimit:opts.scanLimit ?? 1000},signal:controller.signal,
-        yieldToQueries:opts.yieldToQueries,progress:report=>{status.progress=report;}});
+        background:{cursor,assetCursor,scanLimit:opts.scanLimit ?? 1000},signal:AbortSignal.any([controller.signal,lock.signal]),
+        assertLease:()=>lock!.assertOwned(db!),leaseStatus:()=>lock!.status(),
+        yieldToQueries:opts.yieldToQueries,progress:report=>{status.progress=report;status.lease=report.lease ?? status.lease;}});
       // Failed items remain pending for the next sweep without pinning its cursor.
       cursor=report.scan?.exhausted ? 0 : report.scan?.cursor ?? cursor;
       assetCursor=report.scan?.exhausted ? "" : report.scan?.asset_cursor ?? assetCursor;
@@ -82,13 +91,18 @@ export function startEmbeddingBackfillScheduler(opts: SchedulerOptions): Backfil
       }
       return report;
     } catch {
-      if(controller?.signal.aborted) outcome="interrupted";
+      if(lock?.signal.aborted) {outcome="lease_lost";status.state="backoff";delay=Math.min(interval,15_000);}
+      else if(controller?.signal.aborted) outcome="interrupted";
       else backoff(); // Public status contains reason codes, never provider/body errors.
       return null;
     } finally {
       controller=undefined;
-      status.last_run={started_at,finished_at:new Date(now()).toISOString(),outcome,report};
-      try {db?.close();} finally {lock?.release();}
+      try {db?.close();} finally {
+        try {lock?.release();} finally {
+          if(lock) status.lease=lock.status();
+          status.last_run={started_at,finished_at:new Date(now()).toISOString(),outcome,report,lease:status.lease};
+        }
+      }
     }
   };
   function runNow(): Promise<BackfillReport|null> {
@@ -107,7 +121,17 @@ export function startEmbeddingBackfillScheduler(opts: SchedulerOptions): Backfil
   }
   arm();
   return {
-    status:()=>structuredClone(status),runNow,
+    status:()=> {
+      const snapshot=structuredClone(status);
+      // Inspect persisted leases even before the first scheduled run. Expired
+      // owners must be visible in deep health during startup/recovery.
+      try {
+        const persisted=readBackfillLease(cfg.indexPath);
+        if(persisted && snapshot.lease?.state!=="lost") snapshot.lease={...persisted,
+          recovered:snapshot.lease?.recovered ?? false};
+      } catch {snapshot.lease_probe="unavailable";}
+      return snapshot;
+    },runNow,
     async stop() {
       stopped=true;clear();controller?.abort(new Error("background backfill stopped"));
       await active;status.running=false;status.state="stopped";

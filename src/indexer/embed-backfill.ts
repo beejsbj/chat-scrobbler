@@ -123,7 +123,7 @@ export async function embedBackfill(db: Database, opts: {
   const startRequest = () => { needsPacing=true; requests++; requestStartedAt=now(); };
   const infer = async (call: (context: EmbeddingGemmaContext) => number[] | Promise<number[]>, checkCurrent: () => void, title?: string | null) => {
     const usesDispatchHooks=provider instanceof EmbeddingGemmaProvider;
-    const beforeRequest=async()=> { if(background) await yieldToQueries(); await throttle(); checkCurrent(); };
+    const beforeRequest=async()=> { if(background) await yieldToQueries(); await throttle(); opts.assertLease?.();checkCurrent(); };
     const context: EmbeddingGemmaContext = {
       kind:"document", title, signal,
       beforeRequest,
@@ -134,7 +134,7 @@ export async function embedBackfill(db: Database, opts: {
       await beforeRequest();
       startRequest();
       // Generic providers may ignore the HTTP hook; count the call exactly once.
-      context.beforeRequest=async()=> { signal?.throwIfAborted(); checkCurrent(); };
+      context.beforeRequest=async()=> { signal?.throwIfAborted(); opts.assertLease?.();checkCurrent(); };
     }
     try {
       const embedding=validateEmbedding(await call(context));

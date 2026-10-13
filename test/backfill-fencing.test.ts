@@ -18,18 +18,18 @@ function setup() {
 const provider={kind:"test",model:"m",dimensions:2,embed:async()=>[1,0]};
 
 test("a fenced text holder retains prior commits, discards its in-flight result and stops dispatching", async () => {
-  const {root,index,db,lease,expire}=setup();let replacement: ReturnType<typeof acquireBackfillLock>=null,calls=0;
+  const {root,index,db,lease,expire}=setup();const replacement: {lease:ReturnType<typeof acquireBackfillLock>}={lease:null};let calls=0;
   try {
     const session=fixture();session.messages=Array.from({length:3},(_,i)=>({...session.messages[0],id:`m${i}`,text:`text ${i}`}));
     indexSession(db,session);
     await expect(embedBackfill(db,{provider:{...provider,embed:async()=>{
-      if(++calls===2) {expire();replacement=acquireBackfillLock(index,{now:()=>61_000})!;}
+      if(++calls===2) {expire();replacement.lease=acquireBackfillLock(index,{now:()=>61_000})!;}
       return [1,0];
     }},assertLease:()=>lease.assertOwned(db),sleep:async()=>{}})).rejects.toThrow("backfill lease lost");
     expect(calls).toBe(2);
     expect(db.query("SELECT message_id FROM message_vectors").all()).toEqual([{message_id:"m0"}]);
-    replacement!.assertOwned(db);
-  } finally {lease.release();replacement?.release();db.close();rmSync(root,{recursive:true,force:true});}
+    replacement.lease!.assertOwned(db);
+  } finally {lease.release();replacement.lease?.release();db.close();rmSync(root,{recursive:true,force:true});}
 });
 
 test("an expired asset holder cannot commit a completed media inference", async () => {
