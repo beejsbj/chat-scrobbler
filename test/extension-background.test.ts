@@ -296,3 +296,20 @@ test("persistent pointer cache checks the receiver hash and reuses bytes across 
   expect(calls[3].url).toContain("/assets/reference?");
   expect(new URL(calls[3].url).searchParams.get("source_id")).toBe("other");
 });
+
+test("sync reports carry a stable per-install id, and a different installation gets another id", async () => {
+  const tabs = chrome.tabs as any;
+  const oldQuery = tabs.query, oldSend = tabs.sendMessage;
+  tabs.query = (_query: any, done: any) => done([{ id: 1, url: "https://chatgpt.com/" }]);
+  tabs.sendMessage = (_id: any, _message: any, done: any) => done({ ok: true, source: "chatgpt", captureFailures: [], captured: 0, skipped: 0, scanned: 0, account: null, maxConversationUpdatedAt: null });
+  const ids: unknown[] = [];
+  globalThis.fetch = (async (_input, init) => { ids.push(JSON.parse(String(init?.body)).install_id); return Response.json({ ok: true }); }) as typeof fetch;
+  try {
+    for (let i = 0; i < 2; i++) expect(await sendRuntimeMessage({ type: "SCROBBLER_SYNC_ACTIVE_TAB" })).toMatchObject({ ok: true });
+    expect(ids[0]).toMatch(/^[a-f0-9-]{36}$/);
+    expect(ids[1]).toBe(ids[0]);
+    for (const key of Object.keys(storageData)) delete storageData[key];
+    await sendRuntimeMessage({ type: "SCROBBLER_SYNC_ACTIVE_TAB" });
+    expect(ids[2]).not.toBe(ids[0]);
+  } finally { tabs.query = oldQuery; tabs.sendMessage = oldSend; }
+});

@@ -10,6 +10,7 @@ import { validateAssetBytes, validateAssetResponse } from "./providers/asset-res
 import { AssetTransfers } from "./asset-transfers";
 import { uploadAssetToIngest } from "./asset-upload";
 import { knownPointerAsset, rememberPointer } from "./asset-pointer-cache";
+import { getInstallId } from "./install-id";
 import { DeterministicCaptureError, TransientSyncError } from "./providers/sync-errors";
 import type {
   AssetFetchMessage,
@@ -536,7 +537,7 @@ async function reportSyncFailures(source: ProviderSource, failures: Conversation
   const headers: Record<string, string> = { "content-type": "application/json" };
   if (settings.ingestToken) headers.authorization = `Bearer ${settings.ingestToken}`;
   const res = await fetch(statusUrl(settings.ingestBaseUrl), { method: "POST", headers, credentials: "omit",
-    body: JSON.stringify({ source, conversations: [], capture_failures: failures }), signal: AbortSignal.timeout(30_000) });
+    body: JSON.stringify({ source, install_id: await getInstallId(), conversations: [], capture_failures: failures }), signal: AbortSignal.timeout(30_000) });
   if (!res.ok) throw new Error(`Capture failure report rejected (${res.status})`);
 }
 
