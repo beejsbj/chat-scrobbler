@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfig } from "../src/config";
@@ -219,4 +219,11 @@ test("monitor thresholds merge provider overrides and reject malformed values", 
     expect(fallback.monitorCoverageThreshold).toBe(0.95);
     expect(fallback.monitorRecentHours).toBe(48);
   } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("bjslab compose supplies tunable provider freshness defaults", () => {
+  const compose = readFileSync(join(import.meta.dir, "../docker-compose.bjslab.yml"), "utf8");
+  expect(compose).toContain('${CHAT_SCROBBLER_MONITOR_STALE_DAYS_CHATGPT:-7}');
+  expect(compose).toContain('${CHAT_SCROBBLER_MONITOR_STALE_DAYS_CLAUDE:-14}');
+  expect(compose).toContain('${CHAT_SCROBBLER_MONITOR_STALE_DAYS_GEMINI:-21}');
 });

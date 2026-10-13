@@ -5,8 +5,10 @@ import { monitorSettings } from "./config";
 import { monitorStatePath, readMonitorState } from "./state";
 import { monitorWriteFailed } from "./state-fault";
 import { MonitorStateError, monitorDataDir } from "./state-owner";
+import { indexedCaptureTimes } from "./indexed-captures";
+import { SOURCES } from "../store/raw-catalog";
 
-/** HTTP only reads the small operational database. Full checks belong to the offline CLI. */
+/** HTTP reads operational state and, only at bootstrap, indexed session dates. */
 export function liveMonitorReport(opts: IngestServerOptions) {
   const settings = monitorSettings(opts);
   const failures: string[] = [];
@@ -17,7 +19,8 @@ export function liveMonitorReport(opts: IngestServerOptions) {
     state = readMonitorState(path, Date.now() - settings.monitorRecentHours * 3_600_000, opts.canonicalDir ? monitorDataDir(opts.canonicalDir) : undefined, false);
     if (monitorWriteFailed(path)) failures.push("FAILED state write_failed");
   } catch (error) { failures.push(`FAILED state ${error instanceof MonitorStateError ? error.reason : "unavailable"}`); }
-  const freshness = providerFreshness(settings.monitorStaleDays, state?.captures ?? {}, state?.parsed ?? {}, state !== null);
+  const fallback = state && SOURCES.some(source => !state.captures[source] || !state.parsed[source]) ? indexedCaptureTimes(opts.indexPath) : {};
+  const freshness = providerFreshness(settings.monitorStaleDays, { ...fallback, ...state?.captures }, { ...fallback, ...state?.parsed }, state !== null);
   const providers = freshness.providers;
   failures.push(...freshness.failures, ...parseFailureLines(state));
   if (state?.recentAssets) failures.push(`FAILED assets recent_upload_failures=${state.recentAssets}`);

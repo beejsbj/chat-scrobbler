@@ -39,11 +39,15 @@ export async function monitorReport(opts: IngestServerOptions, ack = false) {
   if (health.semantic !== "available") fail("semantic", health.semantic === "disabled" ? "disabled" : "unavailable");
   const canonicalDir = opts.canonicalDir ?? "";
   const rawDir = opts.rawDir ?? (canonicalDir ? rawDirForCanonicalDir(canonicalDir) : "");
+  let canonical: ReturnType<typeof canonicalObservations> = { missingAssets: 0, unreadable: 0, latest: {} };
+  try { if (canonicalDir) canonical = canonicalObservations(canonicalDir, since); }
+  catch { fail("canonical", "scan_failed"); }
   let raw = { lastCapture: { chatgpt: null, claude: null, gemini: null } as Record<typeof SOURCES[number], string | null>, parseFailures: 0, unprojected: 0, unreadable: 0 };
   try { if (canonicalDir && rawDir) raw = rawObservations(rawDir, canonicalDir); }
   catch { fail("raw", "scan_failed"); }
-  const receipts = Object.fromEntries(SOURCES.map(source => [source, [raw.lastCapture[source], state?.captures[source]].filter((time): time is string => !!time).sort().at(-1) ?? null]));
-  const freshness = providerFreshness(settings.monitorStaleDays, receipts, state?.parsed ?? {}, state !== null);
+  const receipts = Object.fromEntries(SOURCES.map(source => [source, [raw.lastCapture[source], state?.captures[source]].filter((time): time is string => !!time).sort().at(-1) ?? canonical.latest[source] ?? null]));
+  const parsed = { ...canonical.latest, ...state?.parsed };
+  const freshness = providerFreshness(settings.monitorStaleDays, receipts, parsed, state !== null);
   const providers = freshness.providers;
   failures.push(...freshness.failures, ...parseFailureLines(state));
   if (raw.parseFailures) fail("parse", `failed_versions_without_canonical=${raw.parseFailures}`);
@@ -61,12 +65,8 @@ export async function monitorReport(opts: IngestServerOptions, ack = false) {
   }
   for (const type of types.filter(type => !state?.acknowledged.has(type.type_id))) fail(`unknown.${type.source}`, `type_id=${type.type_id} count=${type.count}`);
   if (state?.recentAssets) fail("assets", `recent_upload_failures=${state.recentAssets}`);
-  let missingAssets = 0;
-  try {
-    const canonical = canonicalObservations(canonicalDir, since);
-    missingAssets = canonical.missingAssets;
-    if (canonical.unreadable || unknown.unreadable_sessions) fail("canonical", `unreadable_sessions=${Math.max(canonical.unreadable, unknown.unreadable_sessions)}`);
-  } catch { fail("canonical", "scan_failed"); }
+  const missingAssets = canonical.missingAssets;
+  if (canonical.unreadable || unknown.unreadable_sessions) fail("canonical", `unreadable_sessions=${Math.max(canonical.unreadable, unknown.unreadable_sessions)}`);
   if (missingAssets) fail("assets", `missing_recent_blocks=${missingAssets}`);
   let coverage = null;
   try {

@@ -75,7 +75,12 @@ be finite and nonnegative; coverage must be between 0 and 1; recent hours must
 be positive. Invalid values fall back to defaults.
 
 Freshness uses receipt times for live captures, including duplicate polls, plus
-archived capture timestamps. Conversation dates cannot establish capture health.
+archived capture timestamps. When capture history is absent, freshness falls back to the newest canonical
+`updated_at` per provider; HTTP uses indexed canonical dates. Successful-parse
+freshness uses the same fallback until a parse outcome is recorded. These dates
+show conversation activity, not evidence of a browser poll. Compose overrides
+the core defaults with ChatGPT 7 days, Claude 14 days and Gemini 21 days, tunable
+via the corresponding host environment variables.
 Coverage includes all nonempty indexed messages and uses message timestamps for
 the recent denominator. Missing timestamps are counted only in total coverage.
 Vectors must match current indexed text/title, active provider/model and dimension.
@@ -114,7 +119,7 @@ stores/indexes, custom state paths, invalid arguments and concurrent cache expir
 
 Each monitor invocation performs a real bounded embedding diagnostic and scans
 local archives. A paid provider charges for that diagnostic. Monitoring does not
-repair projections or assets. Initial empty raw history alerts until browser sync
+repair projections or assets. Providers without capture or canonical history alert until browser sync
 or a provider override. Current backup/restore does not include monitoring state;
 retain its database separately when replacing the index directory.
 
@@ -154,3 +159,10 @@ No production data was read, no deployment was performed, and no branch was push
   more than two seconds produces `FAILED semantic slow`, preserving semantic
   availability. HTTP does no embedding diagnostic; deep health retains its own
   two-second bound.
+- Bootstrap freshness falls back to canonical `updated_at` per provider when
+  receipt history is absent, and to canonical dates for missing successful-parse
+  history. The CLI reuses its attachment scan; HTTP aggregates session metadata
+  from the index without reading files or vectors. A regression covers stale
+  Claude history alongside fresh ChatGPT/Gemini history without creating state.
+- Compose defaults are ChatGPT 7, Claude 14 and Gemini 21 days, each overridable
+  via the existing environment key on the host.

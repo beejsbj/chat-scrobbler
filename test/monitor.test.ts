@@ -3,7 +3,7 @@ import { recordParseOutcome } from "../src/monitor/parse-state";
 import { monitorReport } from "../src/monitor/report";
 import { incrementMonitorCounter, recordCaptureReceipt, readMonitorState } from "../src/monitor/state";
 import { expect, spyOn, test } from "bun:test";
-import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { handleIngestRequest } from "../packages/ingest/src/server";
 import { getParser } from "../src/parsers/registry";
@@ -18,13 +18,15 @@ import claude from "./fixtures/claude-api-sample.json";
 import gemini from "./fixtures/gemini-api-sample.json";
 import type { RawCapture } from "../packages/shared/src";
 
-function setup() {
+function setup(parsedAt = Date.now()) {
   const root = mkdtempSync(join(import.meta.dir, ".monitor-"));
   const opts = { canonicalDir: join(root, "canonical", "sessions"), indexPath: join(root, "index.db"), ingestToken: "report-secret", embeddingProvider: new HashEmbeddingProvider() };
   const db = openIndex(opts.indexPath);
   for (const sample of [chatgpt, claude, gemini]) {
     const capture = { ...structuredClone(sample), fetched_at: new Date().toISOString() } as RawCapture;
     storeRawCapture(join(root, "raw"), capture);
+    recordCaptureReceipt(`${opts.indexPath}.monitor.sqlite`, capture.source);
+    recordParseOutcome(`${opts.indexPath}.monitor.sqlite`, capture.source, capture.source_id, true, parsedAt);
     for (const session of getParser(capture.source, "api")(capture)) {
       for (const message of session.messages) for (const block of message.blocks) {
         if ("local_path" in block) Object.assign(block, storeCanonicalAsset({ canonicalDir: opts.canonicalDir, source: session.source, sourceId: session.source_id, pointer: block.pointer, bytes: new Uint8Array([1, 2, 3]) }));
@@ -164,7 +166,8 @@ test("freshness defaults detect stale and absent providers and support independe
     db.close();
     const capture = { ...chatgpt, fetched_at: new Date(Date.now() - 8 * 86_400_000).toISOString() } as RawCapture;
     storeRawCapture(join(root, "raw"), capture);
-    // Legacy canonical is enough for parse-orphan suppression, but not capture freshness.
+    // A recorded successful parse uses the capture date; legacy canonical is older.
+    recordParseOutcome(`${opts.indexPath}.monitor.sqlite`, "chatgpt", capture.source_id, true, Date.parse(capture.fetched_at));
     writeSession(opts.canonicalDir, getParser("chatgpt", "api")(capture)[0]);
     const report = await monitorReport(opts);
     expect(report.failures).toContain("FAILED freshness.chatgpt stale threshold_days=7");
@@ -223,6 +226,10 @@ test("store failures remain categorical and a configured state path is shared by
   const { root, opts } = setup();
   const statePath = join(root, "telemetry", "monitor.sqlite");
   try {
+    for (const capture of [chatgpt, claude, gemini] as RawCapture[]) {
+      recordCaptureReceipt(statePath, capture.source);
+      recordParseOutcome(statePath, capture.source, capture.source_id, true);
+    }
     const response = await handleIngestRequest(new Request("http://local/status", { method: "POST", body: JSON.stringify({ source: "chatgpt", conversations: [], asset_failures: [{ source_id: "conv-1", reason: "asset_upload_failed" }] }) }), { ...opts, ingestToken: null, monitorStatePath: statePath });
     expect(response.status).toBe(200);
     const processResult = Bun.spawnSync([process.execPath, entry, "monitor"], { env: { ...process.env, CANONICAL_DIR: opts.canonicalDir, INDEX_PATH: opts.indexPath, CHAT_SCROBBLER_EMBED_PROVIDER: "hash", CHAT_SCROBBLER_CONFIG: join(root, "absent.json"), CHAT_SCROBBLER_MONITOR_STATE_PATH: statePath } });
@@ -304,6 +311,7 @@ test("a locked state writer does not stall ingest and its failure is visible off
 
 test("monitor refuses to create state under a different effective owner", async () => {
   const { root, opts } = setup();
+  opts.indexPath = join(root, "fresh-index.db");
   const uid = process.getuid!();
   const getuid = spyOn(process, "getuid").mockReturnValue(uid + 1);
   try {
@@ -326,14 +334,15 @@ test("asset telemetry failure does not break conversation status responses", asy
 
 test("ordinary monitoring creates no state and remains readable during an index rebuild", async () => {
   const { root, opts } = setup();
+  const statePath = join(root, "absent-state.sqlite");
   const db = openIndex(opts.indexPath);
   try {
     db.run("BEGIN IMMEDIATE");
     const start = performance.now();
-    const report = await monitorReport(opts);
+    const report = await monitorReport({ ...opts, monitorStatePath: statePath, monitorStaleDays: { chatgpt: null, claude: null, gemini: null } });
     expect(performance.now() - start).toBeLessThan(1000);
     expect(report.failures).toEqual([]);
-    expect(existsSync(`${opts.indexPath}.monitor.sqlite`)).toBe(false);
+    expect(existsSync(statePath)).toBe(false);
     expect(readdirSync(opts.canonicalDir).some(file => file.startsWith(".health-"))).toBe(false);
   } finally { db.run("ROLLBACK"); db.close(); rmSync(root, { recursive: true, force: true }); }
 }, 15000);
@@ -366,7 +375,7 @@ test("HTTP snapshots use persisted receipts without archive scans or embedding c
 });
 
 test("parse failures on an existing conversation survive restart and stale successful captures alert", async () => {
-  const { root, opts } = setup();
+  const { root, opts } = setup(Date.now() - 8 * 86_400_000);
   try {
     recordParseOutcome(`${opts.indexPath}.monitor.sqlite`, "chatgpt", "conv-1", true, Date.now() - 8 * 86_400_000);
     const response = await handleIngestRequest(new Request("http://local/captures", { method: "POST", body: JSON.stringify({ ...chatgpt, payload: null, fetched_at: new Date().toISOString() }) }), { ...opts, ingestToken: null });
@@ -425,3 +434,32 @@ test("an embedder responding after two seconds is slow rather than unavailable",
     expect(report.failures).not.toContain("FAILED semantic unavailable");
   } finally { rmSync(root, { recursive: true, force: true }); }
 }, 15000);
+
+test("bootstrap freshness falls back to canonical dates in CLI and the cheap indexed HTTP view", async () => {
+  const { root, opts } = setup();
+  const old = new Date(Date.now() - 20 * 86_400_000).toISOString();
+  const options = { ...opts, monitorStaleDays: { chatgpt: 7, claude: 14, gemini: 21 } };
+  try {
+    rmSync(join(root, "raw"), { recursive: true });
+    mkdirSync(join(root, "raw"));
+    rmSync(`${opts.indexPath}.monitor.sqlite`, { force: true });
+    const db = openIndex(opts.indexPath);
+    for (const capture of [chatgpt, claude, gemini]) {
+      const session = readSession(opts.canonicalDir, capture.source, capture.source_id);
+      session.updated_at = capture.source === "claude" ? old : new Date().toISOString();
+      writeSession(opts.canonicalDir, session);
+      indexSession(db, session, { embeddingProvider: opts.embeddingProvider });
+    }
+    db.close();
+    const full = await monitorReport(options);
+    expect(full.providers.claude.last_capture_at).toBe(old);
+    expect(full.failures).toContain("FAILED freshness.claude stale threshold_days=14");
+    expect(full.failures).toContain("FAILED freshness.parsed.claude stale threshold_days=14");
+    expect(full.failures.some(line => line.includes("no_captures"))).toBe(false);
+    const live = await (await handleIngestRequest(request(), options)).json();
+    expect(live.providers.claude.last_capture_at).toBe(old);
+    expect(live.failures).toContain("FAILED freshness.claude stale threshold_days=14");
+    expect(live.failures).toContain("FAILED freshness.parsed.claude stale threshold_days=14");
+    expect(existsSync(`${opts.indexPath}.monitor.sqlite`)).toBe(false);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});

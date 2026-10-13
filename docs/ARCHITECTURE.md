@@ -474,11 +474,17 @@ are included. The CLI replaces unknown type names with opaque type IDs.
 | `monitorRecentHours` | `CHAT_SCROBBLER_MONITOR_RECENT_HOURS` | 48 hours |
 | `monitorStatePath` | `CHAT_SCROBBLER_MONITOR_STATE_PATH` | `<indexPath>.monitor.sqlite` |
 
-Freshness uses capture receipt times and archived `fetched_at`, never conversation
-`updated_at`. An unused provider can have JSON `null` or env `off` for its staleness
-setting. Missing capture history alerts until the next sync or that override.
+Freshness prefers capture receipt times and archived `fetched_at`. Without those,
+the CLI falls back to the newest canonical `updated_at` per provider; HTTP uses
+the same metadata projected into the index, with a small read-only aggregate.
+Last successful parse times also fall back to canonical dates until recorded.
+These bootstrap dates show conversation activity, not proof of a recent browser
+poll. An unused provider can have JSON `null` or env `off` for its staleness
+setting. Providers with no history alert until the next sync or that override.
 Invalid threshold values fall back to defaults. Provider overrides merge with the
-other providers' defaults.
+other providers' defaults. The bjslab Compose service defaults to ChatGPT 7 days,
+Claude 14 days and Gemini 21 days. Set the corresponding environment variables
+on the host to tune these Compose overrides.
 
 Coverage counts nonempty indexed messages across all branches, requiring valid
 vectors for current text, title, provider, model and dimension. The recent window
