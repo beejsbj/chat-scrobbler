@@ -31,14 +31,18 @@ that is a fine outcome too.
 ## How it does it
 
 ```
-browser extension  ->  ingest server  ->  canonical JSON store  ->  SQLite FTS index
-   (scrobbler)         (localhost)        (source of truth)        (rebuildable view)
+browser extension -> ingest server -> raw captures + asset blobs
+                                        |
+                                        v
+                                   canonical JSON -> FTS + embeddings
 ```
 
-The canonical store is the only thing that matters; the index is a disposable
-view rebuilt with one command. Each provider gets a parser that maps its wire
-format into the shared session schema, so adding a provider means adding a
-parser, nothing else changes. Details in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+Raw captures and content-addressed asset blobs are the source of truth. Every
+accepted capture is archived before parsing, including content the current parser
+does not recognize. Canonical sessions and search indexes are derived views;
+`unify` refreshes the index from canonical sessions. Raw-to-canonical reparse is a
+future slice. Older canonical files without raw history remain usable and must be
+retained. Details in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## How you might use it
 

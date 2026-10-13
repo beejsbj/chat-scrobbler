@@ -4,7 +4,8 @@ Shared guide for any coding agent working in this repo. `CLAUDE.md` is a symlink
 to this file, so both surfaces read the same instructions.
 
 chat-scrobbler captures AI chat history (ChatGPT, Claude, Gemini) via a browser
-extension, stores canonical JSON sessions, indexes them in SQLite FTS5, and serves
+extension, preserves raw captures and asset blobs, derives canonical JSON sessions,
+indexes them in SQLite FTS5, and serves
 them through a CLI and a read-only MCP connector.
 
 ## Layout
@@ -16,6 +17,8 @@ them through a CLI and a read-only MCP connector.
 | `src/parsers/registry.ts` | Parser registry (`chatgpt:api`, `claude:api`, `gemini:api`) |
 | `src/parsers/chatgpt.ts`, `claude.ts`, `gemini.ts` | Provider parsers |
 | `src/parsers/render.ts` | `renderText(blocks)` -- derives `Message.text` |
+| `src/store/raw.ts` | Append-only gzip captures; list/read versions for future reparse |
+| `src/store/assets.ts` | SHA-256 blobs, provenance metadata, compatible session aliases |
 | `src/store/sessions.ts` | File I/O for canonical sessions; `activePath()` |
 | `src/indexer/sqlite.ts` | FTS5 build, `searchMessages`, `listSessions` |
 | `src/mcp/server.ts` | Read-only MCP tools (`search`, `get_session`, `list_sessions`) |
@@ -59,6 +62,8 @@ Config resolution: defaults < JSON config file (`CHAT_SCROBBLER_CONFIG`,
 - TDD: write a failing test first, then implement, then commit.
 - Keep files small and single-purpose.
 - No em dashes in prose.
-- `canonical/` is the source of truth; the SQLite index is a rebuildable view.
+- Raw captures and content-addressed assets are the source of truth. Persist raw
+  before parsing; canonical JSON, FTS, and embeddings are derived. Retain legacy
+  canonical sessions that have no archived raw capture.
 - User data lives in `~/.local/share/chat-scrobbler/` by default, never inside the
-  repo. `canonical/`, `index/`, `backups/`, and `dist/` are gitignored.
+  repo. `raw/`, `canonical/`, `index/`, `backups/`, and `dist/` are gitignored.

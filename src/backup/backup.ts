@@ -40,7 +40,7 @@ export interface BackupManifest {
 // ---------------------------------------------------------------------------
 
 export interface CreateBackupOptions {
-  /** Absolute path to canonical/sessions (the source of truth). */
+  /** Absolute path to canonical/sessions; raw history is backed up alongside it. */
   canonicalDir: string;
   rawDir?: string;
   /** Resolved backup target. */

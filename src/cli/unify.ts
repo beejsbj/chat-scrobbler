@@ -1,6 +1,6 @@
 // src/cli/unify.ts
 // Rebuilds the SQLite index from canonical session files.
-// Two tiers: canonical/ (source of truth) -> index/ (rebuildable view).
+// Refreshes the canonical -> index projection; raw -> canonical reparse is separate.
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { Session } from "../schema/types";
