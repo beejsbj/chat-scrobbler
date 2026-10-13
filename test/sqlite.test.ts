@@ -320,3 +320,36 @@ test("deleteIndexedSession removes session, FTS, and embedding rows for a captur
   ).get("chatgpt:a") as { count: number };
   expect(embeddingRows.count).toBe(0);
 });
+
+test("failed sync and async re-embedding preserve previous vectors and update literal text", async () => {
+  for (const asyncMode of [false, true]) {
+    const db = openIndex(":memory:");
+    let failing = false;
+    const provider: EmbeddingProvider = { kind: "preserve-test", embed: () => { if (failing) throw new Error("secret-provider-response"); return [1, 0]; } };
+    try {
+      const s = mk("a", "chatgpt", "Before", "old text");
+      indexSession(db, s, { embeddingProvider: provider });
+      const before = db.query("SELECT * FROM message_embeddings").all();
+      failing = true;
+      const changed = mk("a", "chatgpt", "After", "current text");
+      if (asyncMode) await (await import("../src/indexer/sqlite")).indexSessionWithEmbeddings(db, changed, { embeddingProvider: provider });
+      else indexSession(db, changed, { embeddingProvider: provider });
+      expect(db.query("SELECT * FROM message_embeddings").all()).toEqual(before);
+      expect(searchMessages(db, "current")).toHaveLength(1);
+      failing = false;
+      expect(searchMessages(db, "unmatched-query", { embeddingProvider: provider })).toEqual([]);
+    } finally { db.close(); }
+  }
+});
+
+test("file indexes enable WAL and a busy timeout on every open", () => {
+  const root = mkdtempSync(join(tmpdir(), "wal-index-"));
+  try {
+    for (let i = 0; i < 2; i++) {
+      const db = openIndex(join(root, "index.db"));
+      expect(db.query("PRAGMA journal_mode").get()).toEqual({ journal_mode: "wal" });
+      expect(db.query("PRAGMA busy_timeout").get()).toEqual({ timeout: 5000 });
+      db.close();
+    }
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});

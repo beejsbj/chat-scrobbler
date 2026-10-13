@@ -1,4 +1,5 @@
 // src/indexer/sqlite.ts
+import { embeddingFailed, embeddingStatus, embeddingSucceeded, validateEmbedding, type SemanticStatus } from "./embedding-status";
 import { Database } from "bun:sqlite";
 import type { Session } from "../schema/types";
 import { activePath } from "../store/sessions";
@@ -11,6 +12,7 @@ export interface EmbeddingContext {
 export interface MessageHit {
   snippet: string; session_id: string; message_id: string;
   role: string; created_at: string | null; source: string; title: string | null;
+  semantic?: SemanticStatus["semantic"]; reason?: string; embedding_failures?: number;
   provenance: "literal" | "semantic" | "hybrid" | "grep"; score: number; match_sources: Array<"literal" | "semantic" | "grep">;
 }
 export interface SessionSummary {
@@ -31,6 +33,8 @@ export interface DeleteIndexedSessionResult { deleted: boolean; sessionIds: stri
 
 export function openIndex(path: string): Database {
   const db = new Database(path);
+  db.run("PRAGMA busy_timeout = 5000");
+  db.run("PRAGMA journal_mode = WAL");
   db.run(`CREATE TABLE IF NOT EXISTS sessions (
     id TEXT PRIMARY KEY, source TEXT, source_id TEXT, title TEXT,
     created_at TEXT, updated_at TEXT, message_count INTEGER);`);
@@ -48,25 +52,29 @@ export function openIndex(path: string): Database {
 
 export function indexSession(db: Database, s: Session, opts: IndexSessionOptions = {}): void {
   const embeddingProvider = opts.embeddingProvider ?? null;
-  indexLiteralSession(db, s);
+  db.transaction(() => indexLiteralSession(db, s))();
   if (!embeddingProvider) return;
 
   try {
-    replaceEmbeddingRows(db, s.id, collectSyncEmbeddingRows(s, embeddingProvider));
+    const rows = collectSyncEmbeddingRows(s, embeddingProvider);
+    db.transaction(() => replaceEmbeddingRows(db, s.id, rows))();
+    embeddingSucceeded(embeddingProvider);
   } catch {
-    db.run(`DELETE FROM message_embeddings WHERE session_id = ?`, [s.id]);
+    embeddingFailed(embeddingProvider, "embedding_document_failed");
   }
 }
 
 export async function indexSessionWithEmbeddings(db: Database, s: Session, opts: IndexSessionOptions = {}): Promise<void> {
   const embeddingProvider = opts.embeddingProvider ?? null;
-  indexLiteralSession(db, s);
+  db.transaction(() => indexLiteralSession(db, s))();
   if (!embeddingProvider) return;
 
   try {
-    replaceEmbeddingRows(db, s.id, await collectAsyncEmbeddingRows(s, embeddingProvider));
+    const rows = await collectAsyncEmbeddingRows(s, embeddingProvider);
+    db.transaction(() => replaceEmbeddingRows(db, s.id, rows))();
+    embeddingSucceeded(embeddingProvider);
   } catch {
-    db.run(`DELETE FROM message_embeddings WHERE session_id = ?`, [s.id]);
+    embeddingFailed(embeddingProvider, "embedding_document_failed");
   }
 }
 
@@ -115,11 +123,20 @@ export function searchMessages(db: Database, query: string, opts: SearchMessages
     }
   }
 
-  return finalizeHits(merged, limit);
+  const hits = finalizeHits(merged, limit);
+  const status = embeddingStatus(semanticProvider);
+  if (status.semantic === "unavailable") for (const hit of hits) Object.assign(hit, status);
+  return hits;
 }
 
+export interface SearchReport extends SemanticStatus { hits: MessageHit[]; }
+
 export async function searchMessagesWithEmbeddings(db: Database, query: string, opts: SearchMessagesOptions = {}): Promise<MessageHit[]> {
-  if (!query.trim()) return [];
+  return (await searchMessagesReport(db, query, opts)).hits;
+}
+
+export async function searchMessagesReport(db: Database, query: string, opts: SearchMessagesOptions = {}): Promise<SearchReport> {
+  if (!query.trim()) return { hits: [], ...embeddingStatus(opts.embeddingProvider ?? null) };
   const limit = opts.limit ?? 20;
   const merged = literalHits(db, query, opts.source, limit);
   const semanticProvider = opts.embeddingProvider ?? null;
@@ -129,7 +146,10 @@ export async function searchMessagesWithEmbeddings(db: Database, query: string, 
       mergeSemanticHits(merged, semanticCandidates(db, queryEmbedding, embeddingMetadata(semanticProvider, queryEmbedding), opts.source, Math.max(limit * 3, 20)), query);
     }
   }
-  return finalizeHits(merged, limit);
+  const status = embeddingStatus(semanticProvider);
+  const hits = finalizeHits(merged, limit);
+  if (status.semantic === "unavailable") for (const hit of hits) Object.assign(hit, status);
+  return { hits, ...status };
 }
 
 export function grepMessages(db: Database, pattern: string, opts: GrepMessagesOptions = {}): MessageHit[] {
@@ -237,7 +257,6 @@ function indexLiteralSession(db: Database, s: Session): void {
           VALUES (?,?,?,?,?,?,?)`,
     [s.id, s.source, s.source_id, s.title, s.created_at, s.updated_at, activeCount]);
   db.run(`DELETE FROM messages_fts WHERE session_id = ?`, [s.id]);
-  db.run(`DELETE FROM message_embeddings WHERE session_id = ?`, [s.id]);
   const stmt = db.prepare(
     `INSERT INTO messages_fts (text, message_id, session_id, role, created_at, source, title)
      VALUES (?,?,?,?,?,?,?)`);
@@ -271,7 +290,7 @@ async function collectAsyncEmbeddingRows(s: Session, provider: EmbeddingProvider
   const rows: EmbeddingRow[] = [];
   for (const m of s.messages) {
     if (!m.text) continue;
-    const embedding = await provider.embed(m.text, { kind: "document", title: s.title });
+    const embedding = validateEmbedding(await provider.embed(m.text, { kind: "document", title: s.title }));
     rows.push({
       session_id: s.id,
       message_id: m.id,
@@ -423,7 +442,7 @@ function finalizeHits(merged: Map<string, RankedHit>, limit: number): MessageHit
 }
 
 function semanticCandidates(db: Database, queryEmbedding: number[], metadata: EmbeddingMetadata, source: string | undefined, limit: number): SemanticRow[] {
-  const clauses = ["provider_kind = ?", "dimension = ?"];
+  const clauses = ["provider_kind = ?", "dimension = ?", "EXISTS (SELECT 1 FROM messages_fts f WHERE f.session_id = message_embeddings.session_id AND f.message_id = message_embeddings.message_id AND f.text = message_embeddings.text)"];
   const params: any[] = [metadata.provider_kind, metadata.dimension];
   if (metadata.provider_model === null) {
     clauses.push("provider_model IS NULL");
@@ -501,21 +520,27 @@ function syncEmbedding(provider: EmbeddingProvider, text: string, context: Embed
   if (result instanceof Promise) {
     throw new Error(`Embedding provider "${provider.kind ?? "unknown"}" is async; use indexSessionWithEmbeddings/searchMessagesWithEmbeddings`);
   }
-  return result;
+  return validateEmbedding(result);
 }
 
 function safeSyncEmbedding(provider: EmbeddingProvider, text: string, context: EmbeddingContext): number[] | null {
   try {
-    return syncEmbedding(provider, text, context);
+    const vector = syncEmbedding(provider, text, context);
+    embeddingSucceeded(provider);
+    return vector;
   } catch {
+    embeddingFailed(provider, "embedding_query_failed");
     return null;
   }
 }
 
 async function safeAsyncEmbedding(provider: EmbeddingProvider, text: string, context: EmbeddingContext): Promise<number[] | null> {
   try {
-    return await provider.embed(text, context);
+    const vector = validateEmbedding(await provider.embed(text, context));
+    embeddingSucceeded(provider);
+    return vector;
   } catch {
+    embeddingFailed(provider, "embedding_query_failed");
     return null;
   }
 }

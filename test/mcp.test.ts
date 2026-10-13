@@ -95,3 +95,15 @@ test("handleSearch supports regex mode", async () => {
   expect(hits[0].provenance).toBe("grep");
   rmSync(dir, { recursive: true, force: true });
 });
+
+test("MCP search exposes semantic failures even with no hits and keeps legacy text array", async () => {
+  const db = openIndex(":memory:");
+  const provider = { kind: "failed-query", async embed(): Promise<number[]> { throw new Error("private-response-token"); } };
+  try {
+    const result = await handleSearch(db, { query: "nothing" }, provider);
+    expect(JSON.parse(result.content[0].text)).toEqual([]);
+    expect(result.structuredContent).toMatchObject({ hits: [], semantic: "unavailable", reason: "embedding_query_failed", embedding_failures: 1 });
+    expect(JSON.stringify(result)).not.toContain("private-response-token");
+    expect((await handleSearch(db, { query: "nothing" })).structuredContent).toMatchObject({ semantic: "disabled" });
+  } finally { db.close(); }
+});

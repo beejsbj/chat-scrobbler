@@ -156,3 +156,21 @@ test("reindex also reads historical sessions with capture_method export or takeo
     rmSync(root2, { recursive: true, force: true });
   }
 });
+
+test("unify preserves vectors when rebuilding with a failed embedder", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "reindex-vectors-"));
+  const opts = { canonicalDir: join(dir, "canonical", "sessions"), indexPath: join(dir, "index.db") };
+  let failing = false;
+  const provider = { kind: "unify-test", async embed(): Promise<number[]> { if (failing) throw new Error("offline"); return [1, 0]; } };
+  try {
+    writeSession(opts.canonicalDir, sessionA);
+    await runUnify({ ...opts, embeddingProvider: provider });
+    const db = openIndex(opts.indexPath);
+    const before = db.query("SELECT * FROM message_embeddings").all();
+    failing = true;
+    await runUnify({ ...opts, embeddingProvider: provider });
+    expect(db.query("SELECT * FROM message_embeddings").all()).toEqual(before);
+    expect(searchMessages(db, "photosynthesis")).toHaveLength(2);
+    db.close();
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});

@@ -1,11 +1,11 @@
 // src/cli/unify.ts
 // Rebuilds the SQLite index from canonical session files.
 // Two tiers: canonical/ (source of truth) -> index/ (rebuildable view).
-import { existsSync, rmSync, mkdirSync, readFileSync } from "node:fs";
+import { mkdirSync, readFileSync } from "node:fs";
 import { dirname } from "node:path";
 import type { Session } from "../schema/types";
 import { listSessionFiles } from "../store/sessions";
-import { openIndex, indexSessionWithEmbeddings, type EmbeddingProvider } from "../indexer/sqlite";
+import { deleteIndexedSession, openIndex, indexSessionWithEmbeddings, type EmbeddingProvider } from "../indexer/sqlite";
 import { loadConfig } from "../config";
 import { embeddingProviderFromConfig } from "../indexer/embedding-providers";
 
@@ -15,22 +15,26 @@ export async function runUnify(opts: UnifyOptions): Promise<number> {
   const files = listSessionFiles(opts.canonicalDir);
 
   mkdirSync(dirname(opts.indexPath), { recursive: true });
-  if (existsSync(opts.indexPath)) rmSync(opts.indexPath);
   const db = openIndex(opts.indexPath);
-  db.run("BEGIN");
   let count = 0;
-  for (const f of files) {
-    let session: Session;
-    try {
-      session = JSON.parse(readFileSync(f, "utf8")) as Session;
-    } catch {
-      continue;
+  const retained = new Set<string>();
+  let unreadable = false;
+  try {
+    for (const f of files) {
+      let session: Session;
+      try { session = JSON.parse(readFileSync(f, "utf8")) as Session; }
+      catch { unreadable = true; continue; }
+      retained.add(session.id);
+      await indexSessionWithEmbeddings(db, session, { embeddingProvider: opts.embeddingProvider ?? null });
+      count++;
     }
-    await indexSessionWithEmbeddings(db, session, { embeddingProvider: opts.embeddingProvider ?? null });
-    count++;
-  }
-  db.run("COMMIT");
-  db.close();
+    // Refresh in place so failed embedding calls and concurrent readers keep
+    // their existing vectors. Prune absent sessions only after a complete read.
+    if (!unreadable) db.transaction(() => {
+      const rows = db.query("SELECT id, source, source_id FROM sessions").all() as Array<{ id: string; source: string; source_id: string }>;
+      for (const row of rows) if (!retained.has(row.id)) deleteIndexedSession(db, row.source, row.source_id);
+    })();
+  } finally { db.close(); }
   return count;
 }
 
