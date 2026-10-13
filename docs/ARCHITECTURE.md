@@ -58,14 +58,21 @@ captures deduplicate. Provider IDs are encoded without lossy sanitization.
   server; both sides must match.
 - Assets are downloaded during capture. Provider helpers discover API media before
   Gemini's DOM fallback, resolve file pointers, and report failed downloads without
-  stopping text capture for non-transient asset failures. Outages stop sync for retry.
+  stopping text capture for any asset failure. Asset throttling stops further downloads
+  in that batch, reports skipped assets, and still captures text.
+  Gemini DOM audio/video blob URLs are fetched only in the currently loaded
+  provider page, without credentials or headers. API-injected blobs and background
+  blob fetches are rejected. HTTPS media redirects are followed only when every
+  visible Location passes the source allowlist; opaque redirects fail closed.
   Raw `assets` holds successful hashes and aliases;
   `asset_references` also retains discoveries whose bytes could not be downloaded.
 - The extension hashes bytes before uploading. `GET /assets?sha256=...` and
   `POST /assets/reference` avoid sending bytes the server already owns. A persistent
-  pointer-to-hash cache verifies receiver blob existence before downloading known
-  pointers. Acknowledged unchanged Gemini payloads skip downloads and ingest. Against
-  an older receiver, a missing lookup endpoint falls back to the original byte upload.
+  pointer-to-hash cache verifies receiver blob existence before downloading immutable
+  file IDs, Claude file UUIDs, or explicit SHA-256 pointers. Paths, sandbox links,
+  inline slots, and ordinary URLs are downloaded again; receiver hash lookup
+  prevents duplicate uploads. Acknowledged unchanged Gemini payloads skip downloads
+  and ingest. Against an older receiver, a missing lookup endpoint falls back to the original byte upload.
 - The popup has a resumable asset backfill action and a separate failed-chat retry
   action. Backfill scans 25 archived sessions per provider per click, with one second
   between downloads, and reports saved and unavailable assets.
@@ -74,8 +81,11 @@ captures deduplicate. Provider IDs are encoded without lossy sanitization.
   are reported through `/status`. A changed provider timestamp, manual retry, or
   backoff deadline reopens the conversation. Quarantine retries after 1, 3, then
   7 days while retaining attempt history, including for Gemini without timestamps.
-  Provider and receiver outages stop sync without quarantining chats. Pending
-  failures for ignored or no-longer-listed chats are removed after listing.
+  Network failures, provider 429/503, and receiver 5xx stop sync without counting
+  attempts. Other errors count per chat, including receiver 4xx and isolated
+  detail 5xx. Three consecutive detail 5xx escalate to an outage; aborted runs
+  leave saved failure state intact. Asset errors stay within the asset boundary.
+  Pending failures for ignored or no-longer-listed chats are removed after listing.
 
 ---
 
