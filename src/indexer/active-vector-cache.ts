@@ -23,7 +23,8 @@ function vectorRows(db:Database,scope:VectorScope,table:string,session?:string,a
   if(after!==undefined)params.push(after,limit);
   // Startup uses indexed rowid batches; refresh uses the session index rather
   // than rescanning every legacy row in this model for each affected session.
-  const index=session!==undefined ? `INDEXED BY ${binary ? "message_vector_session" : "legacy_vector_session"}` : after!==undefined ? "NOT INDEXED" : "";
+  const index=message!==undefined ? `INDEXED BY sqlite_autoindex_${table}_1`
+    : session!==undefined ? `INDEXED BY ${binary ? "message_vector_session" : "legacy_vector_session"}` : after!==undefined ? "NOT INDEXED" : "";
   if(!binary) {
     // Valid binary identities are already in the matrix. Reading legacy FTS
     // text for those duplicates adds I/O to every dirty-session refresh.
