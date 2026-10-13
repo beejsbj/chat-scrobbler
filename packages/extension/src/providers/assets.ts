@@ -1,4 +1,4 @@
-import type { ProviderSource, UploadedAsset } from "../../../shared/src";
+import type { AssetFailure, AssetFailureReason, ProviderSource, UploadedAsset } from "../../../shared/src";
 import type { AssetFetchResponse, AssetUploadRequest } from "../messages";
 import type { FetchLike, ProviderSyncOptions } from "./types";
 
@@ -12,6 +12,7 @@ export interface ProviderAssetBytes {
 
 export interface UploadProviderAssetsOptions {
   maxBytes?: number;
+  reportFailure?: (failure: AssetFailure) => Promise<void>;
   fetchAsset?: (url: string) => Promise<AssetFetchResponse>;
 }
 
@@ -39,15 +40,17 @@ export async function uploadProviderAssets(
   for (const candidate of candidates) {
     if (!candidate.pointer || seen.has(candidate.pointer)) continue;
     seen.add(candidate.pointer);
+    let reason: AssetFailureReason = "asset_download_failed";
     try {
       const downloaded = candidate.fetchViaBackground
         ? await (options.fetchAsset ?? fetchAssetViaBackground)(candidate.url)
         : await fetchCandidateBytes(fetcher, candidate.url, maxBytes);
-      if (!downloaded) continue;
-      if (downloaded.bytes.length > maxBytes) continue;
+      if (downloaded.bytes.length > maxBytes) throw new Error("asset_too_large");
       const contentType = candidate.contentType ?? downloaded.contentType ?? null;
       const filename = candidate.filename ?? downloaded.filename ?? null;
       const request: AssetUploadRequest = {
+        messageId: candidate.messageId,
+        originalUrl: candidate.url,
         source: candidate.source,
         sourceId: candidate.sourceId,
         pointer: candidate.pointer,
@@ -55,6 +58,7 @@ export async function uploadProviderAssets(
         contentType,
         bytes: downloaded.bytes,
       };
+      reason = "asset_upload_failed";
       const asset = await uploadAsset(request);
       uploaded.push({
         ...asset,
@@ -63,9 +67,12 @@ export async function uploadProviderAssets(
         filename: filename ?? asset.filename ?? null,
         content_type: contentType ?? asset.content_type ?? null,
       });
-    } catch {
-      // Provider asset URLs often expire or reject even when conversation JSON is
-      // readable. Keep text capture working and leave local_path null.
+    } catch (error) {
+      if (error instanceof Error && error.message === "asset_too_large") reason = "asset_too_large";
+      const failure: AssetFailure = { source: candidate.source, source_id: candidate.sourceId, message_id: candidate.messageId ?? null, reason };
+      console.error(JSON.stringify({ event: "asset_capture_failed", ...failure }));
+      try { await (options.reportFailure ?? reportAssetFailure)(failure); }
+      catch { console.error(JSON.stringify({ event: "asset_failure_report_failed", source: candidate.source, source_id: candidate.sourceId })); }
     }
   }
   return uploaded;
@@ -90,12 +97,12 @@ async function fetchCandidateBytes(
   fetcher: FetchLike,
   url: string,
   maxBytes: number,
-): Promise<ProviderAssetBytes | null> {
+): Promise<ProviderAssetBytes> {
   const res = await fetcher(url, { credentials: "include" });
-  if (!res.ok) return null;
-  if (isOversizedContentLength(res.headers.get("content-length"), maxBytes)) return null;
+  if (!res.ok) throw new Error("asset_download_failed");
+  if (isOversizedContentLength(res.headers.get("content-length"), maxBytes)) throw new Error("asset_too_large");
   const buffer = await res.arrayBuffer();
-  if (buffer.byteLength > maxBytes) return null;
+  if (buffer.byteLength > maxBytes) throw new Error("asset_too_large");
   return {
     bytes: Array.from(new Uint8Array(buffer)),
     filename: filenameFromHeaders(res),
@@ -113,4 +120,10 @@ export function filenameFromHeaders(res: Response): string | null {
   const disposition = res.headers.get("content-disposition");
   const match = disposition?.match(/filename\*?=(?:UTF-8'')?"?([^";]+)"?/i);
   return match ? decodeURIComponent(match[1]) : null;
+}
+
+async function reportAssetFailure(failure: AssetFailure): Promise<void> {
+  if (typeof chrome === "undefined" || !chrome.runtime?.sendMessage) return;
+  const response = await new Promise<any>(resolve => chrome.runtime.sendMessage({ type: "SCROBBLER_ASSET_FAILURE", failure }, resolve));
+  if (!response?.ok) throw new Error("asset failure report rejected");
 }

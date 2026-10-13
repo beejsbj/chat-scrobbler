@@ -9,7 +9,7 @@ export type Block =
   | { type: "tool_call"; name: string; input: unknown }
   | { type: "tool_result"; name: string; output: unknown }
   | { type: "artifact"; artifact_id: string; kind: string; title: string | null; version: string | null; content: string }
-  | { type: "attachment"; kind: "image" | "audio" | "file"; filename: string | null; pointer: string; local_path: string | null };
+  | { type: "attachment"; kind: "image" | "audio" | "file"; filename: string | null; pointer: string; local_path: string | null; sha256?: string | null };
 
 export interface Message {
   id: string;

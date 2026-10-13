@@ -1,5 +1,6 @@
+import { writeImmutableFile } from "./immutable-file";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, statSync, writeFileSync } from "node:fs";
+import { linkSync, mkdirSync, statSync } from "node:fs";
 import { dirname, extname, join, relative, sep } from "node:path";
 import { sanitizePathSegment } from "../../packages/shared/src";
 import type { ProviderSource } from "../../packages/shared/src";
@@ -11,6 +12,8 @@ export interface StoreAssetInput {
   source: ProviderSource;
   sourceId: string;
   pointer: string;
+  messageId?: string | null;
+  originalUrl?: string | null;
   filename?: string | null;
   contentType?: string | null;
   bytes: Uint8Array;
@@ -55,12 +58,30 @@ export function storeCanonicalAsset(input: StoreAssetInput): StoredAsset {
   ].join("/");
   const absPath = resolveLocalAssetPath(input.canonicalDir, relPath);
   mkdirSync(dirname(absPath), { recursive: true });
-  if (!existsSync(absPath)) writeFileSync(absPath, input.bytes);
+  const blob = assetBlobPath(input.canonicalDir, sha256);
+  writeImmutableFile(blob, input.bytes);
+  writeImmutableFile(`${blob}.json`, JSON.stringify({
+    schema_version: 1,
+    sha256,
+    mime: input.contentType ?? "application/octet-stream",
+    size_bytes: input.bytes.byteLength,
+    original_pointer: input.pointer,
+    original_url: input.originalUrl ?? null,
+    first_seen: { session_id: `${input.source}:${input.sourceId}`, message_id: input.messageId ?? null, at: new Date().toISOString() },
+  }, null, 2));
+  // Compatibility alias for v0.3.0 uploads and existing canonical local_path values.
+  try { linkSync(blob, absPath); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; }
   return {
     local_path: relPath,
     sha256,
     size_bytes: statSync(absPath).size,
   };
+}
+
+export function assetBlobPath(canonicalDir: string, sha256: string): string {
+  if (!/^[a-f0-9]{64}$/.test(sha256)) throw new Error("invalid asset hash");
+  return join(assetsDirForCanonicalDir(canonicalDir), "sha256", sha256.slice(0, 2), sha256);
 }
 
 export function canonicalRelativePath(canonicalDir: string, absPath: string): string {

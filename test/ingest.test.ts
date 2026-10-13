@@ -326,3 +326,15 @@ test("capture endpoint logs fat-mode parse failures with light capture context",
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("status accepts asset failure telemetry and never logs URL credentials", async () => {
+  const root = mkdtempSync(join(tmpdir(), "asset-status-"));
+  const logs = spyOn(console, "error").mockImplementation(() => {});
+  const opts = { canonicalDir: join(root, "canonical", "sessions"), indexPath: join(root, "index.db") };
+  try {
+    const res = await handleIngestRequest(new Request("http://local/status", { method: "POST", body: JSON.stringify({ source: "chatgpt", conversations: [], asset_failures: [{ source_id: "conv", message_id: "m1", reason: "asset_upload_failed", pointer: "https://example.com?token=secret" }] }) }), opts);
+    expect(await res.json()).toMatchObject({ ok: true, asset_failures: 1 });
+    expect(JSON.stringify(logs.mock.calls)).toContain("asset_capture_failed");
+    expect(JSON.stringify(logs.mock.calls)).not.toContain("secret");
+  } finally { logs.mockRestore(); rmSync(root, { recursive: true, force: true }); }
+});

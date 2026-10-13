@@ -652,3 +652,25 @@ function json(body: unknown, status = 200): Response {
     headers: { "content-type": "application/json" },
   });
 }
+
+test("asset download, size, and upload failures are reported while text capture can continue", async () => {
+  const failures: unknown[] = [];
+  const errors = (await import("bun:test")).spyOn(console, "error").mockImplementation(() => {});
+  try {
+    for (const mode of ["download", "size", "upload"]) {
+      const assets = await uploadProviderAssets(
+        async () => mode === "download" ? new Response("denied", { status: 403 }) : new Response(new Uint8Array([1, 2, 3])),
+        async () => { throw new Error("upload failed https://example.com/?token=secret"); },
+        [{ source: "chatgpt", sourceId: "conv", messageId: "m1", pointer: "https://example.com/?token=secret", url: "/asset" }],
+        { maxBytes: mode === "size" ? 2 : 100, reportFailure: async failure => { failures.push(failure); } },
+      );
+      expect(assets).toEqual([]);
+    }
+    expect(failures).toEqual([
+      { source: "chatgpt", source_id: "conv", message_id: "m1", reason: "asset_download_failed" },
+      { source: "chatgpt", source_id: "conv", message_id: "m1", reason: "asset_too_large" },
+      { source: "chatgpt", source_id: "conv", message_id: "m1", reason: "asset_upload_failed" },
+    ]);
+    expect(JSON.stringify(errors.mock.calls)).not.toContain("secret");
+  } finally { errors.mockRestore(); }
+});

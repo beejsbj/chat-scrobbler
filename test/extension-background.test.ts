@@ -179,3 +179,16 @@ function installChromeStub(): void {
     },
   });
 }
+
+test("background forwards asset failure reports to authenticated status endpoint", async () => {
+  storageData["scrobbler.settings"] = { ingestBaseUrl: "http://local:4318", ingestToken: "test-token" };
+  const reports: unknown[] = [];
+  globalThis.fetch = (async (input, init) => {
+    expect(String(input)).toBe("http://local:4318/status");
+    expect((init?.headers as Record<string, string>).authorization).toBe("Bearer test-token");
+    reports.push(JSON.parse(String(init?.body)));
+    return Response.json({ ok: true });
+  }) as typeof fetch;
+  expect(await sendRuntimeMessage({ type: "SCROBBLER_ASSET_FAILURE", failure: { source: "chatgpt", source_id: "conv", message_id: "m1", reason: "asset_upload_failed" } })).toMatchObject({ ok: true });
+  expect(reports).toEqual([{ source: "chatgpt", conversations: [], asset_failures: [{ source_id: "conv", message_id: "m1", reason: "asset_upload_failed" }] }]);
+});

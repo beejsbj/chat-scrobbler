@@ -225,6 +225,7 @@ export function parseGemini(raw: unknown): Session[] {
         filename: asset.filename ?? null,
         pointer: asset.pointer,
         local_path: asset.local_path,
+        sha256: asset.sha256 ?? null,
       };
       target.blocks.push(block);
       target.text = renderText(target.blocks);

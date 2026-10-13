@@ -1,5 +1,6 @@
+import { writeImmutableFile } from "./immutable-file";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import type { RawCapture } from "../../packages/shared/src";
 
@@ -28,9 +29,7 @@ export function storeRawCapture(rawDir: string, capture: RawCapture, serialized 
   if (existing) return existing;
   const ref = join(segment(capture.source), segment(capture.source_id), `${capture.fetched_at.replace(/[^\dTZ-]/g, "-")}-${hash}.json.gz`);
   const path = join(rawDir, ref);
-  mkdirSync(dirname(path), { recursive: true });
-  try { writeFileSync(path, Bun.gzipSync(Buffer.from(serialized)), { flag: "wx" }); }
-  catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; }
+  writeImmutableFile(path, Bun.gzipSync(Buffer.from(serialized)));
   return ref;
 }
 

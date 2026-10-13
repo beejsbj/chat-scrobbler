@@ -2,6 +2,7 @@ import { Database } from "bun:sqlite";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { foldCaptureIntoSpineWithEmbeddings, type SpineResult } from "./pipeline";
+import { recordAssetFailures } from "./asset-failures";
 import { conversationStatuses } from "./status";
 import {
   ASSET_INGEST_PATH,
@@ -155,6 +156,8 @@ export async function handleIngestRequest(req: Request, opts: IngestServerOption
         sourceId,
         pointer,
         filename,
+        messageId: url.searchParams.get("message_id"),
+        originalUrl: url.searchParams.get("original_url"),
         contentType,
         bytes,
       });
@@ -171,12 +174,14 @@ export async function handleIngestRequest(req: Request, opts: IngestServerOption
   if (isStatus) {
     if (!fat) return json({ ok: false, error: "status endpoint requires canonicalDir + indexPath" }, 400);
     try {
-      const body = await req.json() as { source?: string; conversations?: Array<{ id: string; updated_at?: string | null }> };
+      const body = await req.json() as { source?: string; asset_failures?: unknown; conversations?: Array<{ id: string; updated_at?: string | null }> };
       if (typeof body.source !== "string" || !Array.isArray(body.conversations)) {
         return json({ ok: false, error: "status requires { source, conversations[] }" }, 400);
       }
-      const statuses = conversationStatuses(indexFor(fat.indexPath), body.source, body.conversations);
-      return json({ ok: true, statuses });
+      const source = readSource(body.source);
+      const count = recordAssetFailures(fat.indexPath, source, body.asset_failures);
+      const statuses = conversationStatuses(indexFor(fat.indexPath), source, body.conversations);
+      return json({ ok: true, statuses, ...(body.asset_failures === undefined ? {} : { asset_failures: count }) });
     } catch (error) {
       return json({ ok: false, error: error instanceof Error ? error.message : String(error) }, 400);
     }
