@@ -27,7 +27,8 @@ export interface EmbeddingProvider {
   embed(text: string, context?: EmbeddingContext): number[] | Promise<number[]>;
 }
 
-export interface IndexSessionOptions { embeddingProvider?: EmbeddingProvider | null; }
+export interface IndexSessionOptions { embeddingProvider?: EmbeddingProvider | null; shouldReplaceEmbeddings?: () => boolean; }
+export type EmbeddingWriteResult = "indexed" | "failed" | "disabled" | "stale";
 export interface SearchMessagesOptions { source?: string; limit?: number; embeddingProvider?: EmbeddingProvider | null; }
 export interface GrepMessagesOptions { source?: string; limit?: number; caseSensitive?: boolean; }
 export interface DeleteIndexedSessionResult { deleted: boolean; sessionIds: string[]; }
@@ -58,24 +59,27 @@ export function indexSession(db: Database, s: Session, opts: IndexSessionOptions
 
   try {
     const rows = collectSyncEmbeddingRows(s, embeddingProvider);
-    db.transaction(() => replaceEmbeddingRows(db, s.id, rows))();
+    db.transaction(() => replaceEmbeddingRows(db, s, rows, opts))();
     embeddingSucceeded(embeddingProvider, "ingest");
   } catch {
     embeddingFailed(embeddingProvider, "embedding_document_failed", "ingest");
   }
 }
 
-export async function indexSessionWithEmbeddings(db: Database, s: Session, opts: IndexSessionOptions = {}): Promise<void> {
+export async function indexSessionWithEmbeddings(db: Database, s: Session, opts: IndexSessionOptions = {}): Promise<EmbeddingWriteResult> {
   const embeddingProvider = opts.embeddingProvider ?? null;
+  if (opts.shouldReplaceEmbeddings && !opts.shouldReplaceEmbeddings()) return "stale";
   db.transaction(() => indexLiteralSession(db, s))();
-  if (!embeddingProvider) return;
+  if (!embeddingProvider) return "disabled";
 
   try {
     const rows = await collectAsyncEmbeddingRows(s, embeddingProvider);
-    db.transaction(() => replaceEmbeddingRows(db, s.id, rows))();
+    const replaced = db.transaction(() => replaceEmbeddingRows(db, s, rows, opts))();
     embeddingSucceeded(embeddingProvider, "ingest");
+    return replaced ? "indexed" : "stale";
   } catch {
     embeddingFailed(embeddingProvider, "embedding_document_failed", "ingest");
+    return "failed";
   }
 }
 
@@ -311,7 +315,10 @@ async function collectAsyncEmbeddingRows(s: Session, provider: EmbeddingProvider
   return rows;
 }
 
-function replaceEmbeddingRows(db: Database, sessionId: string, rows: EmbeddingRow[]): void {
+function replaceEmbeddingRows(db: Database, session: Session, rows: EmbeddingRow[], opts: IndexSessionOptions): boolean {
+  const current = db.query("SELECT updated_at FROM sessions WHERE id = ?").get(session.id) as { updated_at: string } | null;
+  if (current?.updated_at !== session.updated_at || (opts.shouldReplaceEmbeddings && !opts.shouldReplaceEmbeddings())) return false;
+  const sessionId = session.id;
   db.run(`DELETE FROM message_embeddings WHERE session_id = ?`, [sessionId]);
   const stmt = db.prepare(
     `INSERT INTO message_embeddings (session_id, message_id, embedding, text, role, created_at, source, title, provider_kind, provider_model, dimension)
@@ -331,6 +338,7 @@ function replaceEmbeddingRows(db: Database, sessionId: string, rows: EmbeddingRo
       row.dimension,
     );
   }
+  return true;
 }
 
 function literalHits(db: Database, query: string, source: string | undefined, limit: number): Map<string, RankedHit> {

@@ -1,7 +1,7 @@
 // src/cli/unify.ts
 // Rebuilds the SQLite index from canonical session files.
 // Refreshes the canonical -> index projection; raw -> canonical reparse is separate.
-import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { Session } from "../schema/types";
 import { listSessionFiles } from "../store/sessions";
@@ -9,7 +9,7 @@ import { deleteIndexedSession, openIndex, indexSessionWithEmbeddings, type Embed
 import { loadConfig } from "../config";
 import { embeddingProviderFromConfig } from "../indexer/embedding-providers";
 
-export interface UnifyOptions { canonicalDir: string; indexPath: string; embeddingProvider?: EmbeddingProvider | null; force?: boolean; }
+export interface UnifyOptions { canonicalDir: string; indexPath: string; embeddingProvider?: EmbeddingProvider | null; force?: boolean; embeddingFailureLimit?: number; }
 
 export async function runUnify(opts: UnifyOptions): Promise<number> {
   const canPrune = existsSync(opts.canonicalDir);
@@ -21,13 +21,30 @@ export async function runUnify(opts: UnifyOptions): Promise<number> {
   let count = 0;
   const retained = new Set<string>();
   let unreadable = false;
+  let consecutiveFailures = 0;
+  let circuitOpen = false;
+  const failureLimit = opts.embeddingFailureLimit ?? 3;
+  if (!Number.isInteger(failureLimit) || failureLimit < 1) { db.close(); throw new Error("embeddingFailureLimit must be a positive integer"); }
   try {
     for (const f of files) {
       let session: Session;
-      try { session = JSON.parse(readFileSync(f, "utf8")) as Session; }
+      let snapshot: ReturnType<typeof statSync>;
+      try { snapshot = statSync(f); session = JSON.parse(readFileSync(f, "utf8")) as Session; }
       catch { unreadable = true; continue; }
       retained.add(session.id);
-      await indexSessionWithEmbeddings(db, session, { embeddingProvider: opts.embeddingProvider ?? null });
+      const result = await indexSessionWithEmbeddings(db, session, {
+        embeddingProvider: circuitOpen ? null : opts.embeddingProvider ?? null,
+        shouldReplaceEmbeddings: () => {
+          try { const current = statSync(f); return current.mtimeMs === snapshot.mtimeMs && current.ino === snapshot.ino && current.size === snapshot.size; }
+          catch { return false; }
+        },
+      });
+      if (result === "failed") consecutiveFailures++;
+      else if (result !== "disabled") consecutiveFailures = 0;
+      if (!circuitOpen && consecutiveFailures >= failureLimit) {
+        circuitOpen = true;
+        console.error(JSON.stringify({ event: "unify_embedding_circuit_open", consecutive_failures: consecutiveFailures }));
+      }
       count++;
     }
     // Refresh in place so failed embedding calls and concurrent readers keep
