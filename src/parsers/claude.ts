@@ -8,7 +8,7 @@ import { assetLookupFromRaw, type AssetLookup } from "./assets";
 import { renderText } from "./render";
 import { blocksFromClaude } from "./claude-parts";
 export { blocksFromClaude } from "./claude-parts";
-import { childLocation, type ParserContext, type PartLocation } from "./parts";
+import { childLocation, limitUnknownJson, type ParserContext, type PartLocation } from "./parts";
 
 export function toIso(s?: string | null): string | null {
   if (!s) return null;
@@ -136,5 +136,5 @@ export function parseClaude(raw: unknown, context: ParserContext = {}): Session[
       schema_version: SCHEMA_VERSION,
     });
   }
-  return sessions;
+  return sessions.map(limitUnknownJson);
 }

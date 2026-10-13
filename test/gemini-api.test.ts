@@ -186,3 +186,14 @@ test("retains opaque Gemini candidate and user parts, including candidates with 
   expect(s.messages.find(m => m.id === "rc_visual_only")?.blocks).toContainEqual(expect.objectContaining({ type: "unknown", provider_type: "video_overview" }));
   expect(s.messages[1].text).not.toContain("undocumented");
 });
+
+test("verified Gemini metadata stays raw-only while novel content is retained", () => {
+  const clean = parseGemini(sample)[0];
+  expect(clean.messages.flatMap(m => m.blocks).filter(b => b.type === "unknown")).toHaveLength(0);
+  const capture = structuredClone(sample) as any;
+  const candidate = capture.payload[0][0][3][0][0];
+  candidate[42] = { type: "new_visual", data: 42 };
+  candidate[9] = { type: "new_locale_content", data: "opaque" };
+  const session = parseGemini(capture)[0];
+  expect(session.messages[1].blocks.filter(b => b.type === "unknown").map(b => b.provider_type)).toEqual(["new_locale_content", "new_visual"]);
+});

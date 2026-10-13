@@ -23,7 +23,12 @@ export function unknownTypes(canonicalDir: string, source?: string): UnknownType
         for (const block of message.blocks) {
           if (block.type === "unknown") {
             if (typeof block.provider_type !== "string") throw new Error("invalid unknown type");
-            types.set(block.provider_type, (types.get(block.provider_type) ?? 0) + 1);
+            // Collapse older synthetic positional names; real provider type strings
+            // remain unchanged. Current parsers use these content categories directly.
+            const type = session.source === "gemini"
+              ? block.provider_type.replace(/^(gemini\.(?:candidate|response|user|turn|payload))\.\d+$/, "$1.content")
+              : block.provider_type;
+            types.set(type, (types.get(type) ?? 0) + 1);
           }
         }
       }

@@ -35,7 +35,7 @@ import type { Session, Message } from "../schema/types";
 import { SCHEMA_VERSION, makeSessionId } from "../schema/types";
 import { assetLookupFromRaw } from "./assets";
 import { renderText } from "./render";
-import { childLocation, mediaBlock, type ParserContext } from "./parts";
+import { childLocation, mediaBlock, limitUnknownJson, type ParserContext } from "./parts";
 import { geminiTextParts, geminiOpaqueSlots, geminiCandidates } from "./gemini-parts";
 
 // Epoch seconds + nanoseconds [s, ns] array -- the timestamp type Gemini uses.
@@ -139,7 +139,7 @@ export function parseGemini(raw: unknown, context: ParserContext = {}): Session[
     const at = childLocation(loc, 0, i);
     const userMeta = Array.isArray(turn[2]) ? turn[2] : [];
     const userBlocks = [...geminiTextParts(userMeta[0], childLocation(at, 2, 0)),
-      ...geminiOpaqueSlots(userMeta, [0, 1, 3, 4, 5, 8], childLocation(at, 2), "gemini.user")];
+      ...geminiOpaqueSlots(userMeta, [0], childLocation(at, 2), "gemini.user")];
     const userMsgId = extractUserMsgId(turn);
     if (userBlocks.length && userMsgId) {
       const userMsg: Message = {
@@ -232,5 +232,5 @@ export function parseGemini(raw: unknown, context: ParserContext = {}): Session[
     schema_version: SCHEMA_VERSION,
   };
 
-  return [session];
+  return [limitUnknownJson(session)];
 }

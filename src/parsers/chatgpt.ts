@@ -8,7 +8,7 @@ import { assetLookupFromRaw, type AssetLookup } from "./assets";
 import { renderText } from "./render";
 import { blocksFromContent } from "./chatgpt-parts";
 export { blocksFromContent } from "./chatgpt-parts";
-import { childLocation, toolCall, unknownBlock, type ParserContext } from "./parts";
+import { childLocation, limitUnknownJson, toolCall, unknownBlock, type ParserContext } from "./parts";
 
 export interface RawNode { id: string; message: any | null; parent: string | null; children?: string[]; }
 export interface RawConversation {
@@ -150,7 +150,7 @@ export function sessionFromChatgptConversation(conv: RawConversation, opts: Chat
   }
 
   const created = epochToIso(conv.create_time) ?? new Date(0).toISOString();
-  return {
+  return limitUnknownJson({
     id: makeSessionId("chatgpt", sourceId),
     source: "chatgpt",
     source_id: sourceId,
@@ -164,7 +164,7 @@ export function sessionFromChatgptConversation(conv: RawConversation, opts: Chat
     active_leaf_id: activeLeafId,
     raw_ref: opts.raw_ref,
     schema_version: SCHEMA_VERSION,
-  };
+  });
 }
 
 interface MaybeEnvelope { payload?: unknown; account?: string | null; }

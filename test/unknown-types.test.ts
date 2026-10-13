@@ -27,3 +27,19 @@ test("unknown report counts every branch, skips deleted sessions, and ignores un
       counts: [{ source: "claude", provider_type: "__proto__", count: 2 }] });
   } finally { rmSync(root, { recursive: true, force: true }); }
 }, 30000);
+
+test("unknown report groups legacy Gemini positional fallbacks by content category", async () => {
+  const { parseGemini } = await import("../src/parsers/gemini");
+  const sample = (await import("./fixtures/gemini-api-sample.json")).default;
+  const root = mkdtempSync(join(tmpdir(), "unknown-groups-"));
+  try {
+    const session = parseGemini(sample)[0];
+    const block = { type: "unknown" as const, raw_json: null, raw_ref: "version", raw_path: "/payload/0", truncated: true, size_bytes: 20000 };
+    session.messages[1].blocks.push({ ...block, provider_type: "gemini.candidate.42" }, { ...block, provider_type: "gemini.candidate.43" }, { ...block, provider_type: "interactive_visual" });
+    writeSession(root, session);
+    expect(unknownTypes(root).counts).toEqual([
+      { source: "gemini", provider_type: "gemini.candidate.content", count: 2 },
+      { source: "gemini", provider_type: "interactive_visual", count: 1 },
+    ]);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+}, 30000);
