@@ -3,7 +3,7 @@ import { allowedAssetUrl } from "./asset-url";
 import { RateLimitError, parseRetryAfterMs } from "./types";
 import { TransientSyncError } from "./sync-errors";
 
-/** Redirects are disabled on the request; verify final URLs too for custom fetch implementations. */
+/** Each request uses manual redirects; this validates the final response after checked hops. */
 export function validateAssetResponse(response: Response, source: ProviderSource): void {
   if (response.status === 429 || response.status === 503) throw new RateLimitError("Provider asset", response.status, parseRetryAfterMs(response.headers.get("retry-after")));
   if (response.status >= 500) throw new TransientSyncError(`Provider asset temporarily unavailable (${response.status})`);

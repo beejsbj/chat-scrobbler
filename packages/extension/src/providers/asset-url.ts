@@ -26,6 +26,10 @@ export function providerDownloadUrl(value: string, source?: ProviderSource): boo
   return false;
 }
 
+export function assetAbsoluteUrl(value: string, source: ProviderSource): string | null {
+  return assetUrl(value, source)?.href ?? null;
+}
+
 export function allowedAssetUrl(value: string, source?: ProviderSource): boolean {
   const url = assetUrl(value, source);
   if (!url || !source) return false;

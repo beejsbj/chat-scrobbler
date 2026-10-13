@@ -1,11 +1,11 @@
 import type { AssetFailure, AssetFailureReason, ProviderSource, UploadedAsset } from "../../../shared/src";
 import type { AssetFetchResponse, AssetUploadRequest } from "../messages";
 import { isRateLimitError, type FetchLike, type ProviderSyncOptions } from "./types";
-import { allowedAssetUrl, assetCredentials, providerDownloadUrl, useBackgroundForAsset } from "./asset-url";
+import { allowedAssetUrl, useBackgroundForAsset } from "./asset-url";
+import { fetchAllowedAsset } from "./asset-fetch";
 import { boundedAssetBuffer } from "./asset-bytes";
 import { validateAssetBytes, validateAssetResponse } from "./asset-response";
 import { lookupCapturedAsset, backgroundAssetError, paceAssetDownload } from "./asset-cache-client";
-import { TransientSyncError } from "./sync-errors";
 
 export const MAX_PROVIDER_ASSET_BYTES = 100 * 1024 * 1024;
 
@@ -37,6 +37,8 @@ export interface ProviderAssetCandidate {
   fetchViaBackground?: boolean;
   inlineBytes?: Uint8Array;
   inlineBase64?: string;
+  /** A resolver may receive bytes directly, instead of download-link JSON. Consume them once. */
+  downloadResponse?: Response;
   sha256?: string | null;
 }
 
@@ -65,7 +67,9 @@ export async function uploadProviderAssets(
       const inlineBytes = candidate.inlineBytes ?? (candidate.inlineBase64 !== undefined
         ? Uint8Array.from(atob(candidate.inlineBase64), char => char.charCodeAt(0)) : undefined);
       if (!inlineBytes && (!url || !allowedAssetUrl(url, candidate.source))) throw new Error("asset_url_unavailable");
-      const downloaded = inlineBytes ? { bytes: inlineBytes, contentType: candidate.contentType } : (candidate.fetchViaBackground || useBackgroundForAsset(url!))
+      const downloaded = inlineBytes ? { bytes: inlineBytes, contentType: candidate.contentType } : candidate.downloadResponse
+        ? await fetchCandidateBytes(fetcher, url!, maxBytes, candidate.headers, candidate.source, candidate.downloadResponse)
+        : (candidate.fetchViaBackground || useBackgroundForAsset(url!))
         ? await (options.fetchAsset ?? ((url) => fetchAssetViaBackground(url, maxBytes, candidate)))(url!)
         : await fetchCandidateBytes(fetcher, url!, maxBytes, candidate.headers, candidate.source);
       if (downloaded.asset) {
@@ -130,10 +134,9 @@ async function fetchCandidateBytes(
   maxBytes: number,
   headers?: Record<string, string>,
   source: ProviderSource = "chatgpt",
+  prefetched?: Response,
 ): Promise<ProviderAssetBytes> {
-  let res: Response;
-  try { res = await fetcher(url, { credentials: assetCredentials(url, source), headers: providerDownloadUrl(url, source) ? headers : undefined, redirect: "manual", signal: AbortSignal.timeout(60_000) }); }
-  catch { throw new TransientSyncError("Provider asset network unavailable"); }
+  const res = prefetched ?? (await fetchAllowedAsset(fetcher, url, source, headers)).response;
   validateAssetResponse(res, source);
   if (!res.ok) throw new Error(res.status === 404 || res.status === 410 ? "asset_expired" : "asset_download_failed");
   const bytes = await boundedAssetBuffer(res, maxBytes);

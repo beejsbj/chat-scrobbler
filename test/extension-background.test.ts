@@ -366,3 +366,25 @@ for (const pointer of ["/mnt/data/plot.png", "https://lh3.googleusercontent.com/
   expect(await sendRuntimeMessage({ type: "SCROBBLER_ASSET_LOOKUP", asset: { source: "gemini", sourceId: "c", pointer } })).toMatchObject({ ok: true, asset: null });
   expect(requests).toBe(0);
 });
+
+test("background follows only visible allowlisted media redirect hops and validates the final bytes", async () => {
+  const mediaRequests: string[] = [];
+  let uploads = 0;
+  globalThis.fetch = (async (input, init) => {
+    const url = String(input);
+    if (url.includes("/assets")) {
+      if (!init?.method) return Response.json({ exists: false });
+      uploads++;
+      return Response.json({ pointer: "file-audio", local_path: "assets/audio", sha256: "a".repeat(64) });
+    }
+    mediaRequests.push(url);
+    expect(init?.redirect).toBe("manual");
+    expect(init?.credentials).toBe("include");
+    expect(new Headers(init?.headers).has("authorization")).toBe(false);
+    return mediaRequests.length === 1 ? new Response(null, { status: 302, headers: { location: "https://lh4.googleusercontent.com/media/audio" } })
+      : new Response(new Uint8Array([7]), { headers: { "content-type": "audio/wav" } });
+  }) as typeof fetch;
+  expect(await sendRuntimeMessage({ type: "SCROBBLER_ASSET_FETCH", url: "https://lh3.googleusercontent.com/media/audio", upload: { source: "gemini", sourceId: "c", pointer: "file-audio" } })).toMatchObject({ ok: true });
+  expect(mediaRequests).toEqual(["https://lh3.googleusercontent.com/media/audio", "https://lh4.googleusercontent.com/media/audio"]);
+  expect(uploads).toBe(1);
+});

@@ -1,10 +1,11 @@
+import { fetchAllowedAsset } from "./providers/asset-fetch";
 import "./chrome-api";
 import { assetsUrl, capturesUrl, deleteCaptureUrl, statusUrl, DEFAULT_INGEST_BASE_URL, DEFAULT_SYNC_PERIOD_MINUTES, type ProviderSource, type ConversationCaptureFailure, type AssetBackfillPage } from "../../shared/src";
 import { collectCredentialSnapshot } from "./credentials";
 import { toolbarProgressView, aggregateTabProgress, type ToolbarProgressInput } from "./toolbar-progress";
 import { appendRecentCapture, RECENT_CAPTURES_KEY, type RecentCapture } from "./recent-captures";
 import { assetContentType, filenameFromHeaders, MAX_PROVIDER_ASSET_BYTES } from "./providers/assets";
-import { allowedAssetUrl, assetCredentials } from "./providers/asset-url";
+import { allowedAssetUrl } from "./providers/asset-url";
 import { boundedAssetBuffer } from "./providers/asset-bytes";
 import { validateAssetBytes, validateAssetResponse } from "./providers/asset-response";
 import { AssetTransfers } from "./asset-transfers";
@@ -173,9 +174,7 @@ async function fetchAssetBytes(message: AssetFetchMessage): Promise<unknown> {
   if (!source || url.protocol !== "https:" || !allowedAssetUrl(url.toString(), source)) throw new Error("asset_url_unavailable");
   const settings = await getSettings();
   const maxBytes = Math.min(message.maxBytes ?? settings.maxAssetBytes, settings.maxAssetBytes);
-  let res: Response;
-  try { res = await fetch(url.toString(), { credentials: assetCredentials(url.toString(), source), redirect: "manual", signal: AbortSignal.timeout(60_000) }); }
-  catch { throw new TransientSyncError("Provider asset network unavailable"); }
+  const res = (await fetchAllowedAsset(fetch, url.toString(), source)).response;
   validateAssetResponse(res, source);
   if (!res.ok) throw new Error(res.status === 404 || res.status === 410 ? "asset_expired" : "asset_download_failed");
   const bytes = await boundedAssetBuffer(res, maxBytes);
