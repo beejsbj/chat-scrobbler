@@ -87,3 +87,15 @@ test("raw store deduplicates unchanged content across timestamps and preserves c
     expect(listRawCaptures(root, "gemini", "repeat")).toHaveLength(3);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
+
+test("oversized raw IDs and parseable timestamps are rejected as client errors", async () => {
+  const root = mkdtempSync(join(tmpdir(), "raw-bounds-"));
+  try {
+    for (const fields of [{ source_id: "x".repeat(300) }, { fetched_at: "Jan 1 2026 " + "(comment)".repeat(100) }]) {
+      const capture = { ...chatgptApi, ...fields };
+      const response = await handleIngestRequest(new Request("http://local/captures", { method: "POST", body: JSON.stringify(capture) }), { rawDir: root });
+      expect(response.status).toBe(400);
+    }
+    expect(listRawCaptures(root, "chatgpt", "conv-1")).toEqual([]);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
