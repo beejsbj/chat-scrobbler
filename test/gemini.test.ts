@@ -233,24 +233,12 @@ test("Gemini adapter only advances cursor for captured conversations", async () 
   expect(result.maxConversationUpdatedAt).not.toBeNull();
 });
 
-test("Gemini adapter falls back to DOM capture when RPC fails", async () => {
-  const captures: Array<{ source_id: string; payload: unknown }> = [];
-
-  const fetcher: FetchLike = async () => {
-    // Simulate RPC failure
-    return new Response("Internal Server Error", { status: 500 });
-  };
-
-  const pageCtx = makeFakePageCtx(["failconv1234abcd"]);
-  const result = await createGeminiAdapter(fetcher, pageCtx).sync({
-    lastSync: null,
-    emitCapture: async (c) => { captures.push({ source_id: c.source_id, payload: c.payload }); },
-  });
-
-  expect(result.captured).toBe(1);
-  expect(captures[0].source_id).toBe("failconv1234abcd");
-  // Payload should be DOM fallback shape
-  expect((captures[0].payload as Record<string, unknown>).dom_fallback).toBe(true);
+test("Gemini adapter aborts on an RPC outage without sending a DOM substitute", async () => {
+  const captures: unknown[] = [];
+  await expect(createGeminiAdapter(async () => new Response("", { status: 500 }), makeFakePageCtx(["failconv1234abcd"])).sync({
+    emitCapture: async capture => { captures.push(capture); },
+  })).rejects.toMatchObject({ name: "TransientSyncError" });
+  expect(captures).toEqual([]);
 });
 
 test("Gemini adapter falls back to DOM capture when WIZ data unavailable", async () => {
@@ -337,22 +325,10 @@ test("Gemini captureOne emits a single capture via the RPC path", async () => {
   expect((captures[0].payload as Record<string, unknown>)?.dom_fallback).toBeUndefined();
 });
 
-test("Gemini captureOne falls back to DOM capture when the RPC fails", async () => {
-  const captures: Array<{ source_id: string; payload: unknown }> = [];
-  const fetcher: FetchLike = async () => new Response("Internal Server Error", { status: 500 });
-  const pageCtx = makeFakePageCtx(["failconv1234abcd"]);
-
-  await createGeminiAdapter(fetcher, pageCtx).captureOne?.(
-    "failconv1234abcd",
-    null,
-    {
-      emitCapture: async (c) => { captures.push({ source_id: c.source_id, payload: c.payload }); },
-    },
-  );
-
-  expect(captures).toHaveLength(1);
-  expect(captures[0].source_id).toBe("failconv1234abcd");
-  expect((captures[0].payload as Record<string, unknown>).dom_fallback).toBe(true);
+test("Gemini captureOne aborts on an RPC outage", async () => {
+  await expect(createGeminiAdapter(async () => new Response("", { status: 500 }), makeFakePageCtx(["failconv1234abcd"])).captureOne!(
+    "failconv1234abcd", null, { emitCapture: async () => { throw new Error("must not emit"); } },
+  )).rejects.toMatchObject({ name: "TransientSyncError" });
 });
 
 test("Gemini captureOne uploads discovered attachment bytes into raw capture assets", async () => {
@@ -513,14 +489,14 @@ test("Gemini adapter returns empty result when sidebar has no conversations", as
   expect(result.maxConversationUpdatedAt).toBeNull();
 });
 
-test("Gemini sync continues after ingest failure without sending a DOM substitute", async () => {
+test("Gemini sync continues after a deterministic parse failure without sending a DOM substitute", async () => {
   const logs = (await import("bun:test")).spyOn(console, "error").mockImplementation(() => {});
   const attempts: string[] = [];
   try {
     const result = await createGeminiAdapter(async () => new Response(makeBatchExecuteResponse("hNvQHb", [["conversation-data"]])), makeFakePageCtx(["bad", "good"])).sync({
       lastSync: "2026-06-05T08:00:00Z", emitCapture: async capture => {
         attempts.push(capture.source_id);
-        if (capture.source_id === "bad") throw new Error("private-token");
+        if (capture.source_id === "bad") throw new SyntaxError("private-token");
       },
     });
     expect(attempts).toEqual(["bad", "good"]);

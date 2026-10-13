@@ -271,3 +271,9 @@ test("background media fetch rejects cross-provider and auth-document probes", a
   expect(await sendRuntimeMessage({ type: "SCROBBLER_ASSET_FETCH", url: "https://lh3.googleusercontent.com/gg-dl/image", upload: asset })).toMatchObject({ ok: false });
   expect(uploads).toBe(0);
 });
+
+for (const status of [400, 500]) test(`background carries ${status} capture rejection classification to the tab`, async () => {
+  globalThis.fetch = (async () => new Response("rejected", { status })) as unknown as typeof fetch;
+  const result = await sendRuntimeMessage({ type: "SCROBBLER_CAPTURE_READY", capture: buildRawCapture({ source: "chatgpt", sourceId: "c", endpoint: "/detail", payload: {} }) });
+  expect(result).toMatchObject({ ok: false, error_type: status === 400 ? "deterministic" : "transient" });
+});

@@ -9,6 +9,7 @@ import { boundedAssetBuffer } from "./providers/asset-bytes";
 import { validateAssetBytes, validateAssetResponse } from "./providers/asset-response";
 import { AssetTransfers } from "./asset-transfers";
 import { uploadAssetToIngest } from "./asset-upload";
+import { DeterministicCaptureError, TransientSyncError } from "./providers/sync-errors";
 import type {
   AssetFetchMessage,
   AssetFailureMessage,
@@ -93,7 +94,9 @@ chrome.alarms.onAlarm.addListener((alarm: { name: string }) => {
 
 chrome.runtime.onMessage.addListener((message: RuntimeMessage, sender: any, sendResponse: (response: unknown) => void) => {
   handleRuntimeMessage(message, sender).then(sendResponse, (error) => {
-    sendResponse({ ok: false, error: error instanceof Error ? error.message : String(error) });
+    sendResponse({ ok: false, error: error instanceof Error ? error.message : String(error),
+      ...(error instanceof DeterministicCaptureError ? { error_type: "deterministic" }
+        : error instanceof TransientSyncError ? { error_type: error.name === "RateLimitError" ? "rate_limit" : "transient", retryAfterMs: (error as any).retryAfterMs, status: (error as any).status } : {}) });
   });
   return true;
 });
@@ -295,12 +298,14 @@ async function postCapture(message: CaptureReadyMessage): Promise<unknown> {
   const settings = await getSettings();
   const headers: Record<string, string> = { "content-type": "application/json" };
   if (settings.ingestToken) headers["authorization"] = `Bearer ${settings.ingestToken}`;
-  const res = await fetch(capturesUrl(settings.ingestBaseUrl), {
+  let res: Response;
+  try { res = await fetch(capturesUrl(settings.ingestBaseUrl), {
     method: "POST",
     headers,
     body: JSON.stringify(message.capture),
-  });
-  if (!res.ok) throw new Error(`Ingest rejected capture with HTTP ${res.status}: ${await res.text()}`);
+  }); } catch { throw new TransientSyncError("Receiver network unavailable"); }
+  if (res.status >= 500 || res.status === 429) throw new TransientSyncError(`Receiver temporarily unavailable (${res.status})`);
+  if (!res.ok) throw new DeterministicCaptureError(`Receiver rejected capture (${res.status})`, res.status);
   const ingest = await res.json();
   if (ingest.count === 0 && Array.isArray(ingest.skipped_deleted) && ingest.skipped_deleted.some((item: { source: string; source_id: string }) => item.source === message.capture.source && item.source_id === message.capture.source_id)) return { ok: true, captured: false, ingest };
   await mutateStatus((status) => {

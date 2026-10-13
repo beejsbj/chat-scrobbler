@@ -1,3 +1,4 @@
+import { abortTransientCapture } from "./sync-errors";
 import { logSyncFailure, SyncFailureTracker } from "./sync-failures";
 import { buildRawCapture } from "../../../shared/src";
 import { assetReferences, uploadProviderAssets } from "./assets";
@@ -6,7 +7,6 @@ import {
   asArray,
   asObject,
   fetchJson,
-  isRateLimitError,
   maxIso,
   shouldCapture,
   type ConversationSummary,
@@ -29,7 +29,7 @@ export function createClaudeAdapter(fetcher: FetchLike = fetch.bind(globalThis))
       let refreshed = new Map<string, ReturnType<typeof claudeAssetCandidates>[number]>();
       try { refreshed = new Map(claudeAssetCandidates(await fetchJson(fetcher, endpoint), id, org.uuid).map(candidate => [candidate.pointer, candidate])); }
       catch (error) {
-        if (isRateLimitError(error)) throw error;
+        abortTransientCapture(error);
         // Existing pointers still get their own bounded download attempt and failure report.
       }
       return uploadProviderAssets(fetcher, options.uploadAsset, references.map(ref => ({
@@ -106,8 +106,11 @@ async function syncClaude(fetcher: FetchLike, options: ProviderSyncOptions): Pro
     if (items.length === 0) break;
 
     for (const item of items) {
+      failures.observed(item.id);
+      const retry = failures.shouldRetry(item.id, item.updatedAt);
       scanned += 1;
       if (options.shouldIgnore?.("claude", item.id)) {
+        failures.succeeded(item.id);
         skipped += 1;
         continue;
       }
@@ -116,7 +119,7 @@ async function syncClaude(fetcher: FetchLike, options: ProviderSyncOptions): Pro
         maxConversationUpdatedAt = maxIso(maxConversationUpdatedAt, item.updatedAt);
         continue;
       }
-      if (!shouldCapture(item.updatedAt, options.lastSync)) {
+      if (!retry && !shouldCapture(item.updatedAt, options.lastSync)) {
         skipped += 1;
         continue;
       }
@@ -153,7 +156,7 @@ async function syncClaude(fetcher: FetchLike, options: ProviderSyncOptions): Pro
         captured += 1;
         maxConversationUpdatedAt = maxIso(maxConversationUpdatedAt, item.updatedAt);
       } catch (error) {
-        if (isRateLimitError(error)) throw error;
+        abortTransientCapture(error);
         failed++;
         failures.failed(item.id, item.updatedAt);
         if (failures.isQuarantined(item.id, item.updatedAt)) maxConversationUpdatedAt = maxIso(maxConversationUpdatedAt, item.updatedAt);
@@ -165,6 +168,7 @@ async function syncClaude(fetcher: FetchLike, options: ProviderSyncOptions): Pro
     if (items.length < LIST_LIMIT) break;
   }
 
+  failures.finishListing();
   return {
     source: "claude",
     scanned,

@@ -5,6 +5,7 @@ import type { ConversationState } from "./sidebar/reconcile";
 import { ASSET_CHUNK_BYTES } from "./asset-transfers";
 import { backfillProviderAssets } from "./asset-backfill";
 import { SyncFailureTracker } from "./providers/sync-failures";
+import { DeterministicCaptureError, TransientSyncError } from "./providers/sync-errors";
 import type { RuntimeMessage, SyncRequest, SyncResponse } from "./messages";
 import type { RawCapture, UploadedAsset } from "../../shared/src";
 import type { AssetUploadRequest } from "./messages";
@@ -108,7 +109,8 @@ async function uploadAsset(asset: AssetUploadRequest): Promise<UploadedAsset> {
 async function emitCapture(capture: RawCapture): Promise<boolean> {
   const response = await sendRuntimeMessage({ type: "SCROBBLER_CAPTURE_READY", capture });
   if (response?.ignored || response?.captured === false) return false;
-  if (!response?.ok) throw new Error(response?.error ?? "Background ingest failed");
+  if (!response?.ok) throw response?.error_type === "deterministic"
+    ? new DeterministicCaptureError("Receiver rejected capture") : new TransientSyncError("Receiver temporarily unavailable");
   return true;
 }
 

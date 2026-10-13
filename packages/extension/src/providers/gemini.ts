@@ -1,3 +1,4 @@
+import { abortTransientCapture, DeterministicCaptureError, TransientSyncError } from "./sync-errors";
 import { logSyncFailure, SyncFailureTracker } from "./sync-failures";
 /**
  * Gemini scrobbler provider.
@@ -38,7 +39,6 @@ import { buildRawCapture } from "../../../shared/src";
 import { assetReferences, uploadProviderAssets, type ProviderAssetCandidate } from "./assets";
 import { geminiApiAssetCandidates } from "./gemini-assets";
 import {
-  isRateLimitError,
   maxIso,
   parseRetryAfterMs,
   RateLimitError,
@@ -205,12 +205,7 @@ async function captureGeminiOne(
 
   // PRIMARY PATH: batchexecute hNvQHb RPC.
   if (wizData) {
-    let payload: unknown;
-    try { payload = await fetchConversationRpc(fetcher, id, wizData); }
-    catch (error) {
-      if (isRateLimitError(error)) throw error;
-      // Fall through to DOM only when the provider RPC fails.
-    }
+    const payload = await fetchConversationRpc(fetcher, id, wizData);
     if (payload !== undefined) {
       const apiCandidates = geminiApiAssetCandidates(payload, id);
       const apiPointers = new Set(apiCandidates.map(candidate => candidate.pointer));
@@ -283,8 +278,10 @@ async function syncGemini(
   const ids = pageCtx.listConversationIds();
 
   for (const id of ids) {
+    failures.observed(id);
     scanned += 1;
     if (options.shouldIgnore?.("gemini", id)) {
+      failures.succeeded(id);
       skipped += 1;
       continue;
     }
@@ -325,7 +322,7 @@ async function syncGemini(
       captured += 1;
       maxConversationUpdatedAt = maxIso(maxConversationUpdatedAt, fetchedAt);
     } catch (error) {
-      if (isRateLimitError(error)) throw error;
+      abortTransientCapture(error);
       failed++;
       failures.failed(id, null);
       if (failures.isQuarantined(id, null)) maxConversationUpdatedAt = maxIso(maxConversationUpdatedAt, fetchedAt);
@@ -333,6 +330,7 @@ async function syncGemini(
     }
   }
 
+  failures.finishListing();
   return { source: "gemini", scanned, captured, skipped, failed, captureFailures: failures.list(), maxConversationUpdatedAt: failures.pending ? options.lastSync ?? null : maxConversationUpdatedAt, account: null };
 }
 
@@ -368,15 +366,17 @@ async function fetchConversationRpc(
 
   const body = new URLSearchParams({ "f.req": fReq, at: wiz.at });
 
-  const res = await fetcher(`${BATCHEXECUTE_PATH}?${params.toString()}`, {
+  let res: Response;
+  try { res = await fetcher(`${BATCHEXECUTE_PATH}?${params.toString()}`, {
     method: "POST",
     credentials: "include",
     headers: { "content-type": "application/x-www-form-urlencoded" },
     body: body.toString(),
-  });
+  }); } catch { throw new TransientSyncError("Provider network unavailable"); }
 
   if (res.status === 429 || res.status === 503) throw new RateLimitError(BATCHEXECUTE_PATH, res.status, parseRetryAfterMs(res.headers.get("retry-after")));
-  if (!res.ok) throw new Error(`batchexecute ${CONVERSATION_RPC_ID} failed with HTTP ${res.status}`);
+  if (res.status >= 500) throw new TransientSyncError(`Provider temporarily unavailable (${res.status})`);
+  if (!res.ok) throw new DeterministicCaptureError(`Provider rejected capture (${res.status})`, res.status);
   const text = await res.text();
   return parseBatchExecuteResponse(text, CONVERSATION_RPC_ID);
 }
@@ -433,5 +433,5 @@ export function parseBatchExecuteResponse(body: string, targetRpcId: string): un
       }
     }
   }
-  throw new Error(`batchexecute response contained no wrb.fr entry for ${targetRpcId}`);
+  throw new SyntaxError(`batchexecute response contained no wrb.fr entry for ${targetRpcId}`);
 }

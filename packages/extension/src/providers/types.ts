@@ -1,5 +1,6 @@
 import type { ProviderSource, RawCapture, UploadedAsset, ConversationCaptureFailure, AssetBackfillReference } from "../../../shared/src";
 import type { AssetUploadRequest } from "../messages";
+import { DeterministicCaptureError, TransientSyncError } from "./sync-errors";
 
 export interface ProviderSyncOptions {
   lastSync?: string | null;
@@ -42,7 +43,7 @@ export interface ConversationSummary {
   updatedAt: string | null;
 }
 
-export class RateLimitError extends Error {
+export class RateLimitError extends TransientSyncError {
   readonly status: number;
   readonly retryAfterMs: number | null;
 
@@ -84,11 +85,14 @@ export function maxIso(a: string | null, b: string | null): string | null {
 }
 
 export async function fetchJson(fetcher: FetchLike, input: string, init?: RequestInit): Promise<unknown> {
-  const res = await fetcher(input, { credentials: "include", ...init });
+  let res: Response;
+  try { res = await fetcher(input, { credentials: "include", ...init }); }
+  catch { throw new TransientSyncError("Provider network unavailable"); }
   if (res.status === 429 || res.status === 503) {
     throw new RateLimitError(input, res.status, parseRetryAfterMs(res.headers.get("retry-after")));
   }
-  if (!res.ok) throw new Error(`${input} failed with HTTP ${res.status}`);
+  if (res.status >= 500) throw new TransientSyncError(`Provider temporarily unavailable (${res.status})`);
+  if (!res.ok) throw new DeterministicCaptureError(`Provider rejected capture (${res.status})`, res.status);
   return res.json();
 }
 

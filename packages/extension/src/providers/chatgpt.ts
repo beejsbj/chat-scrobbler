@@ -1,3 +1,4 @@
+import { abortTransientCapture } from "./sync-errors";
 import { logSyncFailure, SyncFailureTracker } from "./sync-failures";
 import { buildRawCapture } from "../../../shared/src";
 import { assetReferences, uploadProviderAssets } from "./assets";
@@ -6,7 +7,6 @@ import {
   asArray,
   asObject,
   fetchJson,
-  isRateLimitError,
   maxIso,
   shouldCapture,
   type ConversationSummary,
@@ -102,15 +102,18 @@ async function syncChatgpt(fetcher: FetchLike, options: ProviderSyncOptions): Pr
     // have passed the frontier — there is nothing new left to capture on subsequent
     // pages and we can stop paginating entirely. Only applied when lastSync is set;
     // a full-reconcile (no cursor) must walk all pages.
-    if (options.lastSync && items.every((item) => !shouldCapture(item.updatedAt, options.lastSync))) {
+    if (!failures.hasRetries && options.lastSync && items.every((item) => !shouldCapture(item.updatedAt, options.lastSync))) {
       scanned += items.length;
       skipped += items.length;
       break;
     }
 
     for (const item of items) {
+      failures.observed(item.id);
+      const retry = failures.shouldRetry(item.id, item.updatedAt);
       scanned += 1;
       if (options.shouldIgnore?.("chatgpt", item.id)) {
+        failures.succeeded(item.id);
         skipped += 1;
         continue;
       }
@@ -119,7 +122,7 @@ async function syncChatgpt(fetcher: FetchLike, options: ProviderSyncOptions): Pr
         maxConversationUpdatedAt = maxIso(maxConversationUpdatedAt, item.updatedAt);
         continue;
       }
-      if (!shouldCapture(item.updatedAt, options.lastSync)) {
+      if (!retry && !shouldCapture(item.updatedAt, options.lastSync)) {
         skipped += 1;
         continue;
       }
@@ -152,7 +155,7 @@ async function syncChatgpt(fetcher: FetchLike, options: ProviderSyncOptions): Pr
         captured += 1;
         maxConversationUpdatedAt = maxIso(maxConversationUpdatedAt, item.updatedAt);
       } catch (error) {
-        if (isRateLimitError(error)) throw error;
+        abortTransientCapture(error);
         failed++;
         failures.failed(item.id, item.updatedAt);
         if (failures.isQuarantined(item.id, item.updatedAt)) maxConversationUpdatedAt = maxIso(maxConversationUpdatedAt, item.updatedAt);
@@ -164,6 +167,7 @@ async function syncChatgpt(fetcher: FetchLike, options: ProviderSyncOptions): Pr
     if (items.length < LIST_LIMIT) break;
   }
 
+  failures.finishListing();
   return { source: "chatgpt", scanned, captured, skipped, failed, captureFailures: failures.list(), maxConversationUpdatedAt: failures.pending ? options.lastSync ?? null : maxConversationUpdatedAt, account: null };
 }
 
@@ -176,7 +180,7 @@ async function getAccessToken(fetcher: FetchLike): Promise<string | null> {
     const session = asObject(await fetchJson(fetcher, "/api/auth/session"));
     return typeof session.accessToken === "string" ? session.accessToken : null;
   } catch (error) {
-    if (isRateLimitError(error)) throw error;
+    abortTransientCapture(error);
     return null;
   }
 }
