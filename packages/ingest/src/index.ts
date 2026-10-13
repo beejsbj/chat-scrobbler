@@ -25,7 +25,7 @@ if (import.meta.main) {
   Bun.serve({
     hostname: bindHost,
     port,
-    fetch: (req) => handleIngestRequest(req, { canonicalDir, indexPath, ingestToken, embeddingProvider }),
+    fetch: (req) => handleIngestRequest(req, { ...cfg, canonicalDir, indexPath, ingestToken, embeddingProvider }),
   });
 
   console.log(`chat scrobbler ingest listening on http://${bindHost}:${port}`);

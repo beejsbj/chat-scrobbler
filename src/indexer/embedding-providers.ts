@@ -1,9 +1,17 @@
+import { persistEmbeddingStatus } from "./embedding-status";
+import { monitorStatePath } from "../monitor/state";
 import type { ChatHistoryConfig, EmbeddingProviderKind } from "../config";
 import type { EmbeddingProvider, EmbeddingContext } from "./sqlite";
 
 const GEMINI_EMBED_URL = "https://generativelanguage.googleapis.com/v1beta/models";
 
 export function embeddingProviderFromConfig(cfg: ChatHistoryConfig): EmbeddingProvider | null {
+  const provider = configuredProvider(cfg);
+  if (provider) persistEmbeddingStatus(provider, monitorStatePath(cfg.indexPath, cfg.monitorStatePath));
+  return provider;
+}
+
+function configuredProvider(cfg: ChatHistoryConfig): EmbeddingProvider | null {
   switch (cfg.embeddingProvider) {
     case "none":
       return null;
