@@ -22,6 +22,10 @@ function append(cache:Cache,rows:Iterable<Row>) {
 export function cachedSubstringCandidates(db:Database,literal:string,source:string|undefined,limit:number) {
   if(isSearchWarming(db) || searchWarmupFailed(db))return [];
   ensureMessageLookup(db);
+  // Revision, dirty-session reads and winner hydration share one WAL snapshot.
+  return db.transaction(()=>substringSnapshot(db,literal,source,limit))();
+}
+function substringSnapshot(db:Database,literal:string,source:string|undefined,limit:number) {
   const state=stamp(db);let cache=caches.get(db);
   if(!cache || state.revision<cache.revision || cache.revision===state.revision && (cache.changes!==state.changes || cache.version!==state.version)) {
     cache={...state,rows:new Map(),sessions:new Map()};
@@ -35,7 +39,7 @@ export function cachedSubstringCandidates(db:Database,literal:string,source:stri
         JOIN messages_fts f ON f.rowid=k.fts_rowid AND f.session_id=k.session_id AND f.message_id=k.message_id WHERE k.session_id=? ORDER BY f.rowid`).iterate(session_id) as Iterable<Row>);
     }
   }
-  Object.assign(cache,stamp(db));
+  Object.assign(cache,stamp(db),{revision:state.revision});
   const read=db.query(`SELECT text,message_id,session_id,role,created_at,source,title FROM messages_fts
     WHERE rowid=? AND session_id=? AND message_id=? AND instr(lower(text),?)>0`);
   const hits:any[]=[],needle=literal.toLowerCase();
@@ -78,5 +82,7 @@ export async function warmLiteralCache(db:Database,opts:WarmupOptions,onProgress
     }
     cache.revision=revision;
   }
-  Object.assign(cache,stamp(db));caches.set(db,cache);
+  // An external commit can occur after the terminal catch-up check. Counters
+  // may advance, but never claim a revision whose rows were not reconciled.
+  Object.assign(cache,stamp(db),{revision:cache.revision});caches.set(db,cache);
 }
