@@ -203,3 +203,9 @@ test("config file embeddingProvider is validated before being applied", () => {
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("asset size limit is configurable and rejects invalid bounds", () => {
+  expect(loadConfig({ env: {}, configPath: null }).maxAssetBytes).toBe(100 * 1024 * 1024);
+  expect(loadConfig({ env: { CHAT_SCROBBLER_MAX_ASSET_BYTES: "7" }, configPath: null }).maxAssetBytes).toBe(7);
+  expect(loadConfig({ env: { CHAT_SCROBBLER_MAX_ASSET_BYTES: "-1" }, configPath: null }).maxAssetBytes).toBe(100 * 1024 * 1024);
+});

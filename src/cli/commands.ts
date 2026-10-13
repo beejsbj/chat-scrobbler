@@ -691,11 +691,13 @@ export async function startServe(cfg: ChatHistoryConfig): Promise<ServeHandles> 
   const ingestServer = Bun.serve({
     hostname: cfg.bindHost,
     port: cfg.ingestPort,
+    maxRequestBodySize: Math.max(cfg.maxAssetBytes, 16 * 1024 * 1024),
     async fetch(req: Request): Promise<Response> {
       return handleIngestRequest(req, {
         canonicalDir: cfg.canonicalDir,
         indexPath: cfg.indexPath,
         ingestToken: cfg.ingestToken ?? undefined,
+        maxAssetBytes: cfg.maxAssetBytes,
         embeddingProvider,
       });
     },

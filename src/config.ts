@@ -20,6 +20,8 @@ export interface ChatHistoryConfig {
   indexPath: string;
   /** Port the ingest server (capture receiver) listens on. */
   ingestPort: number;
+  /** Maximum bytes per captured asset, default 100 MiB. */
+  maxAssetBytes: number;
   /** Port the read-only MCP HTTP connector listens on. */
   mcpHttpPort: number;
   /** Interface both HTTP servers bind to. Defaults to localhost. */
@@ -55,6 +57,7 @@ export const DEFAULT_CONFIG: ChatHistoryConfig = {
   canonicalDir: join(DATA_HOME, "canonical", "sessions"),
   indexPath: join(DATA_HOME, "index", "sessions.db"),
   ingestPort: 4318,
+  maxAssetBytes: 100 * 1024 * 1024,
   mcpHttpPort: 4319,
   bindHost: "127.0.0.1",
   mcpAuthToken: null,
@@ -88,6 +91,7 @@ const FILE_KEYS: Array<keyof ChatHistoryConfig> = [
   "canonicalDir",
   "indexPath",
   "ingestPort",
+  "maxAssetBytes",
   "mcpHttpPort",
   "bindHost",
   "mcpAuthToken",
@@ -128,6 +132,8 @@ export function loadConfig(opts: LoadConfigOptions = {}): ChatHistoryConfig {
   applyString(cfg, "canonicalDir", env.CANONICAL_DIR);
   applyString(cfg, "indexPath", env.INDEX_PATH);
   applyNumber(cfg, "ingestPort", env.PORT);
+  const assetLimit = env.CHAT_SCROBBLER_MAX_ASSET_BYTES ? Number(env.CHAT_SCROBBLER_MAX_ASSET_BYTES) : cfg.maxAssetBytes;
+  cfg.maxAssetBytes = Number.isSafeInteger(assetLimit) && assetLimit > 0 ? assetLimit : DEFAULT_CONFIG.maxAssetBytes;
   applyNumber(cfg, "mcpHttpPort", env.MCP_HTTP_PORT);
   applyString(cfg, "bindHost", env.CHAT_SCROBBLER_BIND_HOST ?? env.BIND_HOST);
   applyNullableString(cfg, "mcpAuthToken", env.MCP_AUTH_TOKEN ?? env.CHAT_SCROBBLER_MCP_AUTH_TOKEN);
