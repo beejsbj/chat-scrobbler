@@ -83,8 +83,8 @@ The semantic leg alerts if disabled, unreachable, or lacking any usable vectors
 for a nonempty index, even when there are no recent messages.
 
 Upload alerts use the recent window; totals persist forever. Hourly buckets can
-extend the window by up to one hour. Recent attachment checks also use canonical
-file write times to catch failed assets on newly synced old conversations.
+extend the window by up to one hour. Recent attachment checks use session
+`updated_at` or the latest message time, independent of file rewrites.
 Orphan raw parse checks examine every version without a canonical session and
 ignore tombstones. They work on historical raw without process logs.
 
@@ -147,3 +147,6 @@ No production data was read, no deployment was performed, and no branch was push
   Successful retries resolve that session's pending failure without resetting
   totals. IDs are opaque hashes (at most 20 shown per provider; counts are exact).
   Canonical/index errors are excluded from parser counters and parse-failure logs.
+- Attachment recency now uses session/message timestamps instead of canonical
+  mtime. A regression rewrites an old session twice and confirms no renewed alert,
+  then adds a recent message timestamp and confirms the attachment is checked.

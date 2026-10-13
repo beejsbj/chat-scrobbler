@@ -488,8 +488,8 @@ embedder, and explicitly disabled embeddings also alert. An empty recent window
 has coverage 1, but does not hide a dead semantic leg.
 
 The recent window also covers upload failure reports and missing attachment
-blocks. Canonical session write times count as recent for attachment checks even
-when the conversation is old. Upload failures use hourly buckets, so they can
+blocks. Attachment recency uses session `updated_at` or the latest message time;
+unify/reparse file rewrites do not make old attachments recent. Upload failures use hourly buckets, so they can
 remain recent for up to one extra hour. Lifetime totals persist without causing
 permanent upload alerts. Orphaned raw versions are parsed read-only to distinguish
 parse failures from successful captures missing their canonical projection;

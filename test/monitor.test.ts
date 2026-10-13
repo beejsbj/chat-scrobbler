@@ -259,6 +259,7 @@ test("recent media blocks missing a local_path field still alert", async () => {
   const { root, opts } = setup();
   try {
     const session = getParser("chatgpt", "api")(chatgpt as RawCapture)[0];
+    session.updated_at = new Date().toISOString();
     for (const message of session.messages) for (const block of message.blocks) {
       if ("local_path" in block) delete (block as any).local_path;
     }
@@ -398,5 +399,18 @@ test("a canonical write failure does not count as a parser failure", async () =>
     const report = await monitorReport(opts);
     expect(report.parse.chatgpt?.total_failures).toBe(0);
     expect(report.parse.chatgpt?.recent_failed_sessions).toBe(0);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("rewriting old canonical sessions does not make missing attachments recent", async () => {
+  const { root, opts } = setup();
+  try {
+    const session = getParser("chatgpt", "api")(chatgpt as RawCapture)[0];
+    writeSession(opts.canonicalDir, session);
+    writeSession(opts.canonicalDir, session);
+    expect((await monitorReport(opts)).assets.missing_recent_blocks).toBe(0);
+    session.messages[0].created_at = new Date().toISOString();
+    writeSession(opts.canonicalDir, session);
+    expect((await monitorReport(opts)).assets.missing_recent_blocks).toBe(1);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });

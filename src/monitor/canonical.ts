@@ -10,8 +10,9 @@ export function canonicalObservations(canonicalDir: string, since: number) {
     try {
       const session = JSON.parse(readFileSync(file, "utf8")) as Session;
       if (!Array.isArray(session.messages)) throw new Error("invalid session");
-      // Check recently captured sessions even when their conversation is old.
-      const recent = Math.max(Date.parse(session.updated_at) || 0, statSync(file).mtimeMs) >= since;
+      // Rebuilds change file times, not conversation activity.
+      const activity = Math.max(Date.parse(session.updated_at) || 0, ...session.messages.map(message => Date.parse(message.created_at ?? "") || 0));
+      const recent = activity >= since;
       for (const message of session.messages) for (const block of message.blocks) {
         if (!recent) continue;
         if (block.type !== "attachment" && block.type !== "image" && block.type !== "audio" && block.type !== "video" && block.type !== "file") continue;
