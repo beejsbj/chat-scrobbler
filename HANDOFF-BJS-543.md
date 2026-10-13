@@ -9,7 +9,7 @@ dependencies or embedding model/config changes were introduced.
 - Raw storage before parsing or index opening, including all entries of a batch.
   Parser failures leave the original capture available. A raw write failure logs
   a categorical reason and returns a retriable 503.
-- Changed endpoint/payload versions preserve incoming JSON bytes in gzip,
+- Changed endpoint/payload/asset versions preserve incoming JSON bytes in gzip,
   including unknown fields and individual batch entries. Unchanged polling skips
   another version. `listRawCaptures` and `readRawCapture` support future reparse.
   New canonical `raw_ref` values are relative to the raw store; legacy references
@@ -44,11 +44,14 @@ Container data root with the existing Dockerfile: `/data`.
   raw/<source>/<encoded-source-id>/
     <fetched-at>-<sha256-of-original-bytes>.json.gz
     latest.json                       # replaceable latest content lookup
+  raw/.asset-refs/                     # derived ownership catalogue
   canonical/
     sessions/
       <source>/<source_id>.json        # safe legacy filenames unchanged
       .deleted/<source>/<encoded-source-id>.json
+      .asset-refs/                     # derived ownership catalogue
     assets/
+      .asset-refs/                     # derived ownership catalogue
       sha256/<first-two-hash-characters>/<sha256>       # shared blob
       sha256/<first-two-hash-characters>/<sha256>.json  # provenance metadata
       <source>/<sanitized-source-id>/<sha256>.<ext>    # compatibility hard link
@@ -65,22 +68,27 @@ basenames. Tombstones contain only `source`, `source_id`, and `deleted_at`.
 
 ## Decisions and trade-offs
 
-- Dedupe compares the latest session version's endpoint/payload using a stable
+- Dedupe compares the latest session version's endpoint/payload/assets using a stable
   content hash, ignoring timestamps and other envelope fields. Only the first
   envelope of unchanged content is retained. Changed content retains exact bytes;
   its filename hash covers those bytes. A tiny persisted lookup avoids scanning
   history on every capture. Archives lacking the lookup need one discovery scan.
+  Old hash formats are upgraded by reading just the pointed-to version once.
 - Canonical JSON and lookup files use temp/write/fsync/rename/directory-fsync.
   Immutable raw/blob/metadata publication uses temp/write/fsync/link followed by
   directory fsync. Explicit deletion is the exception to append-only storage.
 - Asset aliases preserve extension and existing canonical path compatibility.
   Blobs and aliases must share a filesystem. Backups copy both, so they may
   duplicate bytes; restored aliases can be ordinary copies.
-- Deletion scans surviving canonical, raw and upload aliases to establish shared
-  blob ownership. This costs archive reads during deletion. Unreadable surviving
-  references log `asset_cleanup_deferred` and retain uncertain blobs rather than
-  erase another session's data. Shared blobs retain their original provenance.
-- Tombstones block recapture and asset uploads (410), canonical reads/writes,
+- Write-time ownership catalogues establish shared blob ownership without reading
+  unrelated captures. They retain historical links until session deletion. Legacy
+  archives need one initialization scan when blob GC is first required; empty
+  candidate sets skip it. Restore groups all tombstones before one GC pass.
+  Unreadable hash sources log `asset_cleanup_deferred` and retain uncertain blobs.
+  Canonical/raw/alias/index deletion still completes. Deferred CAS bytes may need
+  later maintenance. Shared blobs retain their original provenance.
+- Tombstones discard recaptures with a successful 200 acknowledgement and
+  `skipped_deleted`; asset uploads remain 410. They block canonical reads/writes,
   future reparse through the store API, and restoration of deleted content.
   New backups preserve them. Existing local tombstones also apply to forced
   restore. Earlier backups are not modified or remotely erased.
@@ -90,21 +98,23 @@ basenames. Tombstones contain only `source`, `source_id`, and `deleted_at`.
 - Deep health embeds one diagnostic string per cache refresh with a two-second
   deadline and cancellation signal. Paid backends incur that request cost.
   SQLite lock checks can additionally wait five seconds. Results, including
-  failures, are cached for 30 seconds; concurrent probes are coalesced.
+  failures, are cached for 30 seconds; concurrent probes are coalesced. The index
+  probe rolls back its header write and does not reliably detect a full index disk.
 - Semantic candidates stream through cosine ranking. Only the bounded top
   candidate window is checked against FTS text. Stale top candidates can reduce
-  the returned semantic hit count. The query still scans compatible vectors;
+  the returned semantic hit count; removed candidates are not backfilled from
+  lower ranks. The query still scans compatible vectors;
   this slice does not add an ANN index.
 - Existing canonical data/index rows need no destructive migration. Payloads and
   media already lost before deployment cannot be recovered here.
 
 ## Review fixes
 
-All ten review findings were checked against the implementation and covered by
-regression tests where behavior changed.
+The first review findings were checked against the implementation and covered by
+regression tests. Finding 1 and follow-on defects were completed in round 2 below.
 
-1. **Polling growth:** endpoint/payload dedupe ignores volatile envelopes; tests
-   exercise changed timestamps, cursor, JSON key order, endpoint and payload.
+1. **Polling growth:** endpoint/payload/assets dedupe ignores volatile envelopes; tests
+   exercise changed timestamps, cursor, JSON key order, endpoint, payload and assets.
    Exact original bytes remain available when content changes. `latest.json`
    replaces per-capture directory enumeration/sorting.
 2. **Unify pruning:** an empty canonical list with indexed sessions, or removal
@@ -115,7 +125,8 @@ regression tests where behavior changed.
    the configured ingest token and caches for 30 seconds. Embedding outage returns
    200 with degraded/unavailable semantics; store/index failure returns 503.
    A rolled-back database header write verifies writability without a persistent
-   probe table. A newly created probe index is also put in WAL mode.
+   probe table. It does not reliably detect a full disk. A newly created probe
+   index is also put in WAL mode.
 4. **Search allocation:** cosine ranking happens first, then FTS validates only
    top candidates. The reviewer's 35,500-message/31,000-vector/768-dimension
    dataset used about 95 MB RSS, versus roughly 1.4 to 2 GB before this fix in
@@ -137,9 +148,49 @@ regression tests where behavior changed.
 9. **Deletion:** the authenticated DELETE endpoint removes raw versions, aliases
    and blobs unreferenced by survivors, then index rows. Minimal tombstones are
    durable before cleanup. Tests cover private/shared blobs, raw-only ownership,
-   repeated delete, blocked recapture, and stale snapshot content during restore.
+   repeated delete, ignored recapture, and stale snapshot content during restore.
 10. **Counters/MCP:** ingest and MCP failure scopes are independent on a shared
     provider. Structured search content contains status without duplicating hits.
+
+## Review fixes, round 2
+
+- **B, legacy sync compatibility:** `POST /captures` returns 200 with
+  `{ ok: true, count, spine, skipped_deleted }` even when a deleted chat is
+  recaptured. Skipped entries identify `source` and `source_id`; `count` counts
+  accepted captures only. A mixed batch stores every live entry's exact JSON
+  bytes before parsing. Deleted entries create no new raw/canonical data and do
+  not open the index when there are no live entries.
+- **B, extension resilience:** ChatGPT, Claude and Gemini sync catch individual
+  detail/emit failures, log a categorical reason, count `failed`, and continue to
+  later conversations. Any failure keeps the previous sync cursor for retry.
+  New background code treats `skipped_deleted` as uncaptured without incrementing
+  posted counts. Gemini no longer substitutes DOM data after an ingest failure;
+  its fallback is limited to provider RPC failure.
+- **C, corrupt-file deletion:** each hash-collection operation is guarded. Invalid
+  canonical JSON, gzip, raw JSON, ownership records or legacy asset metadata
+  defer blob GC and log a safe reason; canonical files, raw session directories,
+  aliases, reference records and index rows are still removed. Tests cover
+  corruption, repeated delete, and retention of uncertain blobs for that run.
+- **A, asset-aware dedupe:** the stable hash includes `assets`, including pointer,
+  SHA-256 and local-path linkage. Upload recovery therefore produces a new raw
+  version even when the provider payload is unchanged. Timestamp/cursor changes
+  still dedupe. `latest.json` hash version 2 upgrades earlier lookups in place
+  without creating a duplicate version for unchanged content.
+- **D, cleanup cost:** no candidate hashes means no survivor scan. Raw capture,
+  canonical and upload writers maintain asset-to-session references. The
+  catalogues live in `.asset-refs` under each respective store root, with
+  `owners/<source>/<encoded-id>.json`,
+  `by-hash/<sha256>/<source>/<encoded-id>.json`, and a `ready` marker. Writes
+  retain historical ownership, bounded by the session's distinct assets, rather
+  than by polling timestamps. Legacy stores initialize once, preserving both
+  raw links and first-seen upload provenance. New writes then maintain the records.
+  Restore invalidates the restored upload catalogue, erases all tombstoned
+  content, and performs one shared ownership/GC pass. Tests assert zero survivor
+  gzip reads for asset-free deletion and maintained ownership, and at most one
+  initialization pass across multiple restore tombstones.
+- **Scope/limitations:** no new environment variables, dependencies, volume mounts,
+  deploys, pushes or compose changes. The deep-health full-disk limitation and
+  top-K non-backfilling behavior remain as described above.
 
 ## Deliberately left for later slices
 
@@ -158,9 +209,12 @@ regression tests where behavior changed.
   reporting, vector preservation and stale filtering, concurrency, WAL/timeouts,
   prune refusal/force, circuit breaking, cached/authenticated health, atomic
   publication, traversal, oversized requests, deletion and backup/restore.
-- Final `bun test`: **354 passed, 0 failed**, across 36 files, 1,024 assertions.
+- Final `bun test`: **367 passed, 0 failed**, across 36 files, 1,129 assertions.
 - Final `bun x tsc --noEmit`: **passed**.
 - `git diff --check`: **passed**.
+- The first full round-two run hit five-second timeouts in deep health and raw
+  backup/restore. The isolated 19-test run and final full run passed without
+  changing timeouts (final full run: 6.53 seconds).
 - Reviewer scratch scripts were inspected read-only. Their synthetic benchmark
   database was opened read-only. Production data was not inspected or modified.
 
@@ -169,12 +223,14 @@ regression tests where behavior changed.
 - No new required environment variables, dependencies or volume mounts.
 - The existing `/mnt/server-ssd/chat-scrobbler:/data` mount covers raw, canonical
   sessions/tombstones, assets and SQLite sidecars. Directories are created as
-  needed; the service user needs write permission throughout these paths.
+  needed, including derived `.asset-refs` catalogues; the service user needs
+  write permission throughout these paths.
 - Keep load-balancer liveness on `/health`. Use `/health/deep` with
   `Authorization: Bearer <INGEST_TOKEN>` for operational readiness; without a
   configured token the deep endpoint returns 401. Semantic outage alone is 200.
 - Deploy the updated extension for asset failure reporting and message/URL
-  provenance. v0.3.0 uploads and captures remain compatible.
+  provenance and per-conversation sync resilience. v0.3.0 remains compatible
+  with successful tombstone acknowledgements.
 - Deleted conversations stay deleted even if provider polling attempts recapture.
   Tombstones are included in new backups. Older snapshots gain neither raw
   captures nor tombstones retroactively.

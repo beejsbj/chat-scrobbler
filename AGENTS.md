@@ -18,6 +18,7 @@ them through a CLI and a read-only MCP connector.
 | `src/parsers/chatgpt.ts`, `claude.ts`, `gemini.ts` | Provider parsers |
 | `src/parsers/render.ts` | `renderText(blocks)` -- derives `Message.text` |
 | `src/store/raw.ts` | Append-only gzip captures; list/read versions for future reparse |
+| `src/store/asset-reference-store.ts` | Write-time ownership records for bounded blob cleanup |
 | `src/store/assets.ts` | SHA-256 blobs, provenance metadata, compatible session aliases |
 | `src/store/delete.ts`, `tombstones.ts` | Archive deletion, private blob cleanup, resurrection guards |
 | `src/store/sessions.ts` | File I/O for canonical sessions; `activePath()` |
