@@ -17,7 +17,7 @@ function fill(db:Database,cache:Cache,scope:VectorScope,session?:string):void {
   const params=[scope.provider_kind,scope.provider_model,scope.dimension,...(session ? [session] : [])];
   for(const table of ["message_vectors","message_embeddings"]) {
     const binary=table==="message_vectors";
-    const rows=db.query(`SELECT v.session_id,v.message_id,v.embedding,
+    const rows=db.query(`SELECT v.session_id,v.message_id,${binary ? "v.embedding" : "NULL"} AS embedding,
       ${binary ? "v.text_hash" : "NULL"} AS text_hash,f.rowid,f.text,f.source
       FROM ${table} v JOIN message_lookup k ON k.session_id=v.session_id AND k.message_id=v.message_id
       JOIN messages_fts f ON f.rowid=k.fts_rowid
@@ -29,7 +29,8 @@ function fill(db:Database,cache:Cache,scope:VectorScope,session?:string):void {
       if(cache.identities.has(key) || row.text_hash && row.text_hash!==textVectorHash(row.text)) continue;
       let vector:ArrayLike<number>;
       try {
-        vector=binary ? decodeVector(row.embedding,scope.dimension) : JSON.parse(row.embedding);
+        vector=binary ? decodeVector(row.embedding,scope.dimension) : JSON.parse((db.query(`SELECT embedding FROM message_embeddings
+          WHERE session_id=? AND message_id=?`).get(row.session_id,row.message_id) as {embedding:string}).embedding);
         if(!binary && (!Array.isArray(vector) || vector.length!==scope.dimension || !vector.every(v=>typeof v==="number" && Number.isFinite(v)))) continue;
       } catch {continue;}
       let norm=0;for(let i=0;i<scope.dimension;i++) norm+=vector[i]*vector[i];
