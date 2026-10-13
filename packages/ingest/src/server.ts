@@ -1,4 +1,4 @@
-import { ingestHealth } from "./health";
+import { cachedIngestHealth } from "./health";
 import { Database } from "bun:sqlite";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
@@ -97,7 +97,11 @@ export async function handleIngestRequest(req: Request, opts: IngestServerOption
   // GET /health is always unauthenticated -- used for local health checks and
   // Tailscale load-balancer probes that cannot easily set bearer headers.
   if (req.method === "GET" && url.pathname === HEALTH_PATH) {
-    const health = await ingestHealth(opts);
+    return json({ ok: true, service: "chat-scrobbler-ingest", status: "alive" });
+  }
+  if (req.method === "GET" && url.pathname === `${HEALTH_PATH}/deep`) {
+    if (!opts.ingestToken || req.headers.get("authorization") !== `Bearer ${opts.ingestToken}`) return json({ ok: false, error: "Unauthorized" }, 401);
+    const health = await cachedIngestHealth(opts);
     return json(health, health.ok ? 200 : 503);
   }
 

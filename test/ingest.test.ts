@@ -20,10 +20,10 @@ interface IngestTestResponse {
   service?: string;
 }
 
-test("health endpoint reports unconfigured receiver as degraded", async () => {
+test("health endpoint reports receiver liveness", async () => {
   const res = await handleIngestRequest(new Request("http://local/health"), {});
-  expect(res.status).toBe(503);
-  expect(await res.json()).toMatchObject({ ok: false, service: "chat-scrobbler-ingest", status: "degraded" });
+  expect(res.status).toBe(200);
+  expect(await res.json()).toMatchObject({ ok: true, service: "chat-scrobbler-ingest", status: "alive" });
 });
 
 test("capture endpoint accepts a single raw capture and returns count", async () => {
