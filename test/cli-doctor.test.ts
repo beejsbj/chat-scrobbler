@@ -267,3 +267,28 @@ test("runDoctor reports defaults-only config discovery without failing", async (
   expect(result.exitCode).toBe(0);
   expect(out.join("\n")).toContain("PASS config: defaults only");
 });
+
+test("doctor checks EmbeddingGemma health and detects an unavailable model", async () => {
+  for (const available of [true,false]) {
+    const {run,out}=makeDoctor({cfg:cfgWith({embeddingProvider:"embeddinggemma"}),fetches:{
+      "GET http://127.0.0.1:4320/health":{ok:true,status:200,body:JSON.stringify({status:"ok",model:"litert-community/embeddinggemma-2-740m-litert-lm",model_available:available,loaded:false})},
+    }});
+    await run();
+    expect(out.join("\n")).toContain(`${available ? "PASS" : "FAIL"} embedding provider: embeddinggemma`);
+  }
+});
+
+test("doctor counts current binary vectors only for the configured model", async () => {
+  const {mkdtempSync,rmSync}=await import("node:fs"); const {tmpdir}=await import("node:os"); const {join}=await import("node:path");
+  const {openIndex,indexSession}=await import("../src/indexer/sqlite"); const {fixture}=await import("./support/embedding-fixture");
+  const root=mkdtempSync(join(tmpdir(),"doctor-vectors-"));
+  try {
+    const path=join(root,"index.db"), db=openIndex(path);
+    indexSession(db,fixture(),{embeddingProvider:{kind:"ollama",model:"nomic-embed-text",embed:()=>[1,0]}}); db.close();
+    for(const model of ["nomic-embed-text","another-model"]) {
+      const out:string[]=[];
+      await runDoctor({cfg:cfgWith({indexPath:path,embeddingProvider:"ollama",embeddingModel:model}),configPath:null,existsSync:()=>true,write:s=>out.push(s),fetch:async()=>new Response(JSON.stringify({jsonrpc:"2.0",models:[{name:model}]}),{headers:{"content-type":"application/json"}})});
+      expect(out.join("\n")).toContain(`embeddings coverage: ${model==="nomic-embed-text" ? 1 : 0} rows`);
+    }
+  } finally {rmSync(root,{recursive:true,force:true});}
+});

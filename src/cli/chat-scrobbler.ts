@@ -51,6 +51,12 @@ Recall workflow (the two steps an agent follows)
 
 Usage: chat-scrobbler <command> [options]
 
+Derived embeddings
+  embed-backfill --model <id> [--provider <kind>] [--limit <n>] [--rate <rps>]
+    Resume missing/changed text and assets; default 0.2 requests/s, pause above load 8
+    --load-threshold <n>    Host load ceiling
+    --migrate-only         Convert legacy JSON to float32 without inference
+
 Recall
   search <query>         Hybrid search when embeddings are enabled; otherwise FTS
     --grep <pattern>       Regex search mode instead of FTS or semantic search
@@ -234,6 +240,12 @@ async function main(argv: string[]): Promise<void> {
         const report = await runReparseCmd({ cfg, write, source: values.source, session: values.session,
           dryRun: values["dry-run"], json: values.json });
         if (report.failed || report.embedding_failures) process.exitCode = 1;
+        break;
+      }
+
+      case "embed-backfill": {
+        const { runEmbedBackfill } = await import("./embed-backfill");
+        await runEmbedBackfill(rest, cfg, write);
         break;
       }
 

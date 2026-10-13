@@ -1,3 +1,5 @@
+import { createAssetVectorTables, replaceAssetLinks, pruneUnownedAssetVectors, assetSemanticCandidates } from "./asset-embeddings";
+import { cosine } from "./vector-math";
 // src/indexer/sqlite.ts
 import { embeddingFailed, embeddingStatus, embeddingSucceeded, validateEmbedding, type SemanticStatus } from "./embedding-status";
 import { createVectorTables, decodeVector, putTextVector, reusableTextVector, vectorScope } from "./vector-store";
@@ -53,6 +55,7 @@ export function openIndex(path: string): Database {
     PRIMARY KEY (session_id, message_id));`);
   migrateMessageEmbeddings(db);
   createVectorTables(db);
+  createAssetVectorTables(db);
   return db;
 }
 
@@ -109,6 +112,8 @@ export function deleteIndexedSession(db: Database, source: string, sourceId: str
     db.run(`DELETE FROM messages_fts WHERE session_id = ?`, [sessionId]);
     db.run(`DELETE FROM message_embeddings WHERE session_id = ?`, [sessionId]);
     db.run(`DELETE FROM message_vectors WHERE session_id = ?`, [sessionId]);
+    db.run("DELETE FROM asset_embedding_links WHERE session_id=?", [sessionId]);
+    pruneUnownedAssetVectors(db);
     db.run(`DELETE FROM sessions WHERE id = ?`, [sessionId]);
   }
   return { deleted: rows.length > 0, sessionIds };
@@ -267,6 +272,7 @@ function indexLiteralSession(db: Database, s: Session, opts: IndexSessionOptions
   if (opts.canonicalDir && isSessionDeleted(opts.canonicalDir, s.source, s.source_id)) return false;
   // message_count counts rendered active messages; FTS indexes every branch so
   // search can reach text on inactive (edited-away) branches too.
+  replaceAssetLinks(db, s);
   const activeCount = activePath(s).filter(message => message.text.trim()).length;
   db.run(`INSERT OR REPLACE INTO sessions (id, source, source_id, title, created_at, updated_at, message_count)
           VALUES (?,?,?,?,?,?,?)`,
@@ -478,14 +484,20 @@ function semanticCandidates(db: Database, queryEmbedding: number[], metadata: Em
     ranked.sort((a, b) => b.similarity - a.similarity);
     if (ranked.length > limit) ranked.pop();
   }
-  if (!ranked.length) return [];
+  const assetRows = assetSemanticCandidates(db, queryEmbedding, metadata, source, limit);
+  if (!ranked.length) return assetRows.sort((a,b)=>b.similarity-a.similarity).slice(0,limit);
   // FTS metadata is unindexed: one scan returns text only for the top-K identities.
   const values = ranked.map(() => "(?,?)").join(",");
   const currentRows = db.query(`SELECT session_id, message_id, text, title FROM messages_fts
     WHERE (session_id, message_id) IN (VALUES ${values})`)
     .all(...ranked.flatMap(row => [row.session_id, row.message_id])) as Array<{ session_id: string; message_id: string; text: string; title: string | null }>;
   const currentText = new Map(currentRows.map(row => [hitKey(row.session_id, row.message_id), row]));
-  return ranked.filter(row => { const current = currentText.get(hitKey(row.session_id, row.message_id)); return current?.text === row.text && (current.title ?? null) === (row.title ?? null); });
+  const current = ranked.filter(row => { const live = currentText.get(hitKey(row.session_id, row.message_id)); return live?.text === row.text && (live.title ?? null) === (row.title ?? null); });
+  const unique = new Map<string, SemanticRow>();
+  for (const row of [...current,...assetRows].sort((a,b)=>b.similarity-a.similarity)) {
+    const key = hitKey(row.session_id,row.message_id); if (!unique.has(key)) unique.set(key,row);
+  }
+  return [...unique.values()].slice(0,limit);
 }
 
 function fusedScore(literalRank?: number, semanticRank?: number): number {
@@ -516,18 +528,6 @@ function parseEmbedding(raw: string): number[] {
   } catch {
     return [];
   }
-}
-
-function cosine(a: ArrayLike<number>, b: ArrayLike<number>): number {
-  if (a.length === 0 || a.length !== b.length) return 0;
-  const n = a.length;
-  let dot = 0, a2 = 0, b2 = 0;
-  for (let i = 0; i < n; i++) {
-    dot += a[i] * b[i];
-    a2 += a[i] * a[i];
-    b2 += b[i] * b[i];
-  }
-  return a2 && b2 ? dot / (Math.sqrt(a2) * Math.sqrt(b2)) : 0;
 }
 
 function embeddingMetadata(provider: EmbeddingProvider, embedding: number[]): EmbeddingMetadata {
