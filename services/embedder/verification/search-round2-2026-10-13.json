@@ -1,0 +1,77 @@
+{
+  "source_commit": "8e2f29b",
+  "host": "bjslab",
+  "dataset": "synthetic, no archive content",
+  "messages": 35718,
+  "vectors": 31143,
+  "dimension": 768,
+  "text_bytes": 77150880,
+  "mode": "searchMessagesReport, includes literal and semantic merging; fixed provider excludes model/network",
+  "limits": {
+    "MemoryMax": "2G",
+    "MemorySwapMax": 0,
+    "CPUQuota": "200%",
+    "Nice": 19,
+    "RuntimeMaxSec": 120
+  },
+  "initial_loadavg_1m": 4.02,
+  "warmup_ms": 5734.940892999999,
+  "warmup_timer_ticks": 2062,
+  "max_timer_gap_ms": 29.299668999999994,
+  "early_query": {
+    "ms": 2.9153299999998126,
+    "semantic": "warming",
+    "hits": 1
+  },
+  "warm_search_median_ms": 80.30373300000065,
+  "warm_search_max_ms": 127.10696199999802,
+  "refresh": [
+    {
+      "dirty_sessions": 5,
+      "search_ms": 91.37583699999959,
+      "refreshed_sessions": 5
+    },
+    {
+      "dirty_sessions": 30,
+      "search_ms": 93.10601500000485,
+      "refreshed_sessions": 30
+    },
+    {
+      "dirty_sessions": 300,
+      "search_ms": 238.78969499999948,
+      "refreshed_sessions": 300
+    }
+  ],
+  "other_model": {
+    "search_ms": 93.0498560000051,
+    "refreshed_sessions": 0
+  },
+  "rss_mib_after_explicit_gc": 326.625,
+  "session_plans": {
+    "binary": "SEARCH v USING INDEX message_vector_session (session_id=? AND provider_kind=? AND provider_model=? AND dimension=?)",
+    "legacy": "SEARCH v USING INDEX legacy_vector_session (session_id=? AND provider_kind=? AND dimension=?)"
+  },
+  "result": "exit 0; transient unit ended; synthetic database removed",
+  "earlier_passes": [
+    {
+      "source_commit": "0cd71ff",
+      "warm_search_median_ms": 76.00147700000525,
+      "refresh_300_ms": 162.08330399999977,
+      "warmup_ms": 5131.166009000004,
+      "max_timer_gap_ms": 33.30461799999466
+    },
+    {
+      "phase": "whole-session refresh before message-level invalidation",
+      "refresh_300_ms": [
+        551.1319310000035,
+        462.34457600000314
+      ]
+    },
+    {
+      "phase": "message refresh before exact identity index",
+      "refresh_300_ms": 307.9410149999967,
+      "warmup_ms": 17660.200403999996,
+      "max_timer_gap_ms": 132.30613699999958
+    }
+  ]
+}

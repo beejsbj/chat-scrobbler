@@ -4,6 +4,121 @@ Branch: `feat/bjs-548-embeddinggemma`. Updated 2026-10-13 after independent revi
 Production data and services were not changed. Nothing was deployed or pushed.
 The production compose still defaults to Ollama and `nomic-embed-text`.
 
+## Review fixes, round 2
+
+Rebased onto `origin/main` at `d28ab40` (PR #12, typed parts). Conflicts preserved
+reparse/unknown-types commands, opaque-message counts, and canonical tombstone
+checks. Parsers and canonical schema were not edited for these fixes.
+
+### Automatic coverage and query priority
+
+`serve` now owns a background job for its active provider. No host timer is needed.
+It starts after listeners are up, waits ten minutes by default, and attempts at
+most 25 pending text/asset items per batch. Environment settings are forwarded by
+the main Coolify compose:
+
+| Setting | Default |
+| --- | --- |
+| `CHAT_SCROBBLER_EMBED_BACKFILL_ENABLED` | `true`, effective only with a provider |
+| `CHAT_SCROBBLER_EMBED_BACKFILL_INTERVAL_MS` | `600000` |
+| `CHAT_SCROBBLER_EMBED_BACKFILL_BATCH_SIZE` | `25` |
+
+Each run scans at most 1,000 rows, yields every 100 rows and before inference, and
+skips current binary vectors using their input digest/metadata without decoding
+all blobs. Underfilled unfinished sweeps continue after one second; filled
+batches and completed sweeps wait the configured interval. Thus a covered 31k-row
+prefix does not add hours before tail messages are visited. Cursors are in memory;
+completed vectors are durable, so restart resumes by skipping current vectors.
+Failures stop the batch, advance the sweep to avoid one bad message starving the
+rest, and remain pending for the next sweep. Provider outages use exponential
+backoff with 0.75–1.25 jitter, capped at one hour with the default interval.
+
+One shared provider gives queued queries priority over documents for
+Ollama/Gemini/hash. Gemma uses its existing native queue so a query can dispatch
+between a long document's HTTP chunks. Active inference is never preempted.
+Background batches omit archive-wide coverage/ETA probes; their scan cursor and
+per-batch counts are live. Manual CLI runs retain full coverage and ETA reports.
+
+Authenticated `GET /health/deep` includes `backfill`: enabled/running state,
+interval/batch size, next run, consecutive failures, live progress and the last
+run's timestamps, outcome and report. This snapshot is read on each request,
+independent of the cached filesystem/provider health probe. `/status/report` does
+not exist on the rebased main and remains absent.
+
+The CLI, migration-only jobs and scheduler share a process mutex plus an atomic,
+PID/nonce-owned lock directory beside the index. A live lock never expires.
+Dead owners are recovered only in the same boot/PID namespace. Run manual jobs
+with `docker exec` in scrobbler's namespace. SIGTERM/SIGINT stop the job, abort its
+request, release its lock and stop listeners; compiled subprocess tests verify
+this. A SIGKILL followed by container recreation can leave a foreign-namespace
+lock. Recovery fails closed: verify the old container/job is dead before removing
+that specific lock. A long manual initial rebuild excludes automatic batches;
+use bounded manual batches when active-provider coverage needs time between them.
+
+### Cache refresh, warmup and deadlines
+
+Session indexes exist on both binary and legacy vector tables. `EXPLAIN` confirms
+`message_vector_session` and `legacy_vector_session` are used for session refresh;
+FTS validation uses its rowid access. Revision triggers distinguish session edits,
+model sets, and individual vector writes. FTS edits refresh the session, vector
+writeback refreshes only that message using its primary identity index, and
+another model/asset set does not rebuild the active text matrix or literal cache.
+Retained JSON duplicates no longer hydrate chat text when valid binary identities
+are already cached. Removed messages are deleted from both tables during capture
+reconciliation even when no inference runs.
+
+After MCP listens, lookup, matrix and lowercase literal cache warm in 64-row
+batches that yield between transactions/decoding batches. Initial lookup building
+clears old dirty markers because its full sweep already covers them; edits during
+the sweep still get catch-up markers. Early queries get FTS literal results and
+`semantic: warming`, without waiting for query inference or a synchronous matrix
+load. Raw rowid pages are bounded before freshness filtering, so sparse/stale
+sets still yield and cancel. Literal refresh/hydration uses a WAL snapshot and
+publishes only its reconciled revision; two real-connection regressions reproduce
+commits at publication boundaries. Cancellation drains warmup before closing its connection. Gemini/Ollama
+requests now always combine their ten-second deadline with a caller signal;
+Gemma keeps its per-request 120-second deadline.
+
+Final copy-sized **synthetic bjslab** benchmark at `8e2f29b`, nice 19, CPU quota 200%, RAM 2 GiB,
+no swap; started at one-minute load 4.02. Model inference and HTTP transport are
+excluded by the fixed provider. Search includes literal recall, ranking,
+freshness and merging. There are 35,718 messages, 31,143 vectors, 768 dimensions,
+77 MB text and retained JSON alongside binary.
+
+| Measurement | Final |
+| --- | --- |
+| Background warmup wall time | 5.73 s |
+| Query while warming | 2.92 ms, literal hit, `semantic: warming` |
+| Largest timer gap during warmup | 29.30 ms, 2,062 timer ticks |
+| Warm search median / maximum, five runs | 80.30 / 127.11 ms |
+| Search after 5 / 30 / 300 vector writes in distinct sessions | 91.38 / 93.11 / 238.79 ms |
+| Other-model write | 93.05 ms, zero sessions refreshed |
+| Total process RSS after explicit benchmark GC | 326.63 MiB |
+
+Earlier local stress passes exposed 551 and 462 ms for 300 whole-session
+refreshes; message-level invalidation and primary identity lookups removed that
+remaining cost. A more contended intermediate pass took 17.66 s to warm and had a
+132 ms timer gap. Cooperative yielding does not promise a host scheduling latency
+under arbitrary contention. A prior successful pass measured 76 ms warm median and 162 ms after 300 writes.
+The matrix allocation remains about 93 MiB. Existing
+reviewer measurements of 57–108 ms warm real-copy search and about 410 MiB RSS are
+separate evidence; this round did not read the real index. Receipt:
+`services/embedder/verification/search-round2-2026-10-13.json`. Reproduce with
+`bun scripts/benchmark-search-round2.ts` on bounded disposable data/compute.
+
+### Video margin and final gates
+
+The default is now **four sampled frames**, keeping the 120-second native/client
+watchdog. Prior native four-frame inference took 41.91 s; eight-frame decoding and
+inference took 91.83 s. Four frames leave more timing margin at the cost of less
+temporal detail. Synthetic ten-second decoding and API tests confirm the default
+cap. Historical eight-frame receipts and an explicitly eight-frame native probe
+are retained. No native inference was rerun in round 2; four-frame spike parity
+and default ffmpeg sampling are distinct checks.
+
+Final gates and test receipt are listed under Verification below. Production
+provider remains Ollama/nomic. No deployment, production backfill or push occurred.
+
 ## Review fixes
 
 The review used a real-index copy with 35,718 messages and 31,143 nomic vectors.
@@ -67,7 +182,7 @@ Media accepts exactly one allowed-root file path or strict `base64`, with type
 video uses a frame list. Private snapshots, no-follow file access, bounded ffmpeg
 threads, direct demuxers, and disabled network/playlist inputs protect decoding.
 Audio becomes 16 kHz mono PCM16 WAV, at most 30 seconds. Images/frames have longest
-side 768 pixels. Video spans a clip up to 300 seconds, without its audio track.
+side 768 pixels. Video samples at most four frames across a clip up to 300 seconds, without its audio track.
 Bodies are at most 8 MiB, local files 16 MiB, batches eight items, and decoding
 30 seconds per item. Larger archived assets need a future segmentation path.
 
@@ -141,7 +256,7 @@ transaction. Busy timeout remains five seconds per connection.
 Search lazily loads **one active model matrix per open index**, normalizing once.
 Its matrix for 31,143 x 768 is 95,671,296 bytes, about **91.2 MiB** used, with 93 MiB allocated in 1024-row blocks, plus identity
 metadata. Growth adds one block instead of doubling the matrix. Text stays in FTS and is fetched only for winning semantic rows.
-Revision triggers coalesce changes by session; writes refresh affected sessions,
+Revision triggers scope vector changes by model and message; FTS edits refresh affected sessions,
 and model switches replace the reachable matrix. Data-version/change counters
 also detect other connections and untracked writes; decreasing revisions after a
 rollback force a reload. Hydration checks identity and input digest in a consistent
@@ -200,9 +315,9 @@ pinned Bun 1.3.14. The assertion checks a five-run warm median below 300 ms.
 
 Ingest persists raw, canonical, FTS, and asset ownership before acknowledgement.
 It never calls a model inside `POST /captures`, even when one is configured.
-Missing or stale vectors themselves are the durable pending marker; no volatile
-queue or scheduled job is created. Semantic coverage stays incomplete until a
-maintenance backfill runs. A hanging embedder cannot delay a capture.
+Missing or stale vectors themselves are the durable pending marker. The serve
+scheduler processes them automatically; manual backfill handles initial rebuilds
+and full coverage/ETA checks. A hanging embedder cannot delay a capture.
 
 ```sh
 chat-scrobbler embed-backfill \
@@ -276,8 +391,8 @@ All returned 768 finite floats with norm within about 2e-7 of one. A cosine just
 above one in the logs is float32 arithmetic rounding. Four-frame parity used the
 same original files; the eight-frame request exercised the actual service decoder.
 Eight-frame **peak RSS was 1,452.0 MiB (1.42 GiB)** and observed cgroup peak was
-1,081.5 MiB. Keep the eight-frame cap: RSS was below the 1.8 GiB precautionary
-threshold. Warm shared model pages explain lower cgroup charge than process RSS;
+1,081.5 MiB. RSS was below the 1.8 GiB precautionary threshold, but round 2
+lowers the default to four frames for watchdog margin. Warm shared model pages explain lower cgroup charge than process RSS;
 a fresh image/container must still be measured, and larger shapes remain bounded
 by the 2 GiB hard cap.
 
@@ -295,10 +410,9 @@ use the explicit `/proc` and `memory.peak` samples above instead.
 
 ## Cutover and rollback, not executed
 
-1. Before deploying nonblocking ingest, arrange and verify periodic, nonoverlapping
-   backfill batches for the **currently active Ollama/nomic provider**, at nice 19.
-   This is a prerequisite on Ollama too: new captures are literal-only until a
-   maintenance pass. No scheduler is installed or started by this branch.
+1. Verify the automatic scheduler is enabled for the **currently active
+   Ollama/nomic provider** and advances through pending rows in deep health.
+   No host timer is required. Verify graceful stop/lock cleanup under Coolify.
    Verify backups, index location, disk budget for both sets, and cache/asset
    permissions. Merge reviewed code, then have Coolify deploy the main compose
    with its explicit embeddings profile. Keep provider/model on Ollama/nomic.
@@ -323,8 +437,8 @@ use the explicit `/proc` and `memory.peak` samples above instead.
    `CHAT_SCROBBLER_EMBED_PROVIDER=embeddinggemma`,
    `CHAT_SCROBBLER_EMBED_MODEL=litert-community/embeddinggemma-2-740m-litert-lm`,
    and base URL `http://embedder:4320`, then let Coolify recreate scrobbler.
-   Keep Ollama through the rollback window. Arrange and verify a periodic capped
-   backfill for new pending captures; no scheduler is installed by this branch.
+   Keep Ollama through the rollback window. Verify deep health shows the automatic
+   job for the new active provider and that pending captures receive vectors.
 5. After stable operation, remove the Ollama dependency/service. Retain its volume
    for an agreed rollback window. Deleting nomic, unused `qwen3:4b`, or the roughly
    2.8 GB `/mnt/server-ssd/ollama` store requires separate destructive approval.
@@ -340,21 +454,28 @@ Returning to this branch catches up its lookup through the rollback change marke
 
 ## Verification and open risks
 
-Final checks are green on code at `93573e0`, in disposable Daytona compute with
-Bun 1.3.14 and frozen dependencies: **445 Bun tests pass, zero failures**;
-**`bun x tsc --noEmit` passes**; Python discovers 42 tests, with **40 passing and
-two deployment-renderer tests skipped because cloud Docker Compose is absent**.
-Local Python verification passed **all 42, zero skips**, including both compose
-rendering regressions. Python source did not change afterward. Tests use fake
-engines and synthetic ffmpeg fixtures; native parity/RSS is a separate capped run.
+Final checks are green at `8e2f29b`, in disposable Daytona compute with Bun 1.3.14
+and frozen dependencies:
 
-Receipts: `test-results-review-2026-10-13.json`, `python-review-2026-10-13.json`,
-`native-review-2026-10-13.json`, and `search-review-2026-10-13.json`, all under
-`services/embedder/verification/`. The committed JSON captures the measurements;
-raw `.log` files are local diagnostics. The host benchmark preceded the last
-identity/snapshot and bounded-block changes; those passed the final suite. The
-later cloud benchmark retry hit a GitHub download outage, so no additional speed
-claim is made for it. The verifier now retries downloads with bounded waits.
+- **522 Bun tests pass, zero failures**, 60 files and 2,047 assertions.
+- **`bun x tsc --noEmit` passes**.
+- Python discovers 45 tests: cloud has 43 pass and two Docker Compose renderer
+  skips; **local has all 45 pass, zero skips**, including deployment rendering.
+- **`bun build --compile src/cli/chat-scrobbler.ts` passes**, and the compiled
+  binary runs **`embed-backfill --help` with exit 0**. The suite also exercises
+  compiled serve shutdown during an active backfill request.
+- The final capped host benchmark passes its warming/coverage and under-300-ms
+  warm/refresh assertions. The bounded review found no remaining definite issues
+  after fixing its concurrent literal-revision race and sparse-page finding.
+
+Run `sh scripts/verify-bjs-548.sh` on disposable compute for all portable gates.
+Local Python: `python3 -m unittest discover -s services/embedder/tests -v`.
+Round-2 receipts: `test-results-round2-2026-10-13.json` and
+`search-round2-2026-10-13.json` under `services/embedder/verification/`.
+Earlier `*-review-2026-10-13.json` receipts preserve the round-1 native, RSS,
+search and test evidence. No native model inference was repeated in round 2.
+Tests use fake engines and synthetic ffmpeg fixtures. Cloud sandbox deletion was
+verified; all host benchmark units ended and removed their synthetic databases.
 
 Regressions cover title normalization/UTF-8, whitespace skip and exit behavior,
 load and migration exemptions, chunk/request ETA, success-only latency samples,
@@ -368,10 +489,11 @@ provenance, and the following search observed deletion.
 
 Remaining operational gates: actual Docker build/start smoke, Coolify profile
 propagation and effective limits, real-archive quality/latency, and phone agreement.
-Cold matrix loading exceeds the warm target. Asset vectors still use a bounded
+Cold matrix loading still costs seconds in total but now yields in the background; early serve queries use literal recall. Asset vectors still use a bounded
 streaming scan; production currently has none. Very large sessions cost more to
 refresh incrementally. Model/preprocessing changes under an unchanged identity
 require rebuilding the affected set; ordinary freshness cannot detect that policy
 change. Long audio/video and large blobs need segmentation. Native close retains
 allocator memory, and sustained query traffic can delay backfill or expire its
-queue wait. The 2 GiB cgroup remains the final memory bound for unexpected inputs.
+queue wait. Foreign-namespace locks after abrupt container death require verified
+manual recovery; graceful Coolify termination releases them. The 2 GiB cgroup remains the final memory bound for unexpected inputs.
