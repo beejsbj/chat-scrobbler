@@ -1,0 +1,73 @@
+{
+  "date": "2026-10-13",
+  "dataset": "synthetic only, 35718 messages / 31143 vectors / 768 dimensions / 77 MB text; not a production copy",
+  "query_inference_excluded": true,
+  "host": "bjslab",
+  "caps": {
+    "memory_max_bytes": 2147483648,
+    "memory_swap_max_bytes": 0,
+    "cpu_quota": "200%",
+    "nice": 19,
+    "runtime_max_seconds": 120
+  },
+  "matrix_only": {
+    "mode": "http_mcp",
+    "messages": 35718,
+    "vectors": 31143,
+    "dimension": 768,
+    "text_bytes": 77150880,
+    "stages": {
+      "substring_sql_ms": 2229.680174999994,
+      "binary_read_ms": 2898.712440000003,
+      "binary_decode_ms": 257.50058100000024,
+      "validated_read_ms": 1337.0286049999995,
+      "cosine_scan_ms": 51.80504600000131,
+      "top_k_sort_ms": 3.754930000002787
+    },
+    "cold_ms": 9408.558049,
+    "warm_median_ms": 633.8164640000032,
+    "warm_max_ms": 889.0756489999985,
+    "rss_mib": 199.09375
+  },
+  "matrix_and_literal_cache": {
+    "mode": "http_mcp",
+    "messages": 35718,
+    "vectors": 31143,
+    "dimension": 768,
+    "text_bytes": 77150880,
+    "stages": {
+      "substring_sql_ms": 446.14197799999965,
+      "binary_read_ms": 223.39751599999727,
+      "binary_decode_ms": 276.5559350000003,
+      "validated_read_ms": 633.0885940000007,
+      "cosine_scan_ms": 54.86064299999998,
+      "top_k_sort_ms": 3.834105999998428
+    },
+    "cold_ms": 5598.707879000001,
+    "warm_median_ms": 64.29892899999686,
+    "warm_max_ms": 144.11035199999606,
+    "rss_mib": 406.4921875
+  },
+  "initial_load_averages": {
+    "matrix_only": [
+      4.65,
+      5.92,
+      6.75
+    ],
+    "matrix_and_literal_cache": [
+      4.98,
+      6.04,
+      6.7
+    ]
+  },
+  "matrix_used_bytes": 95671296,
+  "matrix_final_block_capacity_bytes": 97517568,
+  "measurement_note": "Host pass preceded additional identity guards/snapshot and bounded-block growth. Those changes passed final tests; no host repeat during later high load. Systemd summary peaks understate observed process RSS.",
+  "snapshot_race_diagnostic": {
+    "injected_concurrent_rowid_reuse": true,
+    "original_snapshot_preserved": true,
+    "next_query_observes_deletion": true
+  },
+  "production_data_read": false,
+  "model_loaded": false
+}

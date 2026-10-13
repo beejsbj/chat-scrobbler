@@ -1,372 +1,377 @@
 # BJS-548 implementation handoff
 
-Branch: `feat/bjs-548-embeddinggemma`, based on `main` at `29fdfd8`.
-Date: 2026-10-13. Implementation and synthetic verification are complete. Production
-provider configuration, data, and services were not changed. Nothing was pushed.
-Deployment, real archive quality checks, and complete native media/RSS measurements
-remain cutover gates.
+Branch: `feat/bjs-548-embeddinggemma`. Updated 2026-10-13 after independent review.
+Production data and services were not changed. Nothing was deployed or pushed.
+The production compose still defaults to Ollama and `nomic-embed-text`.
 
-## Architecture and runtime
+## Review fixes
 
-`services/embedder/` contains a small Python standard-library HTTP service. It
-reuses `venv-a` with LiteRT-LM 0.18.0, the generic 485 MB quantized model from
-`litert-community/embeddinggemma-2-740m-litert-lm`, and the spike's existing HF and
-compilation caches. Snapshot: `24d962e906c7d332c6428e71c9676855024569e2`. There is
-no model download path. Model loading happens on the first valid request.
+The review used a real-index copy with 35,718 messages and 31,143 nomic vectors.
+Its findings motivated the regressions and measurements below. This implementation
+used synthetic data for verification; it did not backfill or read production chats.
 
-One process owns one engine. One lock covers media snapshots, decoding, model
-load, inference, and pooling. Two waiting requests are admitted; further requests
-receive 429. Waiting expires after 110 seconds with 503. Disconnecting a caller
-does not release an in-flight engine lock. Health remains responsive. The HTTP
-loop checks idle state every 0.5 seconds and closes the engine after 300 seconds;
-a later request loads it again. Idle close is tested with fake engines.
+| Finding | Change |
+| --- | --- |
+| Unwritable cache, dependent production startup | UID/GID 1001, image-owned cache, opt-in sidecar in the main compose, no embedder startup dependency |
+| Normal host load blocks rebuild | Serial response-paced requests, optional emergency load brake, migration exempt, ETA |
+| Whitespace messages fail | Skip before inference, report skipped, exclude from eligible coverage |
+| Empty/oversized titles | Trim, default to `none`, cap at 256 UTF-8 bytes on a character boundary |
+| Ingest awaits slow inference | Acknowledge raw/canonical/FTS writes; missing or stale model vectors are pending backfill |
+| One message loses session vectors | Commit successful messages individually, retain failures as pending |
+| Backfill competes with queries | Query-first waiting queue around the single engine mutex |
+| Native media unverified | Native parity and video memory experiment, detailed below |
+| Rollback leaves lookup stale | Durable session-change markers and lazy, resumable lookup batches |
+| Repeated scans take seconds | One active float32 matrix, incremental session refresh, shared HTTP index connection |
+| Close errors/hung engine | Contain close errors; health watchdog detects overdue native work and restarts process |
+| Chat text copied per model | New binary rows store a SHA-256 text digest and an empty compatibility text column |
+| Runtime depends on spike | Self-contained Python image, immutable model revision plus SHA-256 verification |
 
-Text/audio backends use two threads. Vision receives the same setting, but the
-installed binding does not forward a separate vision thread count to native
-settings. The CPU quota remains the enforceable total CPU bound. Both engine and
-per-call options explicitly set 140 vision tokens per image/frame. Input overflow
-raises an error rather than truncating silently. Native context is capped at 2048
-tokens; service text chunks include at most 1800 UTF-8 bytes, including prefix.
+## Architecture, API, and deployment
 
-The [Google model card](https://huggingface.co/google/embeddinggemma-2) specifies
-query/document prefixes and 16 kHz mono audio. The
-[LiteRT model card](https://huggingface.co/litert-community/embeddinggemma-2-740m-litert-lm)
-describes the quantized multimodal build and its 768-dimensional shared space.
-The installed-source audit verifies the actual Python/FFI settings without
-loading the engine: `python3 -B -m services.embedder.verify_api`.
+`services/embedder/` is a Python standard-library HTTP service using
+`litert-lm==0.18.0`. The quantized generic phone artifact is
+`litert-community/embeddinggemma-2-740m-litert-lm`, revision
+`24d962e906c7d332c6428e71c9676855024569e2`. Its SHA-256 is
+`e7a8a2204b91e0f96e92960e84a09a89212e1633dcb7575a9bf3378b4df77f4c`.
+The Docker build fetches and verifies this immutable file into `/opt/models`.
+Serving never downloads weights. Native verification alone reuses the already
+installed spike venv, HF model, compilation cache, and synthetic fixtures.
 
-## API and adapter
+One process owns one lazy engine. One mutex covers decoding, load, inference,
+pooling, and close. Two waiting requests are admitted; further requests receive
+429. Queries precede queued documents, FIFO within each lane. Active work is not
+preempted. Queue expiry is 110 seconds. Disconnects drain native work safely.
+Idle unload defaults to 300 seconds; later requests reload. Two text/audio threads
+are configured; the installed binding does not expose a separate native vision
+thread setter. Both engine and per-call vision budgets are 140 tokens per image
+or frame. Output is 768 dimensional and L2 normalized.
 
-`POST /v1/embeddings` accepts an OpenAI-style text string or string array, with
-`model`, `role`, optional `title`, `dimensions`, and `encoding_format`. Token ID
-input and token usage accounting are unsupported. Default role is document.
+The provider uses the [Google model card](https://huggingface.co/google/embeddinggemma-2)
+query prefix `task: search result | query: {q}` and document prefix
+`title: {title or "none"} | text: {doc}`. Titles are trimmed and capped at 256
+UTF-8 bytes, without splitting a character. Explicit title plus
+`input_format: prefixed` prevents ambiguous delimiters or double prefixes.
+The [LiteRT model card](https://huggingface.co/litert-community/embeddinggemma-2-740m-litert-lm)
+describes the quantized shared multimodal space.
 
-```json
-{"input":"bread notes","role":"document","title":"Recipes"}
-```
-
-The multimodal input is an object or an item in an input array:
+`POST /v1/embeddings` accepts an OpenAI-style string/string array, with `model`,
+`role: query | document`, optional `title`, and ordered `data[index].embedding`.
+Token ID input and token accounting are unsupported. A media item looks like:
 
 ```json
 {"input":{"type":"audio","path":"/data/canonical/assets/sha256/ab/abcdef"},"role":"document"}
 ```
 
-Use `type: image | audio | video` and exactly one `path` or strict `base64` value.
-Paths must resolve beneath configured roots. URL inputs, path traversal, outside
-symlinks, non-files, indirect media playlists, and network decoding are rejected.
-Inputs are copied to bounded private snapshots and removed after each request.
+Media accepts exactly one allowed-root file path or strict `base64`, with type
+`image`, `audio`, or `video`. Single images/audio use a bare native media object;
+video uses a frame list. Private snapshots, no-follow file access, bounded ffmpeg
+threads, direct demuxers, and disabled network/playlist inputs protect decoding.
+Audio becomes 16 kHz mono PCM16 WAV, at most 30 seconds. Images/frames have longest
+side 768 pixels. Video spans a clip up to 300 seconds, without its audio track.
+Bodies are at most 8 MiB, local files 16 MiB, batches eight items, and decoding
+30 seconds per item. Larger archived assets need a future segmentation path.
 
-Responses contain `object: list`, `model`, and ordered
-`data[index].embedding`. Default output is 768 normalized floats; direct API
-callers may request 512, 256, or 128 with renormalization, or float32 base64.
-The scrobbler adapter always requests/validates the full 768-dimensional space.
+The adapter sends document bodies in sequential requests of at most 8 KiB. The
+service splits further at sensible boundaries, at most 1800 UTF-8 bytes including
+prefix per native chunk, with a 2048-token context and overflow errors. Service
+chunk vectors are normalized, averaged, and renormalized; adapter request vectors
+are pooled by body byte weight. Long-message pooling can dilute relevant passages.
+A query can wait for the active document request, then precedes queued backfill.
 
-`GET /health` reports `status`, canonical model ID, filesystem `model_available`,
-`loaded`, `busy`, configured thread/vision budgets, idle timeout, and current RSS.
-Filesystem readiness does not prove successful inference. `doctor` probes this
-contract and reports coverage for the configured model rather than another set.
+`GET /health` is responsive without the engine mutex. It reports filesystem
+readiness, loaded/busy/queued state, RSS, and current native work age. Overdue
+load/inference/close reports `status: hung` with HTTP 503. A separate watchdog exits
+with status 70 for Compose to restart safely. Native timeout defaults to 120
+seconds, configurable up to 300. Idle close exceptions set
+`last_close_error: engine_close_failed` and do not kill `serve_forever`.
+Filesystem readiness is not proof of successful inference.
 
-Configuration:
+Chosen deployment: `services/embedder/Dockerfile` and the opt-in `embedder` service
+in **`docker-compose.bjslab.yml`**, the file Coolify already deploys. No overlay is
+required. `services/embedder/compose.embedder.yml` is now an empty compatibility
+overlay; all service definitions live in the main compose. This choice preserves one deployment plan
+when Coolify recreates services.
 
-```sh
-CHAT_SCROBBLER_EMBED_PROVIDER=embeddinggemma
-CHAT_SCROBBLER_EMBED_MODEL=litert-community/embeddinggemma-2-740m-litert-lm
-CHAT_SCROBBLER_EMBED_BASE_URL=http://embedder:4320
-```
+Enable the profile explicitly with `COMPOSE_PROFILES=embeddings` in the Compose
+invocation. Coolify must pass that setting to its actual Compose process; verify
+its rendered service list before deploying. Scrobbler still starts on Ollama if
+this profile is absent or the sidecar is unhealthy. It has no dependency on
+embedder health. Environment interpolation leaves current defaults intact and
+permits a later explicit provider/model switch. The private base URL is already
+`CHAT_SCROBBLER_EMBED_BASE_URL=http://embedder:4320` for provider overrides.
 
-For a host CLI/local test the URL defaults to `http://127.0.0.1:4320`.
-The JSON config equivalent adds `embeddingBaseUrl`.
-`EmbeddingGemmaProvider.embed()` formats queries as
-`task: search result | query: {q}` and documents as
-`title: {title or "none"} | text: {doc}` using existing context. It sends
-`input_format: prefixed` and an explicit document title, preserving delimiters
-inside titles without adding a second prefix. Media receives no prefix.
-`embedAsset()` accepts all three media types with query/document context.
+The embedder runs as `1001:1001`; its image provisions `/var/cache/embedder` with
+that ownership. Docker initializes the named `embedder-cache` volume from it.
+Previously populated volumes must be checked for ownership before deployment.
+Canonical assets are mounted read-only at `/data/canonical/assets`. The sidecar
+has only an internal Docker network, no published ports or proxy network. Local
+execution binds loopback; Docker wildcard binding requires explicit private mode.
+Browser Origin requests are rejected; trusted callers share the private network.
 
-Long documents are split into sequential requests of at most 8 KiB of body,
-preserving Unicode and whitespace and preferring paragraph/word boundaries.
-The service splits each request further at paragraph/sentence/word boundaries,
-then normalizes the mean of its chunk vectors. The adapter pools request vectors
-weighted by body bytes and renormalizes. This produces one message vector, so a
-small relevant passage in a very long message can be diluted. Phone/server
-comparisons must use the same prefixes, vision budget, artifact, and chunk/pooling
-policy; sharing a model name alone does not guarantee identical message vectors.
-Each HTTP request has a 120-second deadline plus caller cancellation.
+Caps: **2 CPUs, 2 GiB RAM, zero swap, nice 19, two backend threads**, 64 PIDs,
+`cap_drop: ALL`, `no-new-privileges`, and one worker process. Equal `mem_limit` and
+`memswap_limit` disable swap. The watchdog and `restart: unless-stopped` recover
+hangs/OOM. Container build and deployed permissions/cgroups remain smoke gates;
+no image was built or service started for this change.
 
-## Media bounds
+## Storage, lookup, and search measurements
 
-- Images/frames are scaled to a longest side of 768 pixels, preserving aspect.
-- Audio is converted by ffmpeg to 16 kHz mono PCM16 WAV. Inputs above 30 seconds
-  are rejected; actual decoded duration is checked too.
-- Video is capped at 300 seconds and eight sampled frames spanning the clip,
-  including a frame in its final tenth. Frames are passed together as images.
-  Video audio is not included.
-- Bodies are limited to 8 MiB, local files to 16 MiB, and batches to eight items.
-  A media probe/decode has a total 30-second deadline. Oversize/unknown-duration
-  media is rejected rather than silently losing its tail.
+Binary vectors are portable little-endian float32 BLOBs, scoped by
+`(provider_kind, provider_model, dimension)`. Model sets coexist. Search chooses
+only the queried provider's exact set, plus its asset set. `sqlite-vec` was not
+added: the measured matrix scan is small enough under Bun without a native
+extension dependency.
 
-These bounds protect the current host at a cost: larger/longer assets need a future
-segmentation path. The capture store accepts up to 50 MiB, so some future BJS-547
-assets can be archived successfully yet require segmentation before embedding.
+Legacy `message_embeddings` JSON stays intact. `--migrate-only --limit N` converts
+bounded pages of 100, recording a durable rowid cursor; invalid rows are reported
+and never retried forever. Existing newer binary rows are not overwritten. Normal
+backfill also reuses valid matching JSON without inference and repairs corruption.
+New binary rows use `text_hash`; previous binary rows with a full `text` remain
+readable through a compatibility path. This additive schema change neither erases
+legacy vectors nor rewrites source data. Re-ingesting/backfilling validates current
+text, title, model, and dimensions.
 
-## Deployment artifacts and caps
+`message_lookup` now opens cheaply and builds only on demand, in resumable
+500-row transactions. Session triggers leave durable dirty markers even when an
+old executable writes FTS during rollback. New indexing maintains mappings and
+clears its marker; a later search/coverage pass catches up old-writer changes.
+A first-open migration no longer builds the whole lookup under one long writer
+transaction. Busy timeout remains five seconds per connection.
 
-Chosen deployment: `services/embedder/Dockerfile` plus
-`services/embedder/compose.embedder.yml`, merged after the existing production
-Compose file. This fits the current Docker caller and reuses the existing venv
-and caches. A host-only systemd listener would be unreachable from that caller.
-The image uses Ubuntu 24.04/Python 3.12 to resolve the venv's existing interpreter
-symlink. Building installs OS packages, including ffmpeg, but no Python packages
-or model weights. Image/venv ABI execution still needs a deployment smoke check.
+Search lazily loads **one active model matrix per open index**, normalizing once.
+Its matrix for 31,143 x 768 is 95,671,296 bytes, about **91.2 MiB** used, with 93 MiB allocated in 1024-row blocks, plus identity
+metadata. Growth adds one block instead of doubling the matrix. Text stays in FTS and is fetched only for winning semantic rows.
+Revision triggers coalesce changes by session; writes refresh affected sessions,
+and model switches replace the reachable matrix. Data-version/change counters
+also detect other connections and untracked writes; decreasing revisions after a
+rollback force a reload. Hydration checks identity and input digest in a consistent
+read snapshot, so reused rowids cannot attach replacement text to a deleted message. The HTTP MCP service owns a
+shared connection across stateless transports, so requests keep the warm matrix.
+A fresh CLI invocation still pays the initial load.
 
-The overlay attaches scrobbler to its existing network plus an internal embeddings
-network. The embedder has only the internal network, no published ports and no
-proxy connection. `private-docker` is an explicit binding mode; local execution
-otherwise binds loopback. It has no bearer authentication; its caller network and
-local processes are trusted. Browser Origin requests are rejected.
+Synthetic benchmark: 35,718 messages, 31,143 vectors, 768 dimensions, 77 MB of text,
+retained JSON plus binary rows. No real chat text was used. Complete search here
+includes literal/substring recall, vector ranking, freshness, snippets, and merging;
+query model inference/network time is excluded by a fixed synthetic provider.
 
-Resource caps are `cpus: 2`, `mem_limit: 2g`, `memswap_limit: 2g`, `pids_limit: 64`,
-`init: true`, and `nice 19`. Equal RAM and RAM-plus-swap limits mean zero swap.
-HF cache, venv, and canonical assets are mounted read-only; LiteRT compilation
-cache stays writable. All bind sources must already exist. A 2 GiB limit bounds
-failure impact; it does not establish that every admitted media input fits.
-
-The overlay's healthcheck verifies filesystem readiness without eagerly loading.
-It leaves the production provider/model environment unchanged. Compose resolution
-was checked without printing its environment or starting services.
-
-## Measured latency and memory
-
-The BJS-544 spike measured native text/image/audio/four-frame video successfully:
-short query about 0.25 s, ~1900-token document 8.4 s, image 6.8 s, 29-second speech
-12.1 s, four-frame video 29.5 s, and multimodal peak RSS around 1.1 GiB. Those used
-four threads and an 8192-token context on a contended host. They are historical
-context, not measurements of this wrapper's two-thread/2048-token configuration.
-
-A finite capped wrapper run was attempted using the existing venv and synthetic
-spike fixtures. It started at one-minute load 7.73, confirmed 2 GiB RAM / zero
-swap / 200% CPU / nice 19, and recorded:
-
-| Stage | Time | Current RSS |
+| Measurement | Before | After |
 | --- | --- | --- |
-| Before native import | baseline | 16,364 KiB |
-| Native load | 2.04 s | 249,216 KiB |
-| Lazy load plus short text | 3.22 s total | 351,832 KiB |
+| Warm complete search median | 996 ms | 141 ms |
+| Warm complete search maximum, five runs | 999 ms | 157 ms |
+| Initial lazy matrix/lookup load plus search | 1,014 ms | 1,271 ms |
 
-Load then rose to 9.11; the watchdog exited 75 after 4.283 seconds. Systemd reported
-419.5M peak cgroup memory and zero swap. Receipt:
-`services/embedder/measurement-2026-10-13.json`.
-A second idle-first run started at load 7.46 and completed the first unload and
-reload:
+These are disposable Daytona measurements, not host/production latency claims.
+Cold initialization is explicit and is above the 300 ms warm-search target.
+Profiling found substring SQL about 106 ms, binary row reads 66 ms, validated FTS
+joins 164 ms, arithmetic for 31k cosines 24 ms, and top-K sorting 1.2 ms. Those are
+independent passes, not additive timings. Callback-based finite checks took about
+700 ms more in a prior run; an inline finite loop reduced decode/read to 93 ms.
+The matrix removes repeated decoding, norm calculation, and FTS joins. The first
+version still scanned substring text on every query; the final version adds a
+shared lowercase literal cache and refreshes changed sessions. Winner hydration
+validates identity, source, and the actual substring. The all-in-memory benchmark's total RSS
+was 1.30 GiB including its generated SQLite database and retained JSON; that is
+not the memory cost of the matrix. The file-backed HTTP MCP benchmark initially measured 189 ms median, 197 ms
+maximum, 1.95 seconds cold, and 195 MiB RSS in Daytona.
 
-| Stage | Time | Current RSS |
-| --- | --- | --- |
-| Baseline | before import | 15.9 MiB |
-| Native load | 0.95 s | 243.7 MiB |
-| Lazy load plus short text | 1.43 s total | 343.4 MiB |
-| Immediate idle close | after 1.1 s idle | 198.6 MiB |
-| Settled after close | 15 s | 198.4 MiB |
-| Reload plus short text | 2.84 s | 366.7 MiB |
+A capped **bjslab** run exposed the remaining substring I/O: matrix-only HTTP
+search took 634 ms median and 889 ms maximum. Adding the literal cache brought
+complete HTTP MCP search to **64 ms median, 144 ms maximum**, five warm requests,
+with **406 MiB total process RSS**. This includes SDK transport and response
+parsing, and excludes model inference. Cold initialization took 5.60 seconds.
+The 91 MiB vector matrix is one part of that footprint: lowercase text, identity
+metadata, SQLite/JSC allocations, and runtime consume the remainder. This is an
+explicit RAM cost to remove repeated archive scans; raw text payload in this
+fixture is 74 MiB, while strings and other allocations increase measured process
+RSS by about 207 MiB over the matrix-only run. The live service's footprint must
+be monitored as the archive grows.
 
-Close released 144.8 MiB immediately, but 182.5 MiB above baseline remained after
-15 seconds. **Idle unloading releases memory without returning the process to
-baseline.** This is one text cycle, not evidence about long-term growth or media
-unload. The watchdog stopped work during media at load 8.21, RSS 740.5 MiB, after
-26.233 seconds. Zero swap was confirmed. Systemd's second-run peak summary was
-inconsistent with sampled RSS/cgroup memory and is excluded. Receipt:
-`services/embedder/measurement-idle-first-2026-10-13.json`.
+These finite tests used `MemoryMax=2G`, zero swap, 200% CPU quota, nice 19 and
+120-second runtime limits, starting below load 8. They generated disposable
+synthetic files and removed them afterward. No model or production index was used.
+Systemd's final summary sometimes understates peak memory; use the measured process
+RSS. Receipts: `search-host-{review,final-review}-2026-10-13.log`.
 
-The measurement script records current RSS immediately and at 1/5/15 seconds
-after close, reload, and a second unload; it prioritizes text idle-unload before
-media.
-Repeat `python3 -B -m services.embedder.measure` when one-minute load stays below 8.
-It verifies effective transient cgroup limits and aborts if load rises above 8.
-The process has a five-minute runtime ceiling and leaves no resident service.
+Reproduce: `bun scripts/benchmark-search-review.ts --assert` on disposable compute,
+or `sh scripts/verify-bjs-548.sh scripts/benchmark-search-review.ts --assert` for
+pinned Bun 1.3.14. The assertion checks a five-run warm median below 300 ms.
 
-## Storage and migration
+## Backfill and pending ingest vectors
 
-New vectors are explicit little-endian float32 BLOBs, 3072 bytes for 768 values.
-`message_vectors` keys each row by message identity plus
-`(provider_kind, provider_model, dimension)`. `asset_vectors` uses SHA-256 plus the
-same scope. Different model sets coexist; search uses only the query provider's
-kind/model/dimension. No `sqlite-vec` dependency was added.
-
-Legacy `message_embeddings` JSON rows remain intact. Search reads unconverted
-rows, avoiding duplicates where a usable matching binary snapshot exists.
-Malformed binary vectors can fall back to valid JSON. Normal backfill converts
-only matching legacy snapshots lazily and repairs malformed binary data without
-calling the model. Ingest writes only binary rows.
-
-A separate resumable conversion is available:
-
-```sh
-chat-scrobbler embed-backfill --migrate-only --limit 1000
-```
-
-It scans old rowids in 100-row transactions, persists a `vector_migration` cursor,
-retains corrupt/unknown-scope source rows, skips existing binary snapshots, and
-never overwrites newer binary data. Restart continues from the cursor. It pauses
-above the host load threshold; no inference occurs. JSON is not removed and
-SQLite is not vacuumed, so this pass temporarily increases disk use. Old binaries
-can still read their original JSON; they do not see newly computed BLOB-only rows.
-
-`message_lookup` adds an indexed message identity to FTS rowid map, initialized
-once from existing FTS rows and maintained with literal indexing. Vector search
-joins through that rowid and checks current text/title before candidates consume
-ranking slots. Retained stale model sets therefore cannot hide live results.
-The map stores identities/rowids, not another copy of chat text. Search streams
-vectors with a bounded candidate window and calculates cosine in TypeScript.
-It remains a linear scan in the selected model's vector count.
-
-Synthetic storage benchmark in Daytona, 4096 messages at 768 dimensions, median
-of three complete search calls with identical vectors:
-
-| Encoding | Vector payload bytes | Median search |
-| --- | --- | --- |
-| Float32 BLOB | 12,582,912 | 99.3 ms |
-| JSON | 65,957,888 | 157.0 ms |
-
-This excludes model latency and is not a production archive benchmark. Float32
-rounding is expected; cosine uses actual norms. Reproduce with
-`bun run scripts/benchmark-vector-storage.ts` on disposable compute. Receipt:
-`services/embedder/verification/vector-benchmark-2026-10-13.json`.
-
-## Backfill behavior
+Ingest persists raw, canonical, FTS, and asset ownership before acknowledgement.
+It never calls a model inside `POST /captures`, even when one is configured.
+Missing or stale vectors themselves are the durable pending marker; no volatile
+queue or scheduled job is created. Semantic coverage stays incomplete until a
+maintenance backfill runs. A hanging embedder cannot delay a capture.
 
 ```sh
 chat-scrobbler embed-backfill \
   --provider embeddinggemma \
   --model litert-community/embeddinggemma-2-740m-litert-lm \
-  --limit 100 --rate 0.2 --load-threshold 8
+  --limit 100 --rate 10 --load-threshold 32
+
+chat-scrobbler embed-backfill --migrate-only --limit 1000
 ```
 
-`--provider` overrides only this invocation, allowing the new set to be built while
-recall still uses nomic. `--model` is required for inference. `--rate` is maximum
-items per second, where an item is a message or asset; one long message can require
-several serial HTTP requests. Defaults are 0.2 items/s and load threshold 8.
-`--limit` bounds attempted missing/changed items, including failures and lazy JSON
-conversions. Conversions are throttled, load-checked writes and are reported
-separately as `converted`; they do not invoke the model. Matching text,
-title, provider/model and dimension are skipped. Unknown-dimension providers such
-as Ollama inspect matching current rows across stored dimensions. There is no
-unlimited automatic migration before a bounded normal backfill.
+Provider/model overrides affect only that invocation. The production provider can
+remain Ollama throughout a Gemma rebuild. Run the job at nice 19 and keep inference
+inside the embedder's capped cgroup. Only one backfill request is outstanding;
+responses/back-pressure determine throughput. `--rate` defaults to 10 requests/s
+and yields 100 ms between responses, including adapter chunks, rather than adding
+five seconds per message. The optional `--load-threshold 32` is an emergency brake;
+there is no load guard by default. Migration-only needs no inference/load gate. Lazy JSON conversions inside a normal
+backfill still obey its optional emergency gate, but never call the model. Abort waits and requests with SIGINT/SIGTERM; completed
+rows survive. A request already computing safely drains.
 
-Load is checked before inference and, for EmbeddingGemma, before each text chunk
-request. High load pauses in five-second intervals; it does not cancel a native
-request already running. Messages are checked for current text/title before
-request dispatch, after each per-request load wait, and again inside the write
-transaction. A deletion/edit during
-inference prevents vector resurrection. Completed items commit individually, so
-interruptions and failures retain progress. Restart scans for missing/changed
-items; no fragile long-job offset is required. Concurrent ingests can move FTS
-rowids, so a second pass settles coverage after ongoing capture activity.
+Every message/asset commits separately. Indexing also retains successful messages
+if another message in the session fails. Retry skips valid current vectors, while
+failed/missing/stale rows remain pending. Whitespace-only messages count as skipped
+and are excluded from eligible coverage. Changed text/title or deletion during a
+request prevents stale writeback or resurrection. FTS rowids can move during
+capture, so repeat a pass until coverage settles.
 
-JSON progress at start, every 25 attempts, load pauses and completion includes
-embedded/converted/skipped/failed/stale/attempted, text coverage, and asset coverage.
-Coverage validates finite vectors and current inputs. Load pauses reuse the most
-recent snapshot, identified by `coverage_at_attempt`; initial paused coverage is
-null. This avoids repeatedly scanning vectors while the host is busy.
-No chat text, private paths or provider response bodies appear in these reports.
-The CLI exits nonzero if items failed, inviting a resumable retry. SIGINT/SIGTERM
-cancel waits and client requests and leave completed vectors intact. Limits and
-rate/load controls are validated before opening the index.
+Progress reports embedded, converted, skipped, failed, stale, attempted, current
+text/asset coverage, request counts, estimated native chunks, request latency,
+elapsed time, and ETA. Initial ETA assumes two seconds per native text chunk plus
+pacing; later ETA uses observed request response time. It is approximate for word
+boundaries, configured chunk budgets, load pauses, media, and concurrent captures.
+The supplied budget of about 53k chunks is **29.4 hours of compute**, plus pacing,
+pauses, and retries. Limits apply to attempted missing/changed rows, including
+conversion and failures. Genuine failures produce a nonzero exit; whitespace does
+not. Load-pause reports reuse their last coverage snapshot.
 
-The supplied 35.7k/4.4k archive counts were not independently surveyed. At five
-seconds of delay per missing message, 35.7k new vectors alone require at least
-about 49.6 hours, plus inference and load pauses. The 4.4k without any vector are
-included in a new-model rebuild; the nomic vectors do not count as Gemma coverage.
+## Multimodal ownership
 
-## Multimodal ownership and search
+Literal indexing records asset SHA links, including empty-text messages. Backfill
+embeds each distinct owned `(sha256, provider_kind, provider_model, dimension)`
+once, then semantic asset hits map to every owning message/session. Blobs resolve
+through `canonical/assets/sha256/<2>/<sha>`. Shared owners survive individual
+session deletion; unowned derived vectors are pruned for affected hashes only.
+Images/audio, named video files, and the future video block hook require no parser
+schema changes. BJS-547 must supply captured hashes and supported media kinds.
+All verification assets are synthetic. No production assets exist or were created.
 
-Literal indexing records SHA-256 attachment links even for empty-text messages.
-Image/audio attachments are supported now; named video file attachments and
-future runtime `kind: video` blocks have a hook without changing parser/schema
-contracts. BJS-547 must supply hashes and media kinds; unsupported file types are
-not guessed as images or audio. Existing canonical blobs are resolved through
-`assetBlobPath()`, under `canonical/assets/sha256/<2>/<sha>`.
+## Native latency and RSS
 
-Backfill embeds each distinct owned SHA once per provider/model/dimension and
-retains every owning message/session link. Search combines text and asset cosine
-candidates, deduplicates messages, and maps an asset hit back to its owners using
-current source/title/role metadata. Empty-text hits display `[Media attachment]`.
-Asset vectors are embedded by the backfill/API hook; ingest records ownership but
-does not synchronously run media inference.
+The initial implementation measured text-only unload: baseline 15.9 MiB, loaded
+343.4 MiB, immediate close 198.6 MiB, settled 15 seconds 198.4 MiB, reload/text
+2.84 seconds at 366.7 MiB. Close released 144.8 MiB but retained 182.5 MiB above
+baseline. These page-cache-warm, contended observations are not latency promises.
 
-Removing attachments or deleting sessions removes links and prunes vectors only
-for affected hashes with no remaining owner. Shared assets survive. This cleanup
-is bounded to that session's hashes. Hashes/paths are derived; raw captures and
-immutable asset bytes remain the source of truth. All media tests use synthetic
-fixtures. No production assets or backfill were used.
+Native review runs used effective `MemoryMax=2G`, `MemorySwapMax=0`,
+`CPUQuota=200%`, nice 19, two threads, and a 300-second transient lifetime. Every
+run checked one-minute load before launch and exited if it rose above 8. Three
+partial attempts backed off on load; their completed stages remain valid evidence.
+No inference worker was left running.
 
-## Cutover and rollback plan
+| Modality | Wall latency | RSS after inference | Cosine vs stored spike vector |
+| --- | --- | --- | --- |
+| Text query, lazy load included | 1.04 s | 356.0 MiB | 1.0, zero maximum delta |
+| Image, bare native input | 10.73 s | 857.1 MiB | approximately 1.0, max delta 2.98e-8 |
+| Audio, decoded 16 kHz mono | 15.02 s | 1,154.8 MiB | 1.0, max delta 1.19e-7 |
+| Exact four spike video frames | 41.91 s | 995.4 MiB | approximately 1.0, zero maximum delta |
+| Eight-frame ffmpeg video path | 91.83 s | 1,445.0 MiB | no stored eight-frame reference |
 
-These are proposed operational steps, not executed commands.
+All returned 768 finite floats with norm within about 2e-7 of one. A cosine just
+above one in the logs is float32 arithmetic rounding. Four-frame parity used the
+same original files; the eight-frame request exercised the actual service decoder.
+Eight-frame **peak RSS was 1,452.0 MiB (1.42 GiB)** and observed cgroup peak was
+1,081.5 MiB. Keep the eight-frame cap: RSS was below the 1.8 GiB precautionary
+threshold. Warm shared model pages explain lower cgroup charge than process RSS;
+a fresh image/container must still be measured, and larger shapes remain bounded
+by the 2 GiB hard cap.
 
-1. Keep the nomic set and Ollama volume. Verify the existing backup and index
-   location. Merge/build the implementation after review. Check all bind sources,
-   Python/venv ABI, ffmpeg, cgroup enforcement, and allowed-root permissions.
-2. Add the private embedder overlay with the production Compose file first.
-   Validate with `docker compose ... config --quiet`. Deploy only the embedder
-   initially; do not run a broad `up` that recreates scrobbler early. Verify private
-   connectivity from the caller network, health, a synthetic text/media request,
-   and both idle unload RSS cycles. Confirm the maximum eight-frame case fits the
-   2 GiB cap. Inspect effective limits, not just YAML.
-3. For the requested switch-first sequence, deliberately set scrobbler's provider,
-   model and `CHAT_SCROBBLER_EMBED_BASE_URL=http://embedder:4320` and recreate it.
-   Recall continues with literal search plus only the partial new semantic set
-   until backfill finishes. A lower-disruption alternative is to complete step 4
-   using `--provider embeddinggemma` before switching; choose this cost explicitly.
-4. Run capped, low-priority backfill inside the private caller network, first
-   `--limit 100 --rate 0.2`, then resumable batches. Keep load threshold 8 and monitor
-   failure/stale counts. Production already contains literal rows; avoid `unify`
-   as the initial bulk inference job. Re-run until current text coverage settles,
-   and investigate each remaining missing vector. Continue with future asset
-   coverage after BJS-547 capture lands. No raw/canonical migration is required.
-5. Compare the two providers against the same archive with one-off CLI environment
-   overrides. Burooj should judge the actual returned threads. Suggested queries:
-   “why did semantic recall disappear when the server was swapping?”, “what did
-   we decide about preserving raw chat captures?”, “where did I discuss sincerity
-   and ikhlas?”, and “what is the phone and server embedding plan?”. Check paraphrase
-   recall, literal anchors, inactive branches, latency, and irrelevant high ranks.
-   For image/audio/video, use synthetic matched captions first, then new approved
-   captured assets. Compare phone generic-build vectors on identical preprocessing;
-   test the SM8550 NPU artifact separately before sharing an index.
-6. After stable coverage and accepted quality, remove scrobbler's old Ollama
-   dependency and stop only that service. Retain its volume through an agreed
-   rollback window. Removing `nomic-embed-text`, unused `qwen3:4b`, or the roughly
-   2.8 GB `/mnt/server-ssd/ollama` store is a separate destructive approval. Do not
-   delete the spike cache/venv while this deployment depends on them.
+After that video, `close()` dropped RSS from 1,445.0 to **213.7 MiB** immediately
+and remained 213.7 MiB through 15 seconds of settling, compared with a 15.9 MiB
+baseline. The allocator retains about 197.8 MiB. Unload releases substantial memory
+but does not restore the original process baseline. These experiments do not prove
+allocator stability over many repeated cycles. Eight-frame latency is close enough
+to the 120-second native/client timeouts that contention or queueing can cause
+retries; queued queries cannot preempt an active video.
 
-Rollback: cancel the backfill, restore the previous provider/model and
-`OLLAMA_BASE_URL=http://ollama:11434`, retain/restore the Ollama dependency and its
-existing capped service, and recreate scrobbler. The nomic JSON/BLOB set is retained;
-no vector migration backwards is required. Messages changed or captured during the
-Gemma interval may need a bounded nomic backfill; until then literal search works.
-Stop the unused embedder after callers switch. Keep both derived sets for review.
-Rolling back the application binary to pre-BJS-548 uses retained JSON only and can
-require rebuilding recent nomic rows from canonical data.
+Receipts: `services/embedder/verification/native-{review,video-final,eight-review}-2026-10-13.log`.
+The systemd summary in these logs sometimes reports an implausible KiB memory peak;
+use the explicit `/proc` and `memory.peak` samples above instead.
 
-## Verification and remaining risks
+## Cutover and rollback, not executed
 
-Verified in disposable Daytona compute with Bun 1.3.14 and frozen dependencies:
-**414 Bun tests passed, zero failures; `bun x tsc --noEmit` passed; 29 Python tests
-passed**, including synthetic ffmpeg decode. No model was loaded in these tests.
-The real capped partial runtime attempts and installed API audit are separate
-checks. Test receipt: `services/embedder/verification/test-results-2026-10-13.json`. `scripts/verify-bjs-548.sh` reproduces the disposable test environment.
+1. Before deploying nonblocking ingest, arrange and verify periodic, nonoverlapping
+   backfill batches for the **currently active Ollama/nomic provider**, at nice 19.
+   This is a prerequisite on Ollama too: new captures are literal-only until a
+   maintenance pass. No scheduler is installed or started by this branch.
+   Verify backups, index location, disk budget for both sets, and cache/asset
+   permissions. Merge reviewed code, then have Coolify deploy the main compose
+   with its explicit embeddings profile. Keep provider/model on Ollama/nomic.
+   Coolify may recreate scrobbler; capture remains safe and inference-independent.
+   Verify effective cgroups, UID/cache write access, private connectivity, health,
+   synthetic text/media, watchdog behavior, and idle RSS. Check the selected frame
+   cap against actual assets. Do not expose a port publicly.
+2. **Backfill first.** Within the private caller network, invoke the job with
+   `--provider embeddinggemma --model ...`, first with `--limit 100`, then resumable
+   batches. Keep Ollama serving recall. Monitor coverage, failure/stale counts,
+   ETA, RSS, and throttling. Do not use `unify` as the bulk inference job.
+3. Verify eligible text coverage after a settling pass, investigate failures,
+   and compare both model sets with one-off provider overrides on the same archive.
+   Burooj should judge actual results for queries such as “why did semantic recall
+   disappear when the server was swapping?”, “what did we decide about preserving
+   raw chat captures?”, “where did I discuss sincerity and ikhlas?”, and “what is
+   the phone and server embedding plan?”. Check paraphrases, literal anchors,
+   inactive branches, irrelevant ranks, and warm/cold/query-inference latency.
+   Compare synthetic media captions first, and approved captured assets after
+   BJS-547. Compare phone vectors with identical artifact/preprocessing.
+4. **Switch second**, only after accepted coverage and quality: set
+   `CHAT_SCROBBLER_EMBED_PROVIDER=embeddinggemma`,
+   `CHAT_SCROBBLER_EMBED_MODEL=litert-community/embeddinggemma-2-740m-litert-lm`,
+   and base URL `http://embedder:4320`, then let Coolify recreate scrobbler.
+   Keep Ollama through the rollback window. Arrange and verify a periodic capped
+   backfill for new pending captures; no scheduler is installed by this branch.
+5. After stable operation, remove the Ollama dependency/service. Retain its volume
+   for an agreed rollback window. Deleting nomic, unused `qwen3:4b`, or the roughly
+   2.8 GB `/mnt/server-ssd/ollama` store requires separate destructive approval.
+   The new deployment has no dependency on deleting/retaining the spike runtime.
 
-Tests cover model coexistence, legacy conversion/resume/corruption, unknown
-provider dimensions, current-text ranking, query fallback, idempotency, throttling,
-load/cancel/stale handling, multimodal ownership/deletion, allowed paths, bounded
-HTTP/media input, single-engine serialization, unload/reload with fakes, adapter
-prefixes/Unicode pooling, and the actual Bun-to-Python HTTP contract. Full-suite
-ordering exposed existing extension test globals; cleanup now restores `fetch`
-and the original `chrome` descriptor.
+Rollback: stop the Gemma job, restore provider `ollama`, model `nomic-embed-text`,
+and `OLLAMA_BASE_URL=http://ollama:11434`; recreate scrobbler with the capped Ollama
+service/dependency. The nomic set remains intact. Backfill nomic for messages
+captured/changed during the Gemma interval; literal recall works meanwhile.
+Disable the embeddings profile after callers switch. Old application binaries
+can use retained JSON but require nomic rebuild for recent binary-only messages.
+Returning to this branch catches up its lookup through the rollback change markers.
 
-Open gates: measured unload after media and repeated idle cycles, completed native media inference,
-maximum eight-frame RSS under 2 GiB, Docker image ABI execution, real-archive quality
-and latency, and phone/NPU agreement. Chunk pooling quality needs archive evaluation.
-Timeouts can expire while the native engine safely drains, delaying the next query.
-The service limits media rather than automatically segmenting long recordings.
-The venv/cache deployment remains coupled to the spike directory. Changing model
-weights or preprocessing under the same model ID requires clearing/rebuilding that
-specific derived set; ordinary idempotent backfill cannot detect policy changes.
+## Verification and open risks
+
+Final checks are green on code at `93573e0`, in disposable Daytona compute with
+Bun 1.3.14 and frozen dependencies: **445 Bun tests pass, zero failures**;
+**`bun x tsc --noEmit` passes**; Python discovers 42 tests, with **40 passing and
+two deployment-renderer tests skipped because cloud Docker Compose is absent**.
+Local Python verification passed **all 42, zero skips**, including both compose
+rendering regressions. Python source did not change afterward. Tests use fake
+engines and synthetic ffmpeg fixtures; native parity/RSS is a separate capped run.
+
+Receipts: `test-results-review-2026-10-13.json`, `python-review-2026-10-13.json`,
+`native-review-2026-10-13.json`, and `search-review-2026-10-13.json`, all under
+`services/embedder/verification/`. The committed JSON captures the measurements;
+raw `.log` files are local diagnostics. The host benchmark preceded the last
+identity/snapshot and bounded-block changes; those passed the final suite. The
+later cloud benchmark retry hit a GitHub download outage, so no additional speed
+claim is made for it. The verifier now retries downloads with bounded waits.
+
+Regressions cover title normalization/UTF-8, whitespace skip and exit behavior,
+load and migration exemptions, chunk/request ETA, success-only latency samples,
+pending capture ACK with hanging providers, partial failures/retry, provider
+isolation, digest/legacy freshness, rollback lookup healing, rowid reuse, multiple
+connections, rolled-back transactions, query priority, close exceptions, hung
+native load/inference/close watchdogs, private deployment and cache ownership.
+A deterministic diagnostic committed a different connection's rowid replacement
+between vector ranking and hydration: the original snapshot retained correct
+provenance, and the following search observed deletion.
+
+Remaining operational gates: actual Docker build/start smoke, Coolify profile
+propagation and effective limits, real-archive quality/latency, and phone agreement.
+Cold matrix loading exceeds the warm target. Asset vectors still use a bounded
+streaming scan; production currently has none. Very large sessions cost more to
+refresh incrementally. Model/preprocessing changes under an unchanged identity
+require rebuilding the affected set; ordinary freshness cannot detect that policy
+change. Long audio/video and large blobs need segmentation. Native close retains
+allocator memory, and sustained query traffic can delay backfill or expire its
+queue wait. The 2 GiB cgroup remains the final memory bound for unexpected inputs.
