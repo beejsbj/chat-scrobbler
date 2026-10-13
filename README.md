@@ -125,16 +125,19 @@ runs avoid full coverage scans and decoding covered vectors. Manual
 `embed-backfill --model <id>` validates vectors and reports full coverage;
 `embed-backfill --help` lists its controls.
 
-The scheduler, manual backfill, and `--migrate-only` share an index lock. Live
-locks never expire by age. Only dead owners in the same PID namespace can be
-recovered automatically; foreign or unknown namespaces fail closed. Run manual
-CLI against a container-shared index through `docker exec` in the server's PID
-namespace.
+The scheduler, manual backfill, and `--migrate-only` share a SQLite heartbeat
+lease in the index's `locks` table. The owner renews every 15 seconds with a
+60-second expiry. After a crash, OOM kill, reboot or container replacement, any
+process can take over the expired token. A busy scheduler retries every 15 seconds
+(or the configured interval if shorter). Every vector/migration commit checks
+ownership inside its write transaction; a displaced or expired holder stops.
+No PID namespace matching or manual lock recovery is needed. Obsolete directory
+locks from earlier versions are ignored.
 
 Serve handles SIGTERM and SIGINT by aborting background inference, releasing its
-lock, and closing both listeners. SIGKILL or another ungraceful stop can leave a
-foreign-namespace lock after container recreation. Verify that the old container
-is dead before manually removing the index's `.embed-backfill.lock` directory.
+lease, and closing both listeners. Deep health reports stale/recovered/lost lease
+state, heartbeat/expiry timestamps, recovery count and the last run's lease.
+Manual CLI progress includes lease metadata and reports acquisition or loss.
 
 Serve shares one provider object across MCP, health, and backfill. Ollama and
 Gemini finish an active document call, then serve waiting queries before another

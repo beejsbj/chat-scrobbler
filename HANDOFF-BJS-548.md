@@ -4,6 +4,70 @@ Branch: `feat/bjs-548-embeddinggemma`. Updated 2026-10-13 after independent revi
 Production data and services were not changed. Nothing was deployed or pushed.
 The production compose still defaults to Ollama and `nomic-embed-text`.
 
+## Heartbeat lease follow-up
+
+The directory/PID lock has been replaced. Coordination is entirely in the shared
+SQLite index; neither container identity nor an operator cleanup step controls
+recovery. Defaults are a **15 s heartbeat** and **60 s expiry**. Acquisition uses
+an IMMEDIATE transaction and takeover compares the previous token and expiry.
+Renewal obtains the writer reservation before sampling the clock, so a busy
+SQLite wait cannot revive an expired token. Renewal succeeds only for the
+current, still-unexpired token. Release deletes
+only that token, so an obsolete owner cannot release its replacement.
+
+Text, asset and migration writes check ownership inside an IMMEDIATE transaction,
+both before writes and just before commit. Losing the token or expiry aborts the
+transaction and stops the run; prior successful commits remain. The heartbeat
+also aborts in-flight HTTP requests when renewal fails. Failed/unwritten work
+stays pending for the next holder. Ordinary provider failures retain the existing
+jittered backoff; contention/lost leases retry within 15 s. Startup still honors
+the configured initial delay for cache warmup.
+
+`/health/deep` probes persisted lease metadata even before the first scheduled
+batch, so a stale lease is visible during startup. Its `backfill.lease` and
+`last_run.lease` include state, expiry, last heartbeat, recovery time/count and
+whether the run recovered an owner; lost ownership has outcome `lease_lost`.
+Probe errors surface as `lease_probe: unavailable`. CLI acquisition/progress,
+migration completion and lease-loss events carry the same metadata. Owner tokens
+are not emitted. `/status/report` remains absent on this base.
+
+Lease writes advance the general search revision without marking any session or
+model dirty. A regression using independent SQLite connections verifies that
+acquisition, repeated heartbeats and release do not rebuild or refresh the active
+matrix. Coordination transactions are short; heartbeat renewal uses one
+conditional UPDATE with RETURNING inside an IMMEDIATE transaction. Using
+RETURNING avoids Bun's change count including search
+revision trigger writes.
+
+Tests cover concurrent processes, expired-token CAS takeover, repeated live
+heartbeats, token-safe release, a SIGKILL crash followed by automatic recovery,
+fenced in-flight text/media results, and migration rollback including its resume
+cursor. Scheduler timer tests recover abandoned leases without manual runs.
+Authenticated deep-health tests show stale then recovered state; CLI tests fence
+a stolen token and preserve pending work. The crash test shortens timing to
+250 ms / 40 ms; a deterministic test verifies the production 60 s expiry.
+
+Final verification at runtime commit `d0501c0`: **533 Bun tests pass**, zero
+failures, 61 files and 2,090 assertions in **9.31 s**; TypeScript, compilation
+(279 modules) and the compiled help command pass. Python has **45 local passes**,
+zero skips in **8.148 s**; cloud discovers 45 with two Docker Compose skips.
+The disposable compute job was `dr-20261013-225736-68942181`; exit 0 and sandbox
+deletion were verified. Receipt:
+`services/embedder/verification/test-results-lease-2026-10-13.json`.
+
+The scaled SIGKILL recovery test completed in **308.46 ms** with a 250 ms lease;
+the automatic scheduled recovery test completed in **37.32 ms** using an already
+expired lease and a 20 ms scheduling interval. These are synthetic test timings,
+not deployment measurements. Production expiry remains 60 s, with busy-lease
+polling at most every 15 s after the startup delay. A contended renewal test held
+another writer beyond expiry and proved renewal fails instead of resurrecting
+ownership. Godel's independent bounded review found no remaining concrete
+correctness findings at `d0501c0`.
+
+No native inference, real-index benchmark or production backfill was repeated
+for this coordination fix. Prior latency/RSS evidence below remains historical;
+new cross-connection regressions cover preserving the active matrix cache.
+
 ## Review fixes, round 2
 
 Rebased onto `origin/main` at `d28ab40` (PR #12, typed parts). Conflicts preserved
@@ -45,15 +109,17 @@ run's timestamps, outcome and report. This snapshot is read on each request,
 independent of the cached filesystem/provider health probe. `/status/report` does
 not exist on the rebased main and remains absent.
 
-The CLI, migration-only jobs and scheduler share a process mutex plus an atomic,
-PID/nonce-owned lock directory beside the index. A live lock never expires.
-Dead owners are recovered only in the same boot/PID namespace. Run manual jobs
-with `docker exec` in scrobbler's namespace. SIGTERM/SIGINT stop the job, abort its
-request, release its lock and stop listeners; compiled subprocess tests verify
-this. A SIGKILL followed by container recreation can leave a foreign-namespace
-lock. Recovery fails closed: verify the old container/job is dead before removing
-that specific lock. A long manual initial rebuild excludes automatic batches;
-use bounded manual batches when active-provider coverage needs time between them.
+The CLI, migration-only jobs and scheduler share a SQLite heartbeat lease in the
+index's `locks` table. A short transaction acquires a unique owner token; expired
+owners are replaced by compare-and-swap on the observed token/expiry. The holder
+renews every 15 seconds and expires after 60 seconds without renewal. This works
+across container PID namespaces and host reboots. Busy background jobs retry in
+at most 15 seconds, independent of the normal ten-minute scheduling interval.
+SIGTERM/SIGINT abort inference, release only the holder's own token, and stop
+listeners. Abrupt death needs no manual recovery: expiry allows takeover. Old
+directory locks are ignored. A long manual initial rebuild excludes automatic
+batches; use bounded manual batches when active-provider coverage needs time
+between them.
 
 ### Cache refresh, warmup and deadlines
 
@@ -454,22 +520,24 @@ Returning to this branch catches up its lookup through the rollback change marke
 
 ## Verification and open risks
 
-Final checks are green at `8e2f29b`, in disposable Daytona compute with Bun 1.3.14
+Final checks are green at `d0501c0`, in disposable Daytona compute with Bun 1.3.14
 and frozen dependencies:
 
-- **522 Bun tests pass, zero failures**, 60 files and 2,047 assertions.
+- **533 Bun tests pass, zero failures**, 61 files and 2,090 assertions.
 - **`bun x tsc --noEmit` passes**.
 - Python discovers 45 tests: cloud has 43 pass and two Docker Compose renderer
   skips; **local has all 45 pass, zero skips**, including deployment rendering.
 - **`bun build --compile src/cli/chat-scrobbler.ts` passes**, and the compiled
   binary runs **`embed-backfill --help` with exit 0**. The suite also exercises
-  compiled serve shutdown during an active backfill request.
-- The final capped host benchmark passes its warming/coverage and under-300-ms
-  warm/refresh assertions. The bounded review found no remaining definite issues
-  after fixing its concurrent literal-revision race and sparse-page finding.
+  CLI serve shutdown during an active backfill request.
+- The earlier capped host benchmark at `8e2f29b` passed warming/coverage and
+  under-300-ms warm/refresh assertions. The heartbeat follow-up did not repeat
+  that benchmark; it verifies coordination commits keep the active matrix cached.
+  Independent bounded review found no remaining concrete lease/fencing issues.
 
 Run `sh scripts/verify-bjs-548.sh` on disposable compute for all portable gates.
 Local Python: `python3 -m unittest discover -s services/embedder/tests -v`.
+Heartbeat receipt: `test-results-lease-2026-10-13.json`.
 Round-2 receipts: `test-results-round2-2026-10-13.json` and
 `search-round2-2026-10-13.json` under `services/embedder/verification/`.
 Earlier `*-review-2026-10-13.json` receipts preserve the round-1 native, RSS,
@@ -495,5 +563,7 @@ refresh incrementally. Model/preprocessing changes under an unchanged identity
 require rebuilding the affected set; ordinary freshness cannot detect that policy
 change. Long audio/video and large blobs need segmentation. Native close retains
 allocator memory, and sustained query traffic can delay backfill or expire its
-queue wait. Foreign-namespace locks after abrupt container death require verified
-manual recovery; graceful Coolify termination releases them. The 2 GiB cgroup remains the final memory bound for unexpected inputs.
+queue wait. SQLite lease recovery is automatic after expiry; long event-loop
+stalls or database contention can forfeit a lease, in which case fencing stops
+the holder and unfinished vectors remain pending. The 2 GiB cgroup remains the
+final memory bound for unexpected inputs.

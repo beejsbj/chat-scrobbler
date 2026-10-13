@@ -1,0 +1,54 @@
+{
+  "source_commit": "d0501c0",
+  "origin_main": "d28ab40",
+  "date": "2026-10-13",
+  "bun_version": "1.3.14",
+  "cloud_job": "dr-20261013-225736-68942181",
+  "bun_test": {
+    "pass": 533,
+    "fail": 0,
+    "files": 61,
+    "assertions": 2090,
+    "seconds": 9.31
+  },
+  "tsc_no_emit": "pass",
+  "python_cloud": {
+    "discovered": 45,
+    "pass": 43,
+    "skipped": 2,
+    "seconds": 7.816,
+    "reason": "Docker Compose absent in disposable compute"
+  },
+  "python_local": {
+    "pass": 45,
+    "skipped": 0,
+    "seconds": 8.148
+  },
+  "bun_build_compile": "pass, 279 modules",
+  "compiled_embed_backfill_help": "pass, exit 0",
+  "lease": {
+    "heartbeat_ms": 15000,
+    "expiry_ms": 60000,
+    "busy_poll_ms": 15000,
+    "crash_test": {
+      "lease_ms": 250,
+      "heartbeat_ms": 40,
+      "elapsed_ms": 308.46,
+      "recovered_without_cleanup": true
+    },
+    "automatic_tick_test": {
+      "interval_ms": 20,
+      "elapsed_ms": 37.32,
+      "manual_run": false
+    },
+    "contention_test": "expired renewal refused after waiting for SQLite writer",
+    "fencing": "text, media and migration transactions; prior commits preserved",
+    "cache_regression": "independent coordination writes leave active matrix cached"
+  },
+  "bounded_review": "Godel: no remaining concrete correctness findings at d0501c0",
+  "native_inference_repeated": false,
+  "real_index_benchmark_repeated": false,
+  "production_changes": false,
+  "pushed": false,
+  "cleanup": "cloud exit 0 and sandbox deletion verified; temporary fixture databases removed"
+}
