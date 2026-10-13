@@ -1,4 +1,5 @@
 import { handleIngestRequest } from "./server";
+import { embeddingProviderFromConfig } from "../../../src/indexer/embedding-providers";
 import { loadConfig } from "../../../src/config";
 import { assertTokenForExposedBind } from "../../../src/core/network";
 
@@ -20,10 +21,11 @@ if (import.meta.main) {
     serviceName: "ingest server",
   });
 
+  const embeddingProvider = embeddingProviderFromConfig(cfg);
   Bun.serve({
     hostname: bindHost,
     port,
-    fetch: (req) => handleIngestRequest(req, { canonicalDir, indexPath, ingestToken }),
+    fetch: (req) => handleIngestRequest(req, { canonicalDir, indexPath, ingestToken, embeddingProvider }),
   });
 
   console.log(`chat scrobbler ingest listening on http://${bindHost}:${port}`);

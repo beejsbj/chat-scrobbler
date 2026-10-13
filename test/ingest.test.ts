@@ -1,4 +1,4 @@
-import { expect, spyOn, test } from "bun:test";
+import { afterAll, expect, spyOn, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -9,6 +9,9 @@ import { indexSession, listSessions, openIndex } from "../src/indexer/sqlite";
 import { writeSession } from "../src/store/sessions";
 import type { Session } from "../src/schema/types";
 
+const rawDir = mkdtempSync(join(tmpdir(), "ingest-raw-only-"));
+afterAll(() => rmSync(rawDir, { recursive: true, force: true }));
+
 interface IngestTestResponse {
   ok: boolean;
   count: number;
@@ -17,10 +20,10 @@ interface IngestTestResponse {
   service?: string;
 }
 
-test("health endpoint reports receiver status", async () => {
+test("health endpoint reports unconfigured receiver as degraded", async () => {
   const res = await handleIngestRequest(new Request("http://local/health"), {});
-  expect(res.status).toBe(200);
-  expect(await res.json()).toMatchObject({ ok: true, service: "chat-scrobbler-ingest" });
+  expect(res.status).toBe(503);
+  expect(await res.json()).toMatchObject({ ok: false, service: "chat-scrobbler-ingest", status: "degraded" });
 });
 
 test("capture endpoint accepts a single raw capture and returns count", async () => {
@@ -34,7 +37,7 @@ test("capture endpoint accepts a single raw capture and returns count", async ()
 
   const res = await handleIngestRequest(
     new Request("http://local/captures", { method: "POST", body: JSON.stringify(capture) }),
-    {},
+    { rawDir },
   );
   const body = await res.json() as IngestTestResponse;
 
@@ -163,7 +166,7 @@ test("DELETE /captures requires the configured bearer token", async () => {
 test("capture endpoint rejects malformed captures", async () => {
   const res = await handleIngestRequest(
     new Request("http://local/captures", { method: "POST", body: JSON.stringify({ source: "chatgpt" }) }),
-    {},
+    { rawDir },
   );
   const body = await res.json() as IngestTestResponse;
 
@@ -182,7 +185,7 @@ test("capture endpoint returns 401 when token configured and header is missing",
 
   const res = await handleIngestRequest(
     new Request("http://local/captures", { method: "POST", body: JSON.stringify(capture) }),
-    { ingestToken: "secret-token" },
+    { ingestToken: "secret-token", rawDir },
   );
   const body = await res.json() as IngestTestResponse;
 
@@ -205,7 +208,7 @@ test("capture endpoint returns 401 when token configured and header is wrong", a
       body: JSON.stringify(capture),
       headers: { "authorization": "Bearer wrong-token" },
     }),
-    { ingestToken: "secret-token" },
+    { ingestToken: "secret-token", rawDir },
   );
   const body = await res.json() as IngestTestResponse;
 
@@ -228,7 +231,7 @@ test("capture endpoint accepts correct bearer token", async () => {
       body: JSON.stringify(capture),
       headers: { "authorization": "Bearer secret-token" },
     }),
-    { ingestToken: "secret-token" },
+    { ingestToken: "secret-token", rawDir },
   );
   const body = await res.json() as IngestTestResponse;
 
@@ -249,7 +252,7 @@ test("capture endpoint allows any request when no token configured (local dev)",
   // No ingestToken set -- should succeed without any Authorization header
   const res = await handleIngestRequest(
     new Request("http://local/captures", { method: "POST", body: JSON.stringify(capture) }),
-    {},
+    { rawDir },
   );
   const body = await res.json() as IngestTestResponse;
 
@@ -277,7 +280,7 @@ test("capture endpoint accepts batches and returns correct count", async () => {
 
   const res = await handleIngestRequest(
     new Request("http://local/captures", { method: "POST", body: JSON.stringify(captures) }),
-    {},
+    { rawDir },
   );
   const body = await res.json() as IngestTestResponse;
 

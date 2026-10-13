@@ -63,6 +63,7 @@ export class GeminiEmbeddingProvider implements EmbeddingProvider {
     const url = `${GEMINI_EMBED_URL}/${encodeURIComponent(this.model)}:embedContent`;
     const response = await fetch(url, {
       method: "POST",
+      signal: context.signal ?? AbortSignal.timeout(10000),
       headers: {
         "content-type": "application/json",
         "x-goog-api-key": this.apiKey,
@@ -88,9 +89,10 @@ export class OllamaEmbeddingProvider implements EmbeddingProvider {
     this.model = opts.model;
   }
 
-  async embed(text: string): Promise<number[]> {
+  async embed(text: string, context: EmbeddingContext = { kind: "document" }): Promise<number[]> {
     const response = await fetch(`${this.baseUrl}/api/embed`, {
       method: "POST",
+      signal: context.signal ?? AbortSignal.timeout(10000),
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ model: this.model, input: text }),
     });

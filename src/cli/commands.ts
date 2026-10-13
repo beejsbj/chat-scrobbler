@@ -684,6 +684,7 @@ export async function startServe(cfg: ChatHistoryConfig): Promise<ServeHandles> 
     envVarName: "INGEST_TOKEN",
     serviceName: "ingest server",
   });
+  const embeddingProvider = embeddingProviderFromConfig(cfg);
   const ingestServer = Bun.serve({
     hostname: cfg.bindHost,
     port: cfg.ingestPort,
@@ -692,7 +693,7 @@ export async function startServe(cfg: ChatHistoryConfig): Promise<ServeHandles> 
         canonicalDir: cfg.canonicalDir,
         indexPath: cfg.indexPath,
         ingestToken: cfg.ingestToken ?? undefined,
-        embeddingProvider: embeddingProviderFromConfig(cfg),
+        embeddingProvider,
       });
     },
   });
@@ -702,7 +703,7 @@ export async function startServe(cfg: ChatHistoryConfig): Promise<ServeHandles> 
     bindHost: cfg.bindHost,
     indexPath: cfg.indexPath,
     canonicalDir: cfg.canonicalDir,
-    embeddingProvider: embeddingProviderFromConfig(cfg),
+    embeddingProvider,
     mcpAuthToken: cfg.mcpAuthToken,
   });
 

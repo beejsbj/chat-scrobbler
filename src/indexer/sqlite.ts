@@ -7,6 +7,7 @@ import { activePath } from "../store/sessions";
 export interface EmbeddingContext {
   kind: "query" | "document";
   title?: string | null;
+  signal?: AbortSignal;
 }
 
 export interface MessageHit {

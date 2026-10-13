@@ -1,3 +1,4 @@
+import { ingestHealth } from "./health";
 import { Database } from "bun:sqlite";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
@@ -96,7 +97,8 @@ export async function handleIngestRequest(req: Request, opts: IngestServerOption
   // GET /health is always unauthenticated -- used for local health checks and
   // Tailscale load-balancer probes that cannot easily set bearer headers.
   if (req.method === "GET" && url.pathname === HEALTH_PATH) {
-    return json({ ok: true, service: "chat-scrobbler-ingest" });
+    const health = await ingestHealth(opts);
+    return json(health, health.ok ? 200 : 503);
   }
 
   const isCapture = req.method === "POST" && url.pathname === CAPTURE_INGEST_PATH;
@@ -192,6 +194,7 @@ export async function handleIngestRequest(req: Request, opts: IngestServerOption
     const body = JSON.parse(serialized);
     const captures = toCaptureArray(body);
     const rawDir = opts.rawDir ?? (opts.canonicalDir ? rawDirForCanonicalDir(opts.canonicalDir) : null);
+    if (!rawDir) return json({ ok: false, error: "raw store is not configured" }, 503);
     const entries = captureJsonEntries(serialized);
     const rawRefs = rawDir ? captures.map((capture, i) => storeRawCapture(rawDir, capture, entries[i])) : [];
     const spine: SpineResult[] = [];
