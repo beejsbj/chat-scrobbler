@@ -1,4 +1,4 @@
-import type { ProviderSource, RawCapture, UploadedAsset, ConversationCaptureFailure } from "../../../shared/src";
+import type { ProviderSource, RawCapture, UploadedAsset, ConversationCaptureFailure, AssetBackfillReference } from "../../../shared/src";
 import type { AssetUploadRequest } from "../messages";
 
 export interface ProviderSyncOptions {
@@ -27,6 +27,7 @@ export interface ProviderSyncResult {
 export interface ProviderAdapter {
   source: ProviderSource;
   sync(options: ProviderSyncOptions): Promise<ProviderSyncResult>;
+  backfillAssets?(id: string, references: AssetBackfillReference[], options: { uploadAsset: ProviderSyncOptions["uploadAsset"]; beforeFetch: () => Promise<void> }): Promise<UploadedAsset[]>;
   /** List recent conversations (id + updatedAt) for sidebar badge reconciliation.
    *  `pages` caps pagination (default 1 = the most-recent page). */
   listConversations?(pages?: number): Promise<ConversationSummary[]>;

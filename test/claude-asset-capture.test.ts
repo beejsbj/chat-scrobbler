@@ -21,5 +21,5 @@ test("Claude captures generated files, inline visuals and downloadable sandbox f
   }, emitCapture: async capture => { expect(capture.assets).toHaveLength(4); } });
   expect(uploads.map(a => a.pointer)).toEqual(["gen-1", "claude-inline:m:/content/0/content/0", "visual", "sandbox:/mnt/user-data/outputs/report.pdf"]);
   expect(uploads.every(a => a.messageId === "m")).toBe(true);
-  expect(uploads[1].bytes).toEqual([1, 2, 3]);
+  expect(Array.from(uploads[1].bytes)).toEqual([1, 2, 3]);
 });

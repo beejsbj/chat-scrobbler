@@ -52,5 +52,5 @@ test("ChatGPT resolves legacy file-service JSON download links and forwards auth
   }).captureOne!("c", null, { emitCapture: async () => {}, uploadAsset: async a => {
     uploaded.push(a); return { pointer: a.pointer, local_path: "assets/chatgpt/c/hash" };
   } });
-  expect(uploaded[0].bytes).toEqual([7]);
+  expect(Array.from(uploaded[0].bytes)).toEqual([7]);
 });

@@ -6,6 +6,10 @@ import { RECENT_CAPTURES_KEY, type RecentCapture } from "./recent-captures";
 const autoSyncToggle = document.querySelector<HTMLInputElement>("#auto-sync")!;
 const ingestInput    = document.querySelector<HTMLInputElement>("#ingest-url")!;
 const ingestTokenInput = document.querySelector<HTMLInputElement>("#ingest-token")!;
+const assetLimitInput = document.querySelector<HTMLInputElement>("#asset-limit")!;
+const backfillButton = document.querySelector<HTMLButtonElement>("#backfill-assets")!;
+const retryFailedButton = document.querySelector<HTMLButtonElement>("#retry-failed")!;
+const assetStatusEl = document.querySelector<HTMLElement>("#asset-status")!;
 const syncAllButton  = document.querySelector<HTMLButtonElement>("#sync-all")!;
 const captureCountEl = document.querySelector<HTMLElement>("#capture-count")!;
 const lastCaptureEl  = document.querySelector<HTMLElement>("#last-capture")!;
@@ -86,6 +90,10 @@ ingestInput.addEventListener("change",    () => guard(saveSettings));
 ingestTokenInput.addEventListener("change", () => guard(saveSettings));
 syncAllButton.addEventListener("click",   () => guard(syncAll));
 
+assetLimitInput.addEventListener("change", () => guard(saveSettings));
+backfillButton.addEventListener("click", () => guard(() => runAssetAction(backfillButton, "SCROBBLER_BACKFILL_OPEN_TABS")));
+retryFailedButton.addEventListener("click", () => guard(() => runAssetAction(retryFailedButton, "SCROBBLER_RETRY_FAILED_OPEN_TABS")));
+
 // ---- init ----
 void applyTheme();
 void guard(refreshStatus);
@@ -119,6 +127,7 @@ async function saveSettings(): Promise<void> {
     ingestBaseUrl: ingestInput.value.trim() || DEFAULT_INGEST_BASE_URL,
     ingestToken: ingestTokenInput.value.trim() || null,
     autoSync: autoSyncToggle.checked,
+    maxAssetBytes: Number(assetLimitInput.value) * 1024 * 1024,
   });
   if (!res?.ok) throw new Error(res?.error ?? "Save failed");
   await refreshStatus();
@@ -134,6 +143,14 @@ async function refreshStatus(): Promise<void> {
   ingestInput.value = settings.ingestBaseUrl ?? DEFAULT_INGEST_BASE_URL;
   ingestTokenInput.value = settings.ingestToken ?? "";
   autoSyncToggle.checked = settings.autoSync ?? true;
+  assetLimitInput.value = String((settings.maxAssetBytes ?? 100 * 1024 * 1024) / (1024 * 1024));
+  const reports = Object.entries(s.providers ?? {}).map(([source, state]: [string, any]) => {
+    const backfill = state.lastBackfill;
+    const failed = state.captureFailures?.length ?? 0;
+    return backfill ? `${source}: ${backfill.captured}/${backfill.attempted} assets saved, ${backfill.unavailable} unavailable. ${backfill.next_after ? "More chats remain." : "Pass complete."}${failed ? ` ${failed} chats need retry.` : ""}`
+      : failed ? `${source}: ${failed} chats need retry.` : "";
+  }).filter(Boolean);
+  assetStatusEl.textContent = reports.join(" ");
 
   // Footer stats
   const count = s.capturesPosted ?? 0;
@@ -194,3 +211,13 @@ chrome.storage.onChanged.addListener((changes: Record<string, { newValue?: unkno
     renderSessionList(entries);
   }
 });
+
+async function runAssetAction(button: HTMLButtonElement, type: string): Promise<void> {
+  button.disabled = true;
+  assetStatusEl.textContent = "Working through open provider tabs. Assets are fetched one at a time.";
+  try {
+    const response = await sendMessage({ type });
+    if (!response?.ok) throw new Error(response?.error ?? "Asset action failed");
+    await refreshStatus();
+  } finally { button.disabled = false; }
+}

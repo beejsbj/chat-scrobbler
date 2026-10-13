@@ -1,7 +1,7 @@
 import { logSyncFailure, SyncFailureTracker } from "./sync-failures";
 import { buildRawCapture } from "../../../shared/src";
 import { uploadProviderAssets } from "./assets";
-import { claudeAssetCandidates } from "./claude-assets";
+import { claudeAssetCandidates, claudeSandboxDownloadEndpoint } from "./claude-assets";
 import {
   asArray,
   asObject,
@@ -21,6 +21,17 @@ const LIST_LIMIT = 50;
 export function createClaudeAdapter(fetcher: FetchLike = fetch.bind(globalThis)): ProviderAdapter {
   return {
     source: "claude",
+    backfillAssets: async (id, references, options) => {
+      const org = await getOrganization(fetcher);
+      return uploadProviderAssets(fetcher, options.uploadAsset, references.map(ref => ({
+        source: "claude", sourceId: id, pointer: ref.pointer, messageId: ref.message_id,
+        filename: ref.filename, contentType: ref.content_type,
+        url: ref.pointer.startsWith("claude-inline:") ? null
+          : ref.pointer.startsWith("sandbox:") ? claudeSandboxDownloadEndpoint(org.uuid, id, ref.pointer.slice(8))
+          : /^(https?:|data:|blob:|\/)/.test(ref.pointer) ? ref.pointer
+          : `/api/organizations/${encodeURIComponent(org.uuid)}/files/${encodeURIComponent(ref.pointer)}/download`,
+      })), { beforeFetch: options.beforeFetch });
+    },
     sync: (options) => syncClaude(fetcher, options),
     listConversations: (pages = 1) => listClaude(fetcher, pages),
     captureOne: (id, updatedAt, options) => captureClaudeOne(fetcher, id, updatedAt, options),

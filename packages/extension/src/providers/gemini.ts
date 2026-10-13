@@ -147,10 +147,11 @@ export function createBrowserPageContext(): GeminiPageContext {
       const conversationEl = document.querySelector(`[data-conversation-id="${id}"]`)
         ?? (typeof location !== "undefined" && location.pathname === `/app/${id}` ? document.querySelector("main") : null);
       if (!conversationEl) return [];
-      return Array.from(conversationEl.querySelectorAll<HTMLElement>("img[src], audio[src], video[src], source[src], a[download][href]")).flatMap((element) => {
+      return [...Array.from(conversationEl.querySelectorAll<HTMLElement>("img[src]")),
+        ...Array.from(conversationEl.querySelectorAll<HTMLElement>("audio[src], video[src], source[src], a[download][href]"))].flatMap((element) => {
         const url = element.getAttribute("src") ?? element.getAttribute("href");
         if (!url) return [];
-        return [{ pointer: url, url, filename: element.getAttribute("download") || null, contentType: element.getAttribute("type") }];
+        return [{ pointer: url, url, filename: element.getAttribute("download") || null, contentType: element.getAttribute("type") ?? undefined }];
       });
     },
   };
@@ -162,6 +163,12 @@ export function createGeminiAdapter(
 ): ProviderAdapter {
   return {
     source: "gemini",
+    backfillAssets: (id, references, options) => uploadProviderAssets(fetcher, options.uploadAsset, references.map(ref => ({
+      source: "gemini", sourceId: id, pointer: ref.pointer, messageId: ref.message_id,
+      url: /^(https?:|data:|blob:|\/)/.test(ref.pointer) ? ref.pointer : null,
+      filename: ref.filename, contentType: ref.content_type,
+      fetchViaBackground: /^https?:/.test(ref.pointer) && !ref.pointer.startsWith("https://gemini.google.com/"),
+    })), { beforeFetch: options.beforeFetch }),
     sync: (options) => syncGemini(fetcher, pageCtx, options),
     listConversations: (pages = 1) => listGemini(pageCtx, pages),
     captureOne: (id, updatedAt, options) => captureGeminiOne(fetcher, pageCtx, id, updatedAt, options),

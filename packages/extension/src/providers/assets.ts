@@ -1,12 +1,13 @@
 import type { AssetFailure, AssetFailureReason, ProviderSource, UploadedAsset } from "../../../shared/src";
 import type { AssetFetchResponse, AssetUploadRequest } from "../messages";
 import type { FetchLike, ProviderSyncOptions } from "./types";
-import { boundedAssetBytes } from "./asset-bytes";
+import { boundedAssetBuffer } from "./asset-bytes";
 
 export const MAX_PROVIDER_ASSET_BYTES = 100 * 1024 * 1024;
 
 export interface ProviderAssetBytes {
-  bytes: number[];
+  bytes: number[] | Uint8Array;
+  asset?: UploadedAsset;
   filename?: string | null;
   contentType?: string | null;
 }
@@ -15,6 +16,7 @@ export interface UploadProviderAssetsOptions {
   maxBytes?: number;
   reportFailure?: (failure: AssetFailure) => Promise<void>;
   fetchAsset?: (url: string) => Promise<AssetFetchResponse>;
+  beforeFetch?: () => Promise<void>;
   resolveUrl?: (candidate: ProviderAssetCandidate) => Promise<string | null>;
 }
 
@@ -46,11 +48,16 @@ export async function uploadProviderAssets(
     seen.add(`${candidate.messageId ?? ""}:${candidate.pointer}`);
     let reason: AssetFailureReason = "asset_download_failed";
     try {
+      await options.beforeFetch?.();
       const url = options.resolveUrl ? await options.resolveUrl(candidate) : candidate.url;
       if (!url) throw new Error("asset_url_unavailable");
       const downloaded = candidate.fetchViaBackground
-        ? await (options.fetchAsset ?? ((url) => fetchAssetViaBackground(url, maxBytes)))(url)
+        ? await (options.fetchAsset ?? ((url) => fetchAssetViaBackground(url, maxBytes, candidate)))(url)
         : await fetchCandidateBytes(fetcher, url, maxBytes, candidate.headers);
+      if (downloaded.asset) {
+        uploaded.push({ ...downloaded.asset, pointer: candidate.pointer, message_id: candidate.messageId ?? downloaded.asset.message_id ?? null });
+        continue;
+      }
       if (downloaded.bytes.length > maxBytes) throw new Error("asset_too_large");
       const contentType = candidate.contentType ?? downloaded.contentType ?? null;
       const filename = candidate.filename ?? downloaded.filename ?? null;
@@ -74,7 +81,7 @@ export async function uploadProviderAssets(
         content_type: contentType ?? asset.content_type ?? null,
       });
     } catch (error) {
-      if (error instanceof Error && ["asset_too_large", "asset_url_unavailable", "asset_expired"].includes(error.message)) reason = error.message as AssetFailureReason;
+      if (error instanceof Error && ["asset_too_large", "asset_url_unavailable", "asset_expired", "asset_upload_failed"].includes(error.message)) reason = error.message as AssetFailureReason;
       const failure: AssetFailure = { source: candidate.source, source_id: candidate.sourceId, message_id: candidate.messageId ?? null, reason };
       console.error(JSON.stringify({ event: "asset_capture_failed", ...failure }));
       try { await (options.reportFailure ?? reportAssetFailure)(failure); }
@@ -84,15 +91,16 @@ export async function uploadProviderAssets(
   return uploaded;
 }
 
-async function fetchAssetViaBackground(url: string, maxBytes: number): Promise<ProviderAssetBytes> {
+async function fetchAssetViaBackground(url: string, maxBytes: number, candidate: ProviderAssetCandidate): Promise<ProviderAssetBytes> {
   if (typeof chrome === "undefined" || !chrome.runtime?.sendMessage) {
     throw new Error("Background asset fetch is unavailable");
   }
   const response = await new Promise<any>((resolve) => {
-    chrome.runtime.sendMessage({ type: "SCROBBLER_ASSET_FETCH", url, maxBytes }, resolve);
+    chrome.runtime.sendMessage({ type: "SCROBBLER_ASSET_FETCH", url, maxBytes, upload: { source: candidate.source, sourceId: candidate.sourceId, pointer: candidate.pointer, messageId: candidate.messageId, filename: candidate.filename, contentType: candidate.contentType, originalUrl: url } }, resolve);
   });
   if (!response?.ok) throw new Error(response?.error ?? "Background asset fetch failed");
   return {
+    asset: response.asset,
     bytes: Array.isArray(response.bytes) ? response.bytes : [],
     filename: response.filename ?? null,
     contentType: response.contentType ?? null,
@@ -109,7 +117,7 @@ async function fetchCandidateBytes(
     || (typeof location !== "undefined" && new URL(url, location.origin).origin === location.origin);
   const res = await fetcher(url, { credentials: "include", headers: sameOrigin ? headers : undefined, signal: AbortSignal.timeout(60_000) });
   if (!res.ok) throw new Error(res.status === 404 || res.status === 410 ? "asset_expired" : "asset_download_failed");
-  const bytes = await boundedAssetBytes(res, maxBytes);
+  const bytes = await boundedAssetBuffer(res, maxBytes);
   return {
     bytes,
     filename: filenameFromHeaders(res),

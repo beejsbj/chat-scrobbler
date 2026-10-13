@@ -2,6 +2,9 @@ import "./chrome-api";
 import { detectProvider } from "./providers";
 import { runSidebarBadges } from "./sidebar";
 import type { ConversationState } from "./sidebar/reconcile";
+import { ASSET_CHUNK_BYTES } from "./asset-transfers";
+import { backfillProviderAssets } from "./asset-backfill";
+import { SyncFailureTracker } from "./providers/sync-failures";
 import type { RuntimeMessage, SyncRequest, SyncResponse } from "./messages";
 import type { RawCapture, UploadedAsset } from "../../shared/src";
 import type { AssetUploadRequest } from "./messages";
@@ -11,7 +14,14 @@ const provider = detectProvider();
 if (provider) {
   sendRuntimeMessage({ type: "SCROBBLER_PROVIDER_READY", provider: provider.source }).catch(() => undefined);
 
-  chrome.runtime.onMessage.addListener((message: RuntimeMessage, _sender: unknown, sendResponse: (response: SyncResponse) => void) => {
+  chrome.runtime.onMessage.addListener((message: RuntimeMessage, _sender: unknown, sendResponse: (response: any) => void) => {
+    if (message.type === "SCROBBLER_BACKFILL_ASSETS" && message.provider === provider.source) {
+      refreshIgnoredIds().then(() => backfillProviderAssets(provider, message.page, {
+        uploadAsset, shouldIgnore: id => ignoredIds.has(id),
+        commit: async value => { const res = await sendRuntimeMessage({ type: "SCROBBLER_BACKFILL_COMMIT", value }); if (!res?.ok) throw new Error(res?.error ?? "Backfill commit failed"); },
+      })).then(result => sendResponse({ ok: true, result }), () => sendResponse({ ok: false, error: "Asset backfill failed; inspect receiver reports" }));
+      return true;
+    }
     if (message.type !== "SCROBBLER_SYNC_REQUEST" || message.provider !== provider.source) return false;
     syncProvider(message).then(sendResponse, (error) => {
       sendResponse({ ok: false, error: error instanceof Error ? error.message : String(error) });
@@ -61,6 +71,7 @@ if (provider) {
 
 async function syncProvider(message: SyncRequest): Promise<SyncResponse> {
   await refreshIgnoredIds();
+  if (message.retryFailed) return retryFailedCaptures(message);
   const result = await provider!.sync({
     lastSync: message.lastSync ?? null,
     captureFailures: message.captureFailures,
@@ -72,7 +83,24 @@ async function syncProvider(message: SyncRequest): Promise<SyncResponse> {
 }
 
 async function uploadAsset(asset: AssetUploadRequest): Promise<UploadedAsset> {
-  const response = await sendRuntimeMessage({ type: "SCROBBLER_ASSET_UPLOAD", asset });
+  let response: any;
+  if (asset.bytes.length <= ASSET_CHUNK_BYTES) {
+    response = await sendRuntimeMessage({ type: "SCROBBLER_ASSET_UPLOAD", asset: { ...asset, bytes: Array.from(asset.bytes) } });
+  } else {
+    const { bytes, ...metadata } = asset;
+    const start = await sendRuntimeMessage({ type: "SCROBBLER_ASSET_UPLOAD_START", asset: metadata, sizeBytes: bytes.length });
+    if (!start?.ok) throw new Error(start?.error ?? "Asset transfer could not start");
+    try {
+      for (let offset = 0; offset < bytes.length; offset += ASSET_CHUNK_BYTES) {
+        const chunk = await sendRuntimeMessage({ type: "SCROBBLER_ASSET_UPLOAD_CHUNK", uploadId: start.uploadId, offset, bytes: Array.from(bytes.slice(offset, offset + ASSET_CHUNK_BYTES)) });
+        if (!chunk?.ok) throw new Error(chunk?.error ?? "Asset chunk rejected");
+      }
+      response = await sendRuntimeMessage({ type: "SCROBBLER_ASSET_UPLOAD_FINISH", uploadId: start.uploadId });
+    } catch (error) {
+      await sendRuntimeMessage({ type: "SCROBBLER_ASSET_UPLOAD_CANCEL", uploadId: start.uploadId });
+      throw error;
+    }
+  }
   if (!response?.ok) throw new Error(response?.error ?? "Background asset upload failed");
   return response.asset as UploadedAsset;
 }
@@ -93,4 +121,23 @@ let ignoredIds = new Set<string>();
 async function refreshIgnoredIds(): Promise<void> {
   const res = await sendRuntimeMessage({ type: "SCROBBLER_IGNORED_CHATS", provider: provider!.source });
   ignoredIds = new Set<string>(res?.ok && Array.isArray(res.ids) ? res.ids : []);
+}
+
+async function retryFailedCaptures(message: SyncRequest): Promise<SyncResponse> {
+  const failures = new SyncFailureTracker();
+  let captured = 0, failed = 0, skipped = 0;
+  for (const previous of message.captureFailures ?? []) {
+    if (ignoredIds.has(previous.source_id)) { skipped++; continue; }
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    try {
+      if (!provider!.captureOne) throw new Error("Single capture unavailable");
+      await provider!.captureOne(previous.source_id, previous.updated_at, { emitCapture, uploadAsset });
+      captured++;
+    } catch {
+      failed++;
+      failures.failed(previous.source_id, previous.updated_at);
+    }
+  }
+  return { ok: true, source: provider!.source, scanned: (message.captureFailures ?? []).length, captured, failed, skipped,
+    captureFailures: failures.list(), maxConversationUpdatedAt: message.lastSync ?? null, account: null };
 }

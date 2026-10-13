@@ -1,4 +1,4 @@
-import type { AssetFailure, ProviderSource, RawCapture, ConversationCaptureFailure } from "../../shared/src";
+import type { AssetFailure, ProviderSource, RawCapture, ConversationCaptureFailure, AssetBackfillPage, AssetBackfillCommit, UploadedAsset } from "../../shared/src";
 import type { ProviderSyncResult } from "./providers";
 import type { CaptureKind } from "./recent-captures";
 
@@ -7,6 +7,7 @@ export interface SyncRequest {
   provider: ProviderSource;
   lastSync?: string | null;
   captureFailures?: ConversationCaptureFailure[];
+  retryFailed?: boolean;
 }
 
 export interface CaptureReadyMessage {
@@ -22,7 +23,7 @@ export interface AssetUploadRequest {
   pointer: string;
   filename?: string | null;
   contentType?: string | null;
-  bytes: number[];
+  bytes: number[] | Uint8Array;
 }
 
 export interface AssetUploadMessage {
@@ -39,9 +40,11 @@ export interface AssetFetchMessage {
   type: "SCROBBLER_ASSET_FETCH";
   url: string;
   maxBytes?: number;
+  upload?: Omit<AssetUploadRequest, "bytes">;
 }
 
 export interface AssetFetchResponse {
+  asset?: UploadedAsset;
   bytes: number[];
   filename?: string | null;
   contentType?: string | null;
@@ -121,7 +124,22 @@ export interface CaptureLoggedMessage {
   kind: CaptureKind;
 }
 
+export interface BackfillRequest { type: "SCROBBLER_BACKFILL_ASSETS"; provider: ProviderSource; page: AssetBackfillPage; }
+export interface BackfillOpenTabsMessage { type: "SCROBBLER_BACKFILL_OPEN_TABS"; }
+export interface RetryFailedMessage { type: "SCROBBLER_RETRY_FAILED_OPEN_TABS"; }
+export interface BackfillCommitMessage { type: "SCROBBLER_BACKFILL_COMMIT"; value: AssetBackfillCommit; }
+
+export interface AssetUploadStart { type: "SCROBBLER_ASSET_UPLOAD_START"; asset: Omit<AssetUploadRequest, "bytes">; sizeBytes: number; }
+export interface AssetUploadChunk { type: "SCROBBLER_ASSET_UPLOAD_CHUNK"; uploadId: string; offset: number; bytes: number[]; }
+export interface AssetUploadFinish { type: "SCROBBLER_ASSET_UPLOAD_FINISH"; uploadId: string; }
+export interface AssetUploadCancel { type: "SCROBBLER_ASSET_UPLOAD_CANCEL"; uploadId: string; }
+
 export type RuntimeMessage =
+  | AssetUploadStart | AssetUploadChunk | AssetUploadFinish | AssetUploadCancel
+  | BackfillRequest
+  | BackfillOpenTabsMessage
+  | BackfillCommitMessage
+  | RetryFailedMessage
   | SyncRequest
   | CaptureReadyMessage
   | AssetFailureMessage

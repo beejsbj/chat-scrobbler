@@ -1,10 +1,11 @@
 import "./chrome-api";
-import { assetsUrl, capturesUrl, deleteCaptureUrl, statusUrl, DEFAULT_INGEST_BASE_URL, DEFAULT_SYNC_PERIOD_MINUTES, type ProviderSource, type ConversationCaptureFailure } from "../../shared/src";
+import { assetsUrl, capturesUrl, deleteCaptureUrl, statusUrl, DEFAULT_INGEST_BASE_URL, DEFAULT_SYNC_PERIOD_MINUTES, type ProviderSource, type ConversationCaptureFailure, type AssetBackfillPage } from "../../shared/src";
 import { collectCredentialSnapshot } from "./credentials";
 import { toolbarProgressView, aggregateTabProgress, type ToolbarProgressInput } from "./toolbar-progress";
 import { appendRecentCapture, RECENT_CAPTURES_KEY, type RecentCapture } from "./recent-captures";
 import { filenameFromHeaders, MAX_PROVIDER_ASSET_BYTES } from "./providers/assets";
-import { boundedAssetBytes } from "./providers/asset-bytes";
+import { boundedAssetBuffer } from "./providers/asset-bytes";
+import { AssetTransfers } from "./asset-transfers";
 import { uploadAssetToIngest } from "./asset-upload";
 import type {
   AssetFetchMessage,
@@ -37,6 +38,7 @@ interface Settings {
 interface ProviderState {
   lastSync: string | null;
   captureFailures?: ConversationCaptureFailure[];
+  lastBackfill?: { next_after: string | null; sessions: number; attempted: number; captured: number; unavailable: number; completed_at: string };
   lastVisitSync: string | null;
   lastResult: unknown;
   lastError: string | null;
@@ -47,6 +49,8 @@ interface Status {
   capturesPosted: number;
   providers: Partial<Record<ProviderSource, ProviderState>>;
 }
+
+const assetTransfers = new AssetTransfers();
 
 const SETTINGS_KEY = "scrobbler.settings";
 const STATUS_KEY = "scrobbler.status";
@@ -93,6 +97,13 @@ chrome.runtime.onMessage.addListener((message: RuntimeMessage, sender: any, send
 });
 
 async function handleRuntimeMessage(message: RuntimeMessage, sender: any): Promise<unknown> {
+  if (message.type === "SCROBBLER_ASSET_UPLOAD_START") return { ok: true, uploadId: assetTransfers.start(message.asset, message.sizeBytes, (await getSettings()).maxAssetBytes) };
+  if (message.type === "SCROBBLER_ASSET_UPLOAD_CHUNK") { assetTransfers.append(message.uploadId, message.offset, message.bytes); return { ok: true }; }
+  if (message.type === "SCROBBLER_ASSET_UPLOAD_FINISH") return postAsset(assetTransfers.finish(message.uploadId));
+  if (message.type === "SCROBBLER_ASSET_UPLOAD_CANCEL") { assetTransfers.cancel(message.uploadId); return { ok: true }; }
+  if (message.type === "SCROBBLER_BACKFILL_OPEN_TABS") return backfillOpenTabs();
+  if (message.type === "SCROBBLER_RETRY_FAILED_OPEN_TABS") return syncAllOpenProviderTabs("retry");
+  if (message.type === "SCROBBLER_BACKFILL_COMMIT") return commitBackfill(message.value);
   if (message.type === "SCROBBLER_CAPTURE_READY") return postCapture(message);
   if (message.type === "SCROBBLER_ASSET_UPLOAD") return postAsset(message.asset);
   if (message.type === "SCROBBLER_ASSET_FAILURE") return postAssetFailure(message);
@@ -156,7 +167,17 @@ async function fetchAssetBytes(message: AssetFetchMessage): Promise<unknown> {
   const maxBytes = Math.min(message.maxBytes ?? settings.maxAssetBytes, settings.maxAssetBytes);
   const res = await fetch(url.toString(), { credentials: "include", signal: AbortSignal.timeout(60_000) });
   if (!res.ok) throw new Error(res.status === 404 || res.status === 410 ? "asset_expired" : "asset_download_failed");
-  return { ok: true, bytes: await boundedAssetBytes(res, maxBytes), filename: filenameFromHeaders(res), contentType: res.headers.get("content-type") };
+  const bytes = await boundedAssetBuffer(res, maxBytes);
+  const filename = filenameFromHeaders(res);
+  const contentType = res.headers.get("content-type");
+  if (message.upload) {
+    let asset;
+    try { asset = await uploadAssetToIngest(fetch, settings, { ...message.upload, filename: message.upload.filename ?? filename,
+      contentType: message.upload.contentType ?? contentType, bytes }); }
+    catch (error) { throw new Error(error instanceof Error && error.message === "asset_too_large" ? "asset_too_large" : "asset_upload_failed"); }
+    return { ok: true, asset: { ...asset, filename: message.upload.filename ?? filename, content_type: message.upload.contentType ?? contentType } };
+  }
+  return { ok: true, bytes: Array.from(bytes), filename, contentType };
 }
 
 function updateToolbarProgress(message: CaptureProgressMessage, sender: any): unknown {
@@ -342,7 +363,7 @@ async function syncActiveTab(): Promise<unknown> {
   return syncTab(tab, provider, "manual");
 }
 
-async function syncAllOpenProviderTabs(reason: "manual" | "periodic"): Promise<unknown> {
+async function syncAllOpenProviderTabs(reason: "manual" | "periodic" | "retry"): Promise<unknown> {
   const tabs = await queryTabs({});
   const results = [];
   for (const tab of tabs) {
@@ -352,17 +373,18 @@ async function syncAllOpenProviderTabs(reason: "manual" | "periodic"): Promise<u
   return { ok: true, results };
 }
 
-async function syncTab(tab: any, provider: ProviderSource, reason: "manual" | "periodic" | "visit"): Promise<unknown> {
+async function syncTab(tab: any, provider: ProviderSource, reason: "manual" | "periodic" | "retry" | "visit"): Promise<unknown> {
   const status = await getStatus();
   const lastSync = status.providers[provider]?.lastSync ?? null;
   // sendTabMessage resolves undefined when the tab has no live content script
   // (e.g. opened before the extension loaded / reloaded). Guard with optional
   // chaining so this surfaces a clear message instead of a "reading 'ok'" crash.
-  const response = await sendTabMessage(tab.id, { type: "SCROBBLER_SYNC_REQUEST", provider, lastSync, captureFailures: status.providers[provider]?.captureFailures ?? [] }) as SyncResponse | undefined;
+  const response = await sendTabMessage(tab.id, { type: "SCROBBLER_SYNC_REQUEST", provider, lastSync, captureFailures: status.providers[provider]?.captureFailures ?? [], retryFailed: reason === "retry" }) as SyncResponse | undefined;
   if (!response?.ok) throw new Error(response?.error ?? "Content script not active in that tab — reload the tab and try again.");
 
   await mutateStatus((next) => {
     next.providers[provider] = {
+      ...next.providers[provider],
       lastSync: response.maxConversationUpdatedAt ?? lastSync,
       captureFailures: response.captureFailures ?? [],
       lastVisitSync: reason === "visit" ? new Date().toISOString() : next.providers[provider]?.lastVisitSync ?? null,
@@ -499,4 +521,45 @@ async function reportSyncFailures(source: ProviderSource, failures: Conversation
   const res = await fetch(statusUrl(settings.ingestBaseUrl), { method: "POST", headers, credentials: "omit",
     body: JSON.stringify({ source, conversations: [], capture_failures: failures }), signal: AbortSignal.timeout(30_000) });
   if (!res.ok) throw new Error(`Capture failure report rejected (${res.status})`);
+}
+
+async function commitBackfill(value: import("../../shared/src").AssetBackfillCommit): Promise<unknown> {
+  const settings = await getSettings();
+  const headers: Record<string, string> = { "content-type": "application/json" };
+  if (settings.ingestToken) headers.authorization = `Bearer ${settings.ingestToken}`;
+  const res = await fetch(`${assetsUrl(settings.ingestBaseUrl)}/backfill`, { method: "POST", headers, credentials: "omit", body: JSON.stringify(value), signal: AbortSignal.timeout(30_000) });
+  if (!res.ok) throw new Error(`Backfill commit rejected (${res.status})`);
+  return res.json();
+}
+
+async function backfillOpenTabs(): Promise<unknown> {
+  const tabs = await queryTabs({});
+  const providers = new Set<ProviderSource>();
+  const results: unknown[] = [];
+  for (const tab of tabs) {
+    const provider = providerFromUrl(tab.url);
+    if (!tab.id || !provider || providers.has(provider)) continue;
+    providers.add(provider);
+    const status = await getStatus();
+    const settings = await getSettings();
+    const url = new URL(`${assetsUrl(settings.ingestBaseUrl)}/backfill`);
+    url.searchParams.set("source", provider);
+    url.searchParams.set("limit", "25");
+    const after = status.providers[provider]?.lastBackfill?.next_after;
+    if (after) url.searchParams.set("after", after);
+    const headers: Record<string, string> = {};
+    if (settings.ingestToken) headers.authorization = `Bearer ${settings.ingestToken}`;
+    const res = await fetch(url.toString(), { headers, credentials: "omit", signal: AbortSignal.timeout(30_000) });
+    if (!res.ok) throw new Error(`Backfill queue unavailable (${res.status}); receiver needs the BJS-547 build`);
+    const page = await res.json() as AssetBackfillPage;
+    const response = await sendTabMessage(tab.id, { type: "SCROBBLER_BACKFILL_ASSETS", provider, page }) as any;
+    if (!response?.ok) throw new Error(response?.error ?? "Reload the provider tab before backfill");
+    await mutateStatus(next => {
+      const previous = next.providers[provider] ?? { lastSync: null, lastVisitSync: null, lastResult: null, lastError: null };
+      next.providers[provider] = { ...previous, lastBackfill: { ...response.result, completed_at: new Date().toISOString() } };
+    });
+    results.push({ provider, ...response.result });
+  }
+  if (!providers.size) throw new Error("Open a logged-in provider tab before backfill");
+  return { ok: true, results };
 }

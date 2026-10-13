@@ -7,7 +7,7 @@ test("capture resolves a provider download link before archiving binary bytes", 
     expect(input).toBe("https://files.oaiusercontent.com/image.png");
     return new Response(new Uint8Array([137, 80, 78, 71]), { headers: { "content-type": "image/png" } });
   }, async request => {
-    expect(request.bytes).toEqual([137, 80, 78, 71]);
+    expect(Array.from(request.bytes)).toEqual([137, 80, 78, 71]);
     return { pointer: request.pointer, local_path: "assets/chatgpt/c/hash.png" };
   }, [{ source: "chatgpt", sourceId: "c", pointer: "sediment://file_1", url: "/download" }], {
     resolveUrl: async () => "https://files.oaiusercontent.com/image.png",

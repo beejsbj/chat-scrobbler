@@ -233,3 +233,18 @@ test("background persists the configurable asset size limit", async () => {
   expect(await sendRuntimeMessage({ type: "SCROBBLER_SAVE_SETTINGS", ingestBaseUrl: "http://local", maxAssetBytes: 7 })).toMatchObject({ settings: { maxAssetBytes: 7 } });
   expect(await sendRuntimeMessage({ type: "SCROBBLER_ASSET_UPLOAD", asset: { source: "claude", sourceId: "c", pointer: "p", bytes: [1, 2, 3, 4, 5, 6, 7, 8] } })).toMatchObject({ ok: false, error: "asset_too_large" });
 });
+
+test("background assembles bounded asset chunks before hash lookup and upload", async () => {
+  let uploaded: number[] | undefined;
+  globalThis.fetch = (async (_input, init) => {
+    if (!init?.method) return Response.json({ ok: true, exists: false });
+    uploaded = Array.from(init.body as Uint8Array);
+    return Response.json({ ok: true, pointer: "p", local_path: "assets/chatgpt/c/hash" });
+  }) as typeof fetch;
+  const start = await sendRuntimeMessage({ type: "SCROBBLER_ASSET_UPLOAD_START", asset: { source: "chatgpt", sourceId: "c", pointer: "p" }, sizeBytes: 3 }) as any;
+  expect(start.ok).toBe(true);
+  expect(await sendRuntimeMessage({ type: "SCROBBLER_ASSET_UPLOAD_CHUNK", uploadId: start.uploadId, offset: 0, bytes: [1, 2] })).toMatchObject({ ok: true });
+  expect(await sendRuntimeMessage({ type: "SCROBBLER_ASSET_UPLOAD_CHUNK", uploadId: start.uploadId, offset: 2, bytes: [3] })).toMatchObject({ ok: true });
+  expect(await sendRuntimeMessage({ type: "SCROBBLER_ASSET_UPLOAD_FINISH", uploadId: start.uploadId })).toMatchObject({ ok: true });
+  expect(uploaded).toEqual([1, 2, 3]);
+});

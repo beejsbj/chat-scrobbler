@@ -1,7 +1,7 @@
 import { logSyncFailure, SyncFailureTracker } from "./sync-failures";
 import { buildRawCapture } from "../../../shared/src";
 import { uploadProviderAssets } from "./assets";
-import { chatgptAssetCandidates, resolveChatgptAssetUrl } from "./chatgpt-assets";
+import { chatgptAssetCandidates, chatgptFileDownloadEndpoint, resolveChatgptAssetUrl } from "./chatgpt-assets";
 import {
   asArray,
   asObject,
@@ -21,6 +21,15 @@ const LIST_LIMIT = 50;
 export function createChatgptAdapter(fetcher: FetchLike = fetch.bind(globalThis)): ProviderAdapter {
   return {
     source: "chatgpt",
+    backfillAssets: async (id, references, options) => {
+      const token = await getAccessToken(fetcher);
+      const headers = token ? { authorization: `Bearer ${token}` } : undefined;
+      return uploadProviderAssets(fetcher, options.uploadAsset, references.map(ref => ({
+        source: "chatgpt", sourceId: id, pointer: ref.pointer, messageId: ref.message_id,
+        url: chatgptFileDownloadEndpoint(ref.pointer, id, ref.message_id), headers,
+        filename: ref.filename, contentType: ref.content_type,
+      })), { beforeFetch: options.beforeFetch, resolveUrl: candidate => resolveChatgptAssetUrl(fetcher, candidate) });
+    },
     sync: (options) => syncChatgpt(fetcher, options),
     listConversations: (pages = 1) => listChatgpt(fetcher, pages),
     captureOne: (id, updatedAt, options) => captureChatgptOne(fetcher, id, updatedAt, options),
