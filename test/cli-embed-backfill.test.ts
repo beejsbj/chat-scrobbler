@@ -1,6 +1,7 @@
-import { test, expect } from "bun:test";
+import { test, expect, spyOn } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
+import * as os from "node:os";
 import { join } from "node:path";
 import { DEFAULT_CONFIG } from "../src/config";
 import { openIndex, indexSession } from "../src/indexer/sqlite";
@@ -22,4 +23,38 @@ test("CLI fills isolated hash fixtures and reports coverage without changing con
     expect(cfg.embeddingProvider).toBe("none");
     const inspect=openIndex(cfg.indexPath); expect(inspect.query("SELECT * FROM message_vectors").all()).toHaveLength(1); inspect.close();
   } finally {rmSync(root,{recursive:true,force:true});}
+});
+
+test("CLI migration ignores even an explicitly configured emergency host load brake", async () => {
+  const root = mkdtempSync(join(tmpdir(), "embed-migrate-"));
+  const load = spyOn(os, "loadavg").mockReturnValue([32, 32, 32]);
+  const sleep = spyOn(Bun, "sleep").mockImplementation(async () => { throw new Error("unexpected load pause"); });
+  try {
+    const cfg = { ...DEFAULT_CONFIG, indexPath: join(root, "index.db") };
+    const db = openIndex(cfg.indexPath);
+    indexSession(db, fixture());
+    db.run(`INSERT INTO message_embeddings(session_id,message_id,embedding,text,title,provider_kind,provider_model,dimension)
+      VALUES ('chatgpt:test','m','[1,0]','archived words','T','test','m',2)`);
+    db.close();
+    const out: string[] = [];
+    await runEmbedBackfill(["--migrate-only", "--load-threshold", "1"], cfg, text => out.push(text));
+    expect(JSON.parse(out.at(-1)!)).toMatchObject({ event: "migration_complete", scanned: 1, converted: 1, invalid: 0 });
+    expect(load).not.toHaveBeenCalled();
+    expect(sleep).not.toHaveBeenCalled();
+  } finally { load.mockRestore(); sleep.mockRestore(); rmSync(root, { recursive: true, force: true }); }
+});
+
+test("CLI defaults to serial inference without checking aggregate host load", async () => {
+  const root = mkdtempSync(join(tmpdir(), "embed-load-"));
+  const load = spyOn(os, "loadavg").mockReturnValue([32, 32, 32]);
+  try {
+    const cfg = { ...DEFAULT_CONFIG, indexPath: join(root, "index.db") };
+    const db = openIndex(cfg.indexPath);
+    indexSession(db, fixture());
+    db.close();
+    const out: string[] = [];
+    await runEmbedBackfill(["--model", "hash-v1", "--provider", "hash"], cfg, text => out.push(text));
+    expect(JSON.parse(out.at(-1)!)).toMatchObject({ event: "complete", embedded: 1 });
+    expect(load).not.toHaveBeenCalled();
+  } finally { load.mockRestore(); rmSync(root, { recursive: true, force: true }); }
 });

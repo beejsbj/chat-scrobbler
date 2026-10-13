@@ -52,10 +52,13 @@ Recall workflow (the two steps an agent follows)
 Usage: chat-scrobbler <command> [options]
 
 Derived embeddings
-  embed-backfill --model <id> [--provider <kind>] [--limit <n>] [--rate <items/s>]
-    Resume missing/changed text and assets; default 0.2 items/s, pause above load 8
-    --load-threshold <n>    Host load ceiling
+  embed-backfill --model <id> [--provider <kind>] [--limit <n>] [--rate <requests/s>]
+    Resume missing/changed text and assets; serial requests, default 100 ms yield
+    Use kernel cgroup CPU limits/nice for resource control and queue backpressure
+    --rate <requests/s>    Yield 1/rate seconds after each response, including chunks
+    --load-threshold <n>    Optional emergency host-load brake (e.g. 32); no default
     --migrate-only         Convert legacy JSON to float32 without inference
+                           Exempt from the host-load brake
 
 Recall
   search <query>         Hybrid search when embeddings are enabled; otherwise FTS
