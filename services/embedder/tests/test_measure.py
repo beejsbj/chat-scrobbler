@@ -44,5 +44,17 @@ class MeasurementTests(unittest.TestCase):
         self.assertIn('--child', command)
 
 
+class NativeCheckTests(unittest.TestCase):
+    def test_native_sequence_compares_spike_then_checks_eight_frame_decode(self):
+        from services.embedder.native_check import cases
+        sequence = cases()
+        self.assertEqual([name for name, _ in sequence], ['text_query', 'image', 'audio', 'video4s', 'video8s'])
+        self.assertEqual(sequence[0][1]['role'], 'query')
+        self.assertEqual(len(sequence[3][1]), 4)
+        self.assertEqual(sequence[4][1]['input']['type'], 'video')
+        self.assertEqual([name for name, _ in cases(video_only=True)], ['video4s', 'video8s'])
+        self.assertEqual([name for name, _ in cases(eight_only=True)], ['video8s'])
+
+
 if __name__ == '__main__':
     unittest.main()
