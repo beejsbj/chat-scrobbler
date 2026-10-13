@@ -3,13 +3,13 @@
 ## State
 
 Implemented on `feat/bjs-547-asset-capture`, based on `origin/main`.
-Extension version: **0.3.0 → 0.4.0**. Commits are local. Nothing was pushed,
+Extension version: **0.3.0 → 0.4.1** (initial implementation 0.4.0, review fixes 0.4.1). Commits are local. Nothing was pushed,
 deployed, or run against production data or provider accounts.
 
 Assets are downloaded during capture, bounded while reading, hashed before upload,
 and associated with message pointers in archived raw. Parsers rebuild typed media
 links from those records. Failed discoveries are archived too, with null canonical
-paths, so later backfill can retry them. Text capture continues after asset failures.
+paths, so later backfill can retry them. Text capture continues after non-transient asset failures; outages stop sync for retry.
 
 Server changes are additive. A deployed v0.3.0 extension can keep using its existing
 `POST /assets`, `POST /captures`, and `POST /status` contracts. The new extension
@@ -124,23 +124,25 @@ quarantined and the cursor advances past it. Its ID, timestamp, attempt count an
 quarantine state remain in extension storage and `/status`'s `capture_failures`.
 The server stores snapshots beside the index, surviving server restarts.
 
-A changed ChatGPT/Claude timestamp resets quarantine. Gemini has no sidebar update
-timestamps, so its quarantine has a 24-hour retry deadline. **Retry failed chats**
+A changed ChatGPT/Claude timestamp resets quarantine. Every provider quarantine now retries after 1, 3, then 7 days on successive
+failures, while preserving its attempt history. **Retry failed chats**
 in the popup retries only recorded failures, paced by one second. It does not
 reset the entire provider sync cursor. Provider 429/503 conversation responses
 stop sync as `RateLimitError` without counting chats toward permanent quarantine.
-Gemini still rescans visible sidebar IDs because it cannot compare timestamps.
+Gemini still fetches the payload of visible sidebar IDs because it cannot compare
+timestamps, but acknowledged unchanged payloads skip asset downloads and ingest.
 
 ## What Burooj must do manually
 
 1. Build output is ready at `packages/extension/build`. Open `chrome://extensions`,
    enable Developer mode, and load that directory as an unpacked extension, or
    reload your existing unpacked install after pointing it at this build. Confirm
-   **0.4.0**. Accept the added media-host permissions if Chrome requests them.
+   **0.4.1**. Accept the added media-host permissions if Chrome requests them.
 2. Reload provider tabs so they use the new content script. Remain logged in.
    Existing provider auth stays on provider requests; ingest receives only its own
-   optional bearer token. Google media downloads can use the browser's Google
-   session; signed OpenAI/Claude CDN requests omit credentials.
+   optional bearer token. Allowlisted Google media downloads can use the browser's Google
+   session; signed OpenAI/Claude CDN requests omit credentials. Every provider
+   download uses the source-specific policy in **Review fixes** below.
 3. Keep the existing receiver URL/token settings. Defaults bound each asset to
    **100 MiB** in both extension and receiver. Adjust **Maximum asset size (MiB)** in the
    popup and receiver `maxAssetBytes` or `CHAT_SCROBBLER_MAX_ASSET_BYTES` (bytes)
@@ -164,8 +166,8 @@ Gemini still rescans visible sidebar IDs because it cannot compare timestamps.
    is `~/.local/share/chat-scrobbler/canonical/assets/sha256/`.
 6. Re-sync the same bytes. In the extension service-worker network panel expect
    `GET /assets?sha256=...` followed by `POST /assets/reference`, with no second
-   binary `POST /assets` to the new receiver. Provider bytes are still downloaded
-   to compute their hash. Cross-origin downloads run in the service worker;
+   binary `POST /assets` to the new receiver. An already known pointer uses its cached hash to check the receiver before
+   another provider download. New pointers still require bytes to compute a hash. Cross-origin downloads run in the service worker;
    same-origin downloads run in the provider tab.
 7. Use backfill for unchanged archived sessions; incremental sync alone will not
    revisit all old ChatGPT/Claude conversations. Read popup unavailable counts and
@@ -201,9 +203,9 @@ Final gates passed on 2026-10-13 with Bun 1.3.14:
 
 | Command | Result |
 |---|---|
-| `bun test` | **459 pass, 0 fail**, 1,593 assertions across 53 files |
+| `bun test` | **538 pass, 0 fail**, 1,864 assertions across 58 files |
 | `bun x tsc --noEmit` | **PASS** |
-| `bun run build:extension` | **PASS**, output `packages/extension/build`, manifest 0.4.0 |
+| `bun run build:extension` | **PASS**, output `packages/extension/build`, manifest 0.4.1 |
 | `git diff --check` | **PASS** |
 
 The real-handler integration test passed alongside the complete suite. No live
@@ -221,3 +223,96 @@ workers; their model receipts were checked. Separate read-only standards and spe
 reviews also used Sonnet 5.5. Findings were inspected and integrated, including host
 restrictions, recoverable failed media references, quarantine retry and preserved
 provider fetch times. No review substitutes for the manual browser checks above.
+
+## Review fixes
+
+The reviewed build is **0.4.1**. Reload the unpacked extension and provider tabs;
+checking the version distinguishes it from the initial 0.4.0 build.
+
+### Final download allowlists
+
+The policy is in `providers/asset-url.ts`. It is applied before either page or
+background asset fetches and again to download-link destinations/final response
+URLs. Source is required. Provider URLs belonging to another source are rejected.
+Identifiers in routes are single segments containing letters, digits, `_` or `-`.
+URLs are normalized before route matching. Encoded slash/backslash/dot escapes
+remaining in the path, URL credentials, non-default ports, control characters and
+backslashes are rejected. Query parameters do not broaden
+which path can be fetched.
+
+| Capturing provider | Allowed URLs | Credentials |
+|---|---|---|
+| ChatGPT | On `https://chatgpt.com` or `https://chat.openai.com`: `/backend-api/files/download/{id}`, `/backend-api/files/{id}/download`, `/backend-api/conversation/{id}/attachment/{file}/download`, `/backend-api/conversation/{id}/interpreter/download`; `/backend-api/estuary/content` only with an `id` matching `file-...` or `file_...` | Cookies and ChatGPT bearer only for these provider download routes |
+| ChatGPT | HTTPS `oaiusercontent.com` and one subdomain level, or the exact `oaidalleapiprodscus.blob.core.windows.net` account; non-root media paths excluding `/api`, `/backend-api`, `/auth`, `/accounts` prefixes | Omit cookies and provider headers |
+| Claude | On `https://claude.ai`: `/api/organizations/{org}/files/{file}/download`, `/api/organizations/{org}/files/{file}/preview`, `/api/organizations/{org}/conversations/{conversation}/wiggle/download-file`, or the corresponding `chat_conversations` wiggle path | Claude cookies only; no ChatGPT bearer |
+| Claude | HTTPS `claudeusercontent.com` and one subdomain level; non-root media paths excluding the API/auth prefixes above | Omit cookies and provider headers |
+| Gemini | HTTPS `lh3.googleusercontent.com`, `lh4.googleusercontent.com`, `lh5.googleusercontent.com`, `lh6.googleusercontent.com`; non-root paths excluding the API/auth prefixes above | Google cookies only when capturing Gemini; no provider bearer |
+| Gemini | HTTPS `rr{digits}---sn-{letters/digits/hyphens}.googlevideo.com` with exact path `/videoplayback` | Google cookies only when capturing Gemini; no provider bearer |
+
+Generic relative paths, `/api/auth/session`, `/backend-api/me`, cross-provider
+URLs, protocol-relative URLs, `javascript:`, `data:`, `file:` and `blob:` pointers
+are refused as downloads. Claude's explicit base64 source objects are decoded
+locally as inline bytes and pass the same body guards; no data URL is fetched.
+Unfamiliar routes stay unavailable until separately verified. The browser manifest
+still grants the media-domain permissions, while runtime policy restricts fetches
+to the narrower rules above.
+
+Requests use `redirect: "manual"`: redirect responses, opaque redirects and final
+URLs outside the source's allowlist are refused. JSON/HTML content types and
+JSON-shaped or HTML-document bodies are refused before upload, including when
+mislabeled as image/octet-stream. Only known ChatGPT download-link routes may parse
+JSON indirection, with a 1 MiB metadata bound; the JSON body itself is never
+uploaded. Returned download URLs must pass the policy. This intentionally excludes
+JSON/HTML file exports from automatic binary capture. Non-allowlisted ChatGPT `image_url`
+thumbnails remain references in raw payloads, without asset failures or derived
+unavailable media blocks.
+
+### Retry and download state
+
+- Provider network failures, provider 5xx/429, receiver network/5xx/auth/config
+  failures and interrupted asset streams abort sync without adding an attempt.
+  Asset 429/503 preserves `Retry-After` as `RateLimitError`, including across the
+  background-message boundary. Deterministic provider 4xx other than 429 and
+  parse/validation errors count toward quarantine. Receiver 400/422 parse or
+  validation rejections are deterministic; other receiver rejections are transient.
+- After three deterministic failures, quarantine advances the cursor and schedules
+  retries after 1, 3, then 7 days. Due retries run even behind the cursor. Changed
+  provider timestamps reset history. Manual failures increment existing attempts
+  instead of resetting them to one. Transient manual failure leaves saved state intact.
+- A successful listing removes non-quarantined failures no longer listed; ignored
+  IDs are removed immediately. An aborted listing does not discard saved state.
+- Downloads during normal capture are paced by one second, just like backfill.
+  A local cache holds up to 5,000 `(provider, pointer) → sha256` hints. Every hit
+  checks the receiver's current hash lookup and creates the current session alias
+  without downloading bytes. Missing/collected blobs and older servers fall back
+  to download/upload. Receiver changes cannot blindly reuse a cached alias.
+- Gemini stores a content hash per chat and receiver after ingest acknowledges the
+  capture. Unchanged payloads skip media downloads and ingest, while sidebar
+  enumeration and conversation RPC fetches still occur. Single-chat/manual retry
+  capture can bypass the unchanged-payload shortcut. Failed media can still be
+  retried explicitly through backfill.
+- Failure snapshots include a persistent per-install UUID. Server state is keyed
+  by provider and install; clearing one install leaves the others intact. Old
+  `source: [records]` files migrate into a legacy install without losing records.
+  `/status` with `install_id` reads that install; unscoped reads aggregate the
+  records, deduplicating conversation IDs using highest attempts/quarantine state.
+- Posting `/status` failure snapshots is best-effort after local sync status is
+  saved. A receiver outage in that report logs a categorical event and leaves the
+  saved sync success intact.
+
+Regression probes cover all six findings, including the exact session-token upload
+probe, the source/scheme/redirect matrix, mislabeled session documents, repeated
+outages, orphaned/ignored failures, automatic retries behind the cursor, repeated
+Gemini syncs, persistent pointer reuse, two-browser clearing, manual retry history,
+web thumbnails and report failures. Final review gates on the complete 0.4.1 tree:
+
+| Command | Result |
+|---|---|
+| `bun test` | **538 pass, 0 fail**, 1,864 assertions across 58 files |
+| `bun x tsc --noEmit` | **PASS** |
+| `bun run build:extension` | **PASS**, built manifest confirms **0.4.1** |
+| `git diff --check` | **PASS** |
+
+All fixes are local commits on the same branch. No push, deployment, provider login
+or production-data operation was performed. Live endpoint verification still
+requires the manual browser checks above.

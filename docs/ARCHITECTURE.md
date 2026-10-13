@@ -58,19 +58,24 @@ captures deduplicate. Provider IDs are encoded without lossy sanitization.
   server; both sides must match.
 - Assets are downloaded during capture. Provider helpers discover API media before
   Gemini's DOM fallback, resolve file pointers, and report failed downloads without
-  stopping text capture. Raw `assets` holds successful hashes and aliases;
+  stopping text capture for non-transient asset failures. Outages stop sync for retry.
+  Raw `assets` holds successful hashes and aliases;
   `asset_references` also retains discoveries whose bytes could not be downloaded.
 - The extension hashes bytes before uploading. `GET /assets?sha256=...` and
-  `POST /assets/reference` avoid sending bytes the server already owns. Against an
-  older receiver, a missing lookup endpoint falls back to the original byte upload.
+  `POST /assets/reference` avoid sending bytes the server already owns. A persistent
+  pointer-to-hash cache verifies receiver blob existence before downloading known
+  pointers. Acknowledged unchanged Gemini payloads skip downloads and ingest. Against
+  an older receiver, a missing lookup endpoint falls back to the original byte upload.
 - The popup has a resumable asset backfill action and a separate failed-chat retry
   action. Backfill scans 25 archived sessions per provider per click, with one second
   between downloads, and reports saved and unavailable assets.
-- Three failures at the same conversation update time quarantine that conversation
+- Three deterministic failures at the same conversation update time quarantine that conversation
   and let the sync cursor advance. Failure records persist in extension storage and
-  are reported through `/status`. A changed provider timestamp or manual retry
-  reopens the conversation. Gemini has no sidebar timestamps, so its quarantine
-  expires after 24 hours. Provider throttling stops the sync without quarantining chats.
+  are reported through `/status`. A changed provider timestamp, manual retry, or
+  backoff deadline reopens the conversation. Quarantine retries after 1, 3, then
+  7 days while retaining attempt history, including for Gemini without timestamps.
+  Provider and receiver outages stop sync without quarantining chats. Pending
+  failures for ignored or no-longer-listed chats are removed after listing.
 
 ---
 
@@ -143,18 +148,23 @@ shared blobs. Blob collection and full archive erasure are separate concerns.
 
 Asset capture is best-effort and local-only. The browser extension fetches provider
 asset URLs in the authenticated page context, then uploads bytes to the local ingest
-server. If a provider rejects or expires an asset URL, text capture continues and the
-attachment block keeps `local_path: null`. Download, size, and upload failures
+server. For deterministic asset rejections or expired URLs, text capture continues
+and the attachment block keeps `local_path: null`. Download, size, and upload failures
 produce structured logs and reports through `/status`, with URLs and provider
-error bodies omitted from logs. Asset failure counts are process-local. Conversation
-failure lists are persisted beside the index as `<indexPath>.capture-failures.json`.
+error bodies omitted from logs. Provider or receiver outages abort sync for a later retry.
+Asset failure counts are process-local. Conversation
+failure snapshots are partitioned by persistent extension install ID. Legacy
+unscoped requests aggregate snapshots. Lists are persisted beside the index as
+`<indexPath>.capture-failures.json`.
 
 Both extension and receiver default to 100 MiB per asset, checked while reading
 streams and before upload. Set the extension limit in the popup and the receiver's
 `maxAssetBytes` JSON field or `CHAT_SCROBBLER_MAX_ASSET_BYTES` environment variable.
 Downloads are bounded but still buffered in memory. Large page-origin assets use
 1 MiB runtime-message chunks; cross-origin media can be downloaded and uploaded in
-the background worker. Provider cookies and bearer headers are never sent to ingest.
+the background worker. Provider cookies and bearer headers are never sent to ingest. Asset fetches enforce
+source-specific download URL and credential policies, refuse redirects, and reject
+JSON/HTML documents before upload. The exact policies are in the BJS-547 handoff.
 
 Provider limits:
 
