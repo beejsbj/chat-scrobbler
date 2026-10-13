@@ -274,7 +274,7 @@ async function syncGemini(
   pageCtx: GeminiPageContext,
   options: ProviderSyncOptions,
 ): Promise<ProviderSyncResult> {
-  const failures = new SyncFailureTracker(options.captureFailures);
+  const failures = new SyncFailureTracker((options.captureFailures ?? []).filter(f => !options.shouldIgnore?.("gemini", f.source_id)));
   let scanned = 0;
   let captured = 0;
   let skipped = 0;

@@ -84,7 +84,7 @@ async function syncChatgpt(fetcher: FetchLike, options: ProviderSyncOptions): Pr
   const token = await getAccessToken(fetcher);
   const headers = token ? { authorization: `Bearer ${token}` } : undefined;
   let offset = 0;
-  const failures = new SyncFailureTracker(options.captureFailures);
+  const failures = new SyncFailureTracker((options.captureFailures ?? []).filter(f => !options.shouldIgnore?.("chatgpt", f.source_id)));
   let scanned = 0;
   let captured = 0;
   let skipped = 0;

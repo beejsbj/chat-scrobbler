@@ -143,7 +143,7 @@ for (const source of ["chatgpt", "claude"] as const) test(`${source} retries due
   expect(result.captureFailures).toEqual([]);
 });
 
-for (const source of ["chatgpt", "claude", "gemini"] as const) for (const mode of ["gone", "ignored"] as const) test(`${source} drops ${mode} failure records so they cannot pin the cursor`, async () => {
+for (const source of ["chatgpt", "claude", "gemini"] as const) for (const mode of ["gone", "ignored", "ignored-unlisted"] as const) test(`${source} drops ${mode} failure records so they cannot pin the cursor`, async () => {
   const stamp = "2026-06-05T12:00:00Z";
   const fetcher = async (input: string) => {
     if (input === "/api/auth/session") return Response.json({});
@@ -157,7 +157,7 @@ for (const source of ["chatgpt", "claude", "gemini"] as const) for (const mode o
   const adapter = source === "gemini" ? createGeminiAdapter(fetcher, {
     listConversationIds: () => mode === "ignored" ? ["bad", "good"] : ["good"], readWizData: () => ({ at: "csrf", bl: "b", fSid: "s" }), readConversationDom: () => null,
   }) : (source === "chatgpt" ? createChatgptAdapter : createClaudeAdapter)(fetcher);
-  const result = await adapter.sync({ lastSync: "2026-06-04T12:00:00Z", shouldIgnore: (_s, id) => id === "bad", captureFailures: [{ source_id: "bad", attempts: 1, quarantined: false, updated_at: source === "gemini" ? null : stamp }], emitCapture: async () => {} });
+  const result = await adapter.sync({ lastSync: "2026-06-04T12:00:00Z", shouldIgnore: (_s, id) => mode !== "gone" && id === "bad", captureFailures: [{ source_id: "bad", attempts: mode === "ignored-unlisted" ? 3 : 1, quarantined: mode === "ignored-unlisted", updated_at: source === "gemini" ? null : stamp }], emitCapture: async () => {} });
   expect(result.captureFailures).toEqual([]);
   expect(result.maxConversationUpdatedAt! > "2026-06-04T12:00:00Z").toBe(true);
 });

@@ -92,7 +92,7 @@ async function captureClaudeOne(
 async function syncClaude(fetcher: FetchLike, options: ProviderSyncOptions): Promise<ProviderSyncResult> {
   const org = await getOrganization(fetcher);
   let offset = 0;
-  const failures = new SyncFailureTracker(options.captureFailures);
+  const failures = new SyncFailureTracker((options.captureFailures ?? []).filter(f => !options.shouldIgnore?.("claude", f.source_id)));
   let scanned = 0;
   let captured = 0;
   let skipped = 0;
