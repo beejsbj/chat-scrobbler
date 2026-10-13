@@ -85,10 +85,15 @@ export function acquireBackfillLock(indexPath:string,opts:{now?:()=>number;lease
     const renew=()=> {
       if(released || abort.signal.aborted) return false;
       try {
-        const at=now();
-        const result=db.query(`UPDATE locks SET expires_at=?,heartbeat_at=? WHERE name=? AND owner_token=? AND expires_at>? RETURNING owner_token`).get(at+ttl,at,name,token,at);
-        if(!result) {lost();return false;}
-        snapshot={...snapshot,state:"held",expires_at:at+ttl,heartbeat_at:at};return true;
+        // Compute time only after obtaining the writer reservation. A busy wait
+        // must not use an earlier timestamp to revive an already-expired token.
+        const renewed=db.transaction(()=> {
+          const at=now();
+          const result=db.query(`UPDATE locks SET expires_at=?,heartbeat_at=? WHERE name=? AND owner_token=? AND expires_at>? RETURNING owner_token`).get(at+ttl,at,name,token,at);
+          return result ? at : null;
+        }).immediate();
+        if(renewed===null) {lost();return false;}
+        snapshot={...snapshot,state:"held",expires_at:renewed+ttl,heartbeat_at:renewed};return true;
       } catch {lost();return false;}
     };
     const timer=setInterval(renew,heartbeat);timer.unref();

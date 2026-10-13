@@ -82,3 +82,20 @@ test("a process killed without release is recovered automatically after its hear
     replacement.assertOwned();
   } finally {child.kill();await child.exited;replacement?.release();rmSync(root,{recursive:true,force:true});}
 });
+
+test("a renewal waiting on a SQLite writer cannot resurrect an expired lease", async () => {
+  const {root,index}=setup();
+  const lease=acquireBackfillLock(index,{leaseMs:400,heartbeatMs:350})!;
+  const child=Bun.spawn([process.execPath,"-e",`
+    import {Database} from 'bun:sqlite';
+    const db=new Database(${JSON.stringify(index)});db.run('PRAGMA busy_timeout=5000');
+    db.run('BEGIN IMMEDIATE');console.log('writer held');
+    await Bun.sleep(550);db.run('COMMIT');db.close();
+  `],{stdout:"pipe",stderr:"pipe"});
+  try {
+    const reader=child.stdout.getReader();await reader.read();reader.releaseLock();
+    expect(lease.renew()).toBe(false);
+    expect(lease.signal.aborted).toBe(true);
+    expect(await child.exited).toBe(0);
+  } finally {child.kill();await child.exited;lease.release();rmSync(root,{recursive:true,force:true});}
+});
