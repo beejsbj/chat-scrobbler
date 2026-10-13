@@ -90,6 +90,7 @@ test("liveness is cheap; deep health requires auth and coalesces cached probes",
     expect(calls).toBe(1);
     const { Database } = await import("bun:sqlite");
     const db = new Database(opts.indexPath);
+    expect(db.query("PRAGMA journal_mode").get()).toEqual({ journal_mode: "wal" });
     expect(db.query("SELECT name FROM sqlite_master WHERE name = 'index_health_probe'").all()).toEqual([]);
     db.close();
   } finally { rmSync(opts.root, { recursive: true, force: true }); }

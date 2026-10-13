@@ -28,6 +28,7 @@ function writableIndex(path: string | undefined): StoreHealth {
     const db = new Database(path);
     try {
       db.run("PRAGMA busy_timeout = 5000");
+      db.run("PRAGMA journal_mode = WAL");
       db.run("BEGIN IMMEDIATE");
       const { application_id } = db.query("PRAGMA application_id").get() as { application_id: number };
       // Dirty a main-database header page, then roll back without schema changes.
