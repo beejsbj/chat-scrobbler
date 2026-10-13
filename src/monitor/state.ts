@@ -1,28 +1,14 @@
+import { withState } from "./state-db";
+import { emptyParseState, readParseState } from "./parse-state";
 import { assertStateOwner } from "./state-owner";
 import { Database } from "bun:sqlite";
-import { existsSync, mkdirSync } from "node:fs";
-import { dirname } from "node:path";
+import { existsSync } from "node:fs";
 import type { Source } from "../schema/types";
 
 export function monitorStatePath(indexPath: string, override?: string | null): string {
   return override || `${indexPath}.monitor.sqlite`;
 }
 
-/** Separate from rebuildable index tables. Transactions also protect CLI acknowledgements. */
-function withState<T>(path: string, fn: (db: Database) => T, dataDir?: string): T {
-  assertStateOwner(path, dataDir);
-  mkdirSync(dirname(path), { recursive: true });
-  const db = new Database(path);
-  try {
-    db.run("PRAGMA busy_timeout = 0");
-    db.run("PRAGMA journal_mode = WAL");
-    db.run("CREATE TABLE IF NOT EXISTS counters (key TEXT PRIMARY KEY, value INTEGER NOT NULL)");
-    db.run("CREATE TABLE IF NOT EXISTS captures (source TEXT PRIMARY KEY, received_at TEXT NOT NULL)");
-    db.run("CREATE TABLE IF NOT EXISTS acknowledged_types (type_id TEXT PRIMARY KEY)");
-    db.run("CREATE TABLE IF NOT EXISTS asset_buckets (hour INTEGER PRIMARY KEY, count INTEGER NOT NULL)");
-    return fn(db);
-  } finally { db.close(); }
-}
 
 export function incrementMonitorCounter(path: string, key: "asset_failures" | "embedding_ingest_failures" | "embedding_mcp_failures", count = 1, now = Date.now()): void {
   if (!count) return;
@@ -48,7 +34,7 @@ export function acknowledgeTypes(path: string, typeIds: string[], dataDir?: stri
 
 export function readMonitorState(path: string, since = Date.now() - 48 * 3_600_000, dataDir?: string, includeAcknowledgements = true) {
   assertStateOwner(path, dataDir);
-  if (!existsSync(path)) return { counters: {} as Record<string, number>, captures: {} as Partial<Record<Source, string>>, acknowledged: new Set<string>(), recentAssets: 0 };
+  if (!existsSync(path)) return { counters: {} as Record<string, number>, captures: {} as Partial<Record<Source, string>>, acknowledged: new Set<string>(), recentAssets: 0, ...emptyParseState() };
   const db = new Database(path, { readonly: true });
   try {
     db.run("PRAGMA busy_timeout = 0");
@@ -56,7 +42,7 @@ export function readMonitorState(path: string, since = Date.now() - 48 * 3_600_0
     const captures = Object.fromEntries((db.query("SELECT source, received_at FROM captures").all() as Array<{ source: Source; received_at: string }>).map(row => [row.source, row.received_at])) as Partial<Record<Source, string>>;
     const acknowledged = new Set(includeAcknowledgements ? (db.query("SELECT type_id FROM acknowledged_types").all() as Array<{ type_id: string }>).map(row => row.type_id) : []);
     const recentAssets = (db.query("SELECT coalesce(sum(count), 0) AS count FROM asset_buckets WHERE hour >= ?").get(Math.floor(since / 3_600_000)) as { count: number }).count;
-    return { counters, captures, acknowledged, recentAssets };
+    return { counters, captures, acknowledged, recentAssets, ...readParseState(db, since, counters) };
   } finally { db.close(); }
 }
 

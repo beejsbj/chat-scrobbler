@@ -459,7 +459,8 @@ Cockpit delivery and the Hermes schedule are supplied separately.
 header, even on localhost. Authenticated reports return HTTP 200 with `ok` and
 `failures`; callers inspect the body. Reports coalesce concurrent requests and
 cache results for 60 seconds. The HTTP scope is `live`: persisted counters,
-receipts and state health only. `deferred_checks` names the archive, vector, asset
+receipts, successful parse times, unresolved recent parser failures and state
+health only. `deferred_checks` names the archive, vector, asset
 and provider checks performed only by the CLI. HTTP performs no archive scan or
 embedding call. No titles, chat text, provider URLs, credentials or raw fragments
 are included. The CLI replaces unknown type names with opaque type IDs.
@@ -492,7 +493,15 @@ when the conversation is old. Upload failures use hourly buckets, so they can
 remain recent for up to one extra hour. Lifetime totals persist without causing
 permanent upload alerts. Orphaned raw versions are parsed read-only to distinguish
 parse failures from successful captures missing their canonical projection;
-versions with a canonical session and tombstoned sessions are excluded.
+versions with a canonical session and tombstoned sessions are excluded from that
+legacy orphan check. Actual ingest parser outcomes also persist provider failure
+totals and recent unresolved session IDs, so an existing canonical session cannot
+hide a new format failure. Empty parser results count as failures. Successful
+retries clear that session's unresolved failure, retaining the lifetime count.
+`freshness.parsed.<provider>` checks successful parse timestamps separately from
+receipts. Canonical/index write errors do not increment parser failure totals.
+Recent failure IDs in the report are opaque hashes, limited to 20 per provider;
+the recent counts include all unresolved failures in the configured window.
 
 Inspect unknown tags locally with `chat-scrobbler unknown-types`, then acknowledge
 all currently seen provider/type pairs with:

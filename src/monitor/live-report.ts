@@ -1,5 +1,6 @@
 import type { IngestServerOptions } from "../../packages/ingest/src/server";
-import { SOURCES } from "../store/raw-catalog";
+import { providerFreshness } from "./freshness";
+import { parseFailureLines } from "./parse-state";
 import { monitorSettings } from "./config";
 import { monitorStatePath, readMonitorState } from "./state";
 import { monitorWriteFailed } from "./state-fault";
@@ -16,16 +17,12 @@ export function liveMonitorReport(opts: IngestServerOptions) {
     state = readMonitorState(path, Date.now() - settings.monitorRecentHours * 3_600_000, opts.canonicalDir ? monitorDataDir(opts.canonicalDir) : undefined, false);
     if (monitorWriteFailed(path)) failures.push("FAILED state write_failed");
   } catch (error) { failures.push(`FAILED state ${error instanceof MonitorStateError ? error.reason : "unavailable"}`); }
-  const providers = Object.fromEntries(SOURCES.map(source => {
-    const days = settings.monitorStaleDays[source];
-    const last = state?.captures[source] ?? null;
-    const stale = state ? days !== null && (!last || Date.now() - Date.parse(last) > days * 86_400_000) : null;
-    if (stale) failures.push(`FAILED freshness.${source} ${last ? `stale threshold_days=${days}` : "no_captures"}`);
-    return [source, { last_capture_at: last, threshold_days: days, stale }];
-  }));
+  const freshness = providerFreshness(settings.monitorStaleDays, state?.captures ?? {}, state?.parsed ?? {}, state !== null);
+  const providers = freshness.providers;
+  failures.push(...freshness.failures, ...parseFailureLines(state));
   if (state?.recentAssets) failures.push(`FAILED assets recent_upload_failures=${state.recentAssets}`);
   failures.sort();
-  return { scope: "live", ok: !failures.length, failures, providers, counters: state?.counters ?? {}, assets: { upload_failures: state?.counters.asset_failures ?? 0, recent_upload_failures: state?.recentAssets ?? 0 }, state: state ? "available" : "unavailable", deferred_checks: ["raw", "canonical", "unknown_types", "embedding_coverage", "embedding_probe", "attachments", "store_health"] };
+  return { scope: "live", ok: !failures.length, failures, providers, counters: state?.counters ?? {}, parse: state?.parse ?? {}, assets: { upload_failures: state?.counters.asset_failures ?? 0, recent_upload_failures: state?.recentAssets ?? 0 }, state: state ? "available" : "unavailable", deferred_checks: ["raw", "canonical", "unknown_types", "embedding_coverage", "embedding_probe", "attachments", "store_health"] };
 }
 
 const cache = new Map<string, { expires: number; report: ReturnType<typeof liveMonitorReport> }>();

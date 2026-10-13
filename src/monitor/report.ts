@@ -1,3 +1,5 @@
+import { providerFreshness } from "./freshness";
+import { parseFailureLines } from "./parse-state";
 import { MonitorStateError, monitorDataDir } from "./state-owner";
 import { monitorWriteFailed } from "./state-fault";
 import { acknowledgeTypes, monitorStatePath, readMonitorState } from "./state";
@@ -39,13 +41,10 @@ export async function monitorReport(opts: IngestServerOptions, ack = false) {
   let raw = { lastCapture: { chatgpt: null, claude: null, gemini: null } as Record<typeof SOURCES[number], string | null>, parseFailures: 0, unprojected: 0, unreadable: 0 };
   try { if (canonicalDir && rawDir) raw = rawObservations(rawDir, canonicalDir); }
   catch { fail("raw", "scan_failed"); }
-  const providers = Object.fromEntries(SOURCES.map(source => {
-    const days = settings.monitorStaleDays[source];
-    const last = [raw.lastCapture[source], state?.captures[source]].filter((time): time is string => !!time).sort().at(-1) ?? null;
-    const stale = state !== null && days !== null && (!last || Date.now() - Date.parse(last) > days * 86_400_000);
-    if (stale) fail(`freshness.${source}`, last ? `stale threshold_days=${days}` : "no_captures");
-    return [source, { last_capture_at: last, threshold_days: days, stale }];
-  }));
+  const receipts = Object.fromEntries(SOURCES.map(source => [source, [raw.lastCapture[source], state?.captures[source]].filter((time): time is string => !!time).sort().at(-1) ?? null]));
+  const freshness = providerFreshness(settings.monitorStaleDays, receipts, state?.parsed ?? {}, state !== null);
+  const providers = freshness.providers;
+  failures.push(...freshness.failures, ...parseFailureLines(state));
   if (raw.parseFailures) fail("parse", `failed_versions_without_canonical=${raw.parseFailures}`);
   if (raw.unprojected) fail("canonical", `unprojected_raw_versions=${raw.unprojected}`);
   if (raw.unreadable) fail("raw", `unreadable_versions=${raw.unreadable}`);
@@ -76,5 +75,5 @@ export async function monitorReport(opts: IngestServerOptions, ack = false) {
   const noVectors = coverage && !coverage.with_vectors && coverage.without_vectors > 0;
   if (health.semantic === "available" && noVectors) fail("semantic", "no_usable_vectors");
   failures.sort();
-  return { ok: failures.length === 0, failures, providers, unknown_types: types.map(type => ({ ...type, acknowledged: state?.acknowledged.has(type.type_id) ?? false })), embeddings: { semantic: noVectors ? "unavailable" : health.semantic, coverage }, assets: { missing_recent_blocks: missingAssets, upload_failures: state?.counters.asset_failures ?? 0, recent_upload_failures: state?.recentAssets ?? 0 }, parse: { failed_versions_without_canonical: raw.parseFailures }, counters: state?.counters ?? {}, health };
+  return { ok: failures.length === 0, failures, providers, unknown_types: types.map(type => ({ ...type, acknowledged: state?.acknowledged.has(type.type_id) ?? false })), embeddings: { semantic: noVectors ? "unavailable" : health.semantic, coverage }, assets: { missing_recent_blocks: missingAssets, upload_failures: state?.counters.asset_failures ?? 0, recent_upload_failures: state?.recentAssets ?? 0 }, parse: { ...state?.parse, failed_versions_without_canonical: raw.parseFailures }, counters: state?.counters ?? {}, health };
 }

@@ -1,3 +1,4 @@
+import { recordParseOutcome } from "../../../src/monitor/parse-state";
 import { monitorWrite } from "../../../src/monitor/state-fault";
 import { persistEmbeddingStatus } from "../../../src/indexer/embedding-status";
 import { monitorStatePath, recordCaptureReceipt } from "../../../src/monitor/state";
@@ -240,15 +241,21 @@ export async function handleIngestRequest(req: Request, opts: IngestServerOption
     if (fat && captures.length) {
       const db = indexFor(fat.indexPath);
       for (const [i, capture] of captures.entries()) {
+        let parsed = false;
         try {
           spine.push(...await foldCaptureIntoSpineWithEmbeddings(capture, {
             canonicalDir: fat.canonicalDir,
             rawRef: rawRefs[i],
+            onParse: success => {
+              parsed = success;
+              const path = monitorStatePath(fat.indexPath, opts.monitorStatePath);
+              monitorWrite(path, () => recordParseOutcome(path, capture.source, capture.source_id, success));
+            },
             db,
             embeddingProvider: opts.embeddingProvider ?? null,
           }));
         } catch (error) {
-          logCaptureParseFailure(capture, error);
+          if (!parsed) logCaptureParseFailure(capture, error);
           throw error;
         }
       }

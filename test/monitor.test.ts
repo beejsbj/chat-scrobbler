@@ -1,4 +1,5 @@
 import { Database } from "bun:sqlite";
+import { recordParseOutcome } from "../src/monitor/parse-state";
 import { monitorReport } from "../src/monitor/report";
 import { incrementMonitorCounter, recordCaptureReceipt, readMonitorState } from "../src/monitor/state";
 import { expect, spyOn, test } from "bun:test";
@@ -360,5 +361,42 @@ test("HTTP snapshots use persisted receipts without archive scans or embedding c
     expect(report.failures).toEqual([]);
     expect(report.deferred_checks).toContain("embedding_coverage");
     expect(report.deferred_checks).toContain("canonical");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("parse failures on an existing conversation survive restart and stale successful captures alert", async () => {
+  const { root, opts } = setup();
+  try {
+    recordParseOutcome(`${opts.indexPath}.monitor.sqlite`, "chatgpt", "conv-1", true, Date.now() - 8 * 86_400_000);
+    const response = await handleIngestRequest(new Request("http://local/captures", { method: "POST", body: JSON.stringify({ ...chatgpt, payload: null, fetched_at: new Date().toISOString() }) }), { ...opts, ingestToken: null });
+    expect(response.status).toBe(400);
+    const report = await (await handleIngestRequest(request(), opts)).json();
+    expect(report.counters.parse_chatgpt_failures).toBe(1);
+    expect(report.providers.chatgpt.stale).toBe(false);
+    expect(report.providers.chatgpt.parsed_stale).toBe(true);
+    expect(report.failures).toContain("FAILED freshness.parsed.chatgpt stale threshold_days=7");
+    expect(report.failures).toContain("FAILED parse.chatgpt recent_failed_sessions=1");
+    expect(report.parse.chatgpt.session_ids[0]).toMatch(/^chatgpt:[a-f0-9]{16}$/);
+    expect(cli(opts).stdout.toString()).toContain("FAILED parse.chatgpt recent_failed_sessions=1");
+    expect(readSession(opts.canonicalDir, "chatgpt", "conv-1").messages.length).toBeGreaterThan(0);
+    expect(JSON.stringify(report)).not.toContain("Ego and Identity");
+    const recovered = await handleIngestRequest(new Request("http://local/captures", { method: "POST", body: JSON.stringify(chatgpt) }), { ...opts, ingestToken: null });
+    expect(recovered.status).toBe(200);
+    const fresh = await monitorReport(opts);
+    expect(fresh.parse.chatgpt?.total_failures).toBe(1);
+    expect(fresh.failures.some(line => line.startsWith("FAILED parse.chatgpt") || line.startsWith("FAILED freshness.parsed.chatgpt"))).toBe(false);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("a canonical write failure does not count as a parser failure", async () => {
+  const { root, opts } = setup();
+  try {
+    const capture = structuredClone(chatgpt);
+    capture.payload.conversation_id = "invalid/path";
+    const response = await handleIngestRequest(new Request("http://local/captures", { method: "POST", body: JSON.stringify(capture) }), { ...opts, ingestToken: null });
+    expect(response.status).toBe(400);
+    const report = await monitorReport(opts);
+    expect(report.parse.chatgpt?.total_failures).toBe(0);
+    expect(report.parse.chatgpt?.recent_failed_sessions).toBe(0);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });

@@ -140,3 +140,10 @@ No production data was read, no deployment was performed, and no branch was push
   explicit `deferred_checks`. It performs no raw/canonical/vector scans or
   embedding calls. Full diagnostics remain in the offline CLI. Tests deliberately
   break archive files and supply a throwing embedder while HTTP stays healthy.
+- Actual parser outcomes now persist lifetime `parse_<provider>_failures`, recent
+  unresolved session IDs and last successful parse times. Both CLI and HTTP alert
+  on failures of existing conversations; zero-session results are failures.
+  `freshness.parsed.<provider>` distinguishes successful parsing from mere receipt.
+  Successful retries resolve that session's pending failure without resetting
+  totals. IDs are opaque hashes (at most 20 shown per provider; counts are exact).
+  Canonical/index errors are excluded from parser counters and parse-failure logs.
