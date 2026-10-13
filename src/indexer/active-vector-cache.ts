@@ -1,3 +1,4 @@
+import type {WarmupOptions} from "./search-warmup";
 import type { Database } from "bun:sqlite";
 import { ensureMessageLookup } from "./message-lookup";
 import { searchRevision, changedSearchSessions } from "./search-revision";
@@ -13,18 +14,27 @@ const identity=(s:string,m:string)=>`${s}\0${m}`;
 const counters=(db:Database)=>({changes:(db.query("SELECT total_changes() AS n").get() as {n:number}).n,
   dataVersion:(db.query("PRAGMA data_version").get() as {data_version:number}).data_version});
 
-function fill(db:Database,cache:Cache,scope:VectorScope,session?:string):void {
-  const params=[scope.provider_kind,scope.provider_model,scope.dimension,...(session ? [session] : [])];
-  for(const table of ["message_vectors","message_embeddings"]) {
-    const binary=table==="message_vectors";
-    const rows=db.query(`SELECT v.session_id,v.message_id,${binary ? "v.embedding" : "NULL"} AS embedding,
-      ${binary ? "v.text_hash" : "NULL"} AS text_hash,f.rowid,f.text,f.source,f.title
-      FROM ${table} v ${session ? `INDEXED BY ${binary ? "message_vector_session" : "legacy_vector_session"}` : ""} JOIN message_lookup k ON k.session_id=v.session_id AND k.message_id=v.message_id
-      JOIN messages_fts f ON f.rowid=k.fts_rowid AND f.session_id=v.session_id AND f.message_id=v.message_id
-      WHERE v.provider_kind=? AND ${binary ? "v.provider_model" : "COALESCE(v.provider_model,'')"}=? AND v.dimension=?
-      ${session ? "AND v.session_id=?" : ""} AND v.title IS f.title
-      AND ${binary ? "(v.text_hash IS NOT NULL OR v.text=f.text)" : "v.text=f.text"}`);
-    for(const row of rows.iterate(...params) as Iterable<any>) {
+function vectorRows(db:Database,scope:VectorScope,table:string,session?:string,after?:number,limit?:number) {
+  const binary=table==="message_vectors";
+  const params:any[]=[scope.provider_kind,scope.provider_model,scope.dimension];
+  if(session!==undefined)params.push(session);
+  if(after!==undefined)params.push(after,limit);
+  // Startup uses indexed rowid batches; refresh uses the session index rather
+  // than rescanning every legacy row in this model for each affected session.
+  const index=session!==undefined ? `INDEXED BY ${binary ? "message_vector_session" : "legacy_vector_session"}` : after!==undefined ? "NOT INDEXED" : "";
+  const statement=db.query(`SELECT v.rowid AS vector_rowid,v.session_id,v.message_id,${binary ? "v.embedding" : "NULL"} AS embedding,
+    ${binary ? "v.text_hash" : "NULL"} AS text_hash,f.rowid,f.text,f.source,f.title
+    FROM ${table} v ${index} JOIN message_lookup k ON k.session_id=v.session_id AND k.message_id=v.message_id
+    JOIN messages_fts f ON f.rowid=k.fts_rowid AND f.session_id=v.session_id AND f.message_id=v.message_id
+    WHERE v.provider_kind=? AND ${binary ? "v.provider_model" : "COALESCE(v.provider_model,'')"}=? AND v.dimension=?
+    ${session!==undefined ? "AND v.session_id=?" : ""} AND v.title IS f.title
+    AND ${binary ? "(v.text_hash IS NOT NULL OR v.text=f.text)" : "v.text=f.text"}
+    ${after!==undefined ? "AND v.rowid>? ORDER BY v.rowid LIMIT ?" : ""}`);
+  return after===undefined ? statement.iterate(...params) : statement.all(...params);
+}
+function appendVectors(db:Database,cache:Cache,scope:VectorScope,table:string,rows:Iterable<any>):void {
+  const binary=table==="message_vectors";
+  for(const row of rows) {
       const key=identity(row.session_id,row.message_id);
       if(cache.identities.has(key) || row.text_hash && row.text_hash!==textVectorHash(row.text)) continue;
       let vector:ArrayLike<number>;
@@ -46,8 +56,55 @@ function fill(db:Database,cache:Cache,scope:VectorScope,session?:string):void {
       cache.entries[index]={session_id:row.session_id,message_id:row.message_id,rowid:row.rowid,source:row.source,
         hash:row.text_hash ?? textVectorHash(row.text),title:row.title};
       cache.identities.set(key,index);
+  }
+}
+function fill(db:Database,cache:Cache,scope:VectorScope,session?:string):void {
+  for(const table of ["message_vectors","message_embeddings"])
+    appendVectors(db,cache,scope,table,vectorRows(db,scope,table,session));
+}
+function emptyCache(db:Database,scope:VectorScope):Cache {
+  // The larger table is a cheap allocation estimate. Distinct UNION counting
+  // sorts every identity; retained JSON usually duplicates binary identities.
+  const params=[scope.provider_kind,scope.provider_model,scope.dimension];
+  const binary=(db.query("SELECT COUNT(*) AS n FROM message_vectors WHERE provider_kind=? AND provider_model=? AND dimension=?").get(...params) as {n:number}).n;
+  const legacy=(db.query("SELECT COUNT(*) AS n FROM message_embeddings WHERE provider_kind=? AND COALESCE(provider_model,'')=? AND dimension=?").get(...params) as {n:number}).n;
+  return {scope:JSON.stringify(scope),revision:searchRevision(db),session_refreshes:0,dimension:scope.dimension,...counters(db),
+    matrix:new Float32Array(Math.max(1,Math.ceil(Math.max(binary,legacy)/1024))*1024*scope.dimension),entries:[],identities:new Map(),free:[]};
+}
+function invalidateSessions(cache:Cache,dirty:Set<string>) {
+  cache.session_refreshes+=dirty.size;
+  for(let i=0;i<cache.entries.length;i++) {
+    const entry=cache.entries[i];
+    if(entry && dirty.has(entry.session_id)) {cache.identities.delete(identity(entry.session_id,entry.message_id));cache.entries[i]=null;cache.free.push(i);}
+  }
+}
+/** Publish one complete matrix after cooperative read/decode/normalize batches. */
+export async function warmActiveVectorCache(db:Database,scope:VectorScope,opts:WarmupOptions,onProgress:(rows:number)=>void) {
+  const cache=emptyCache(db,scope);
+  const batch=opts.batchSize ?? 64;
+  async function fillBatches(session?:string) {
+    for(const table of ["message_vectors","message_embeddings"]) {
+      let cursor=0;
+      while(true) {
+        opts.signal?.throwIfAborted();
+        const rows=Array.from(vectorRows(db,scope,table,session,cursor,batch));
+        appendVectors(db,cache,scope,table,rows);onProgress(cache.identities.size);
+        if(rows.length<batch)break;
+        cursor=rows.at(-1).vector_rowid;
+        await (opts.yield?.() ?? Bun.sleep(0));
+      }
+      await (opts.yield?.() ?? Bun.sleep(0));
     }
   }
+  await fillBatches();
+  // Catch edits made during yields before exposing a ready matrix.
+  while(cache.revision!==searchRevision(db)) {
+    const revision=searchRevision(db),dirty=changedSearchSessions(db,cache.revision,scope);
+    invalidateSessions(cache,dirty);
+    for(const session of dirty)await fillBatches(session);
+    cache.revision=revision;
+  }
+  Object.assign(cache,counters(db));active.set(db,cache);
 }
 
 function load(db:Database,scope:VectorScope):Cache {
@@ -55,20 +112,11 @@ function load(db:Database,scope:VectorScope):Cache {
   let cache=active.get(db);
   if(!cache || cache.scope!==key || revision<cache.revision || revision===cache.revision &&
     (state.changes!==cache.changes || state.dataVersion!==cache.dataVersion)) {
-    // Count distinct identities to avoid allocating twice for retained JSON.
-    const count=(db.query(`SELECT COUNT(*) AS n FROM (
-      SELECT session_id,message_id FROM message_vectors WHERE provider_kind=? AND provider_model=? AND dimension=?
-      UNION SELECT session_id,message_id FROM message_embeddings WHERE provider_kind=? AND COALESCE(provider_model,'')=? AND dimension=?)`)
-      .get(scope.provider_kind,scope.provider_model,scope.dimension,scope.provider_kind,scope.provider_model,scope.dimension) as {n:number}).n;
-    cache={scope:key,revision,session_refreshes:0,dimension:scope.dimension,...state,matrix:new Float32Array(Math.max(1,Math.ceil(count/1024))*1024*scope.dimension),entries:[],identities:new Map(),free:[]};
+    cache=emptyCache(db,scope);
     fill(db,cache,scope);active.set(db,cache);
   } else if(revision!==cache.revision) {
     const dirty=changedSearchSessions(db,cache.revision,scope);
-    cache.session_refreshes+=dirty.size;
-    for(let i=0;i<cache.entries.length;i++) {
-      const entry=cache.entries[i];
-      if(entry && dirty.has(entry.session_id)) {cache.identities.delete(identity(entry.session_id,entry.message_id));cache.entries[i]=null;cache.free.push(i);}
-    }
+    invalidateSessions(cache,dirty);
     for(const session of dirty) fill(db,cache,scope,session);
   }
   Object.assign(cache,{revision,...counters(db)});

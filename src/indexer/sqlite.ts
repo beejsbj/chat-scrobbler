@@ -1,3 +1,4 @@
+import {isSearchWarming,searchWarmupFailed} from "./search-warmup";
 import { cachedSubstringCandidates } from "./literal-cache";
 import { createMessageLookup, ensureMessageLookup } from "./message-lookup";
 import { createAssetVectorTables, replaceAssetLinks, linkedAssetHashes, pruneUnownedAssetVectors, assetSemanticCandidates } from "./asset-embeddings";
@@ -152,7 +153,11 @@ export function searchMessages(db: Database, query: string, opts: SearchMessages
 
   const semanticProvider = opts.embeddingProvider ?? null;
   let status = embeddingStatus(semanticProvider);
-  if (semanticProvider) {
+  if (semanticProvider && isSearchWarming(db)) {
+    status={semantic:"warming",reason:"search_cache_warming",embedding_failures:status.embedding_failures};
+  } else if(semanticProvider && searchWarmupFailed(db)) {
+    status={semantic:"unavailable",reason:"search_cache_warmup_failed",embedding_failures:status.embedding_failures};
+  } else if (semanticProvider) {
     const attempt = safeSyncEmbedding(semanticProvider, query, { kind: "query" });
     const queryEmbedding = attempt.vector;
     status = attempt.status;
@@ -162,7 +167,7 @@ export function searchMessages(db: Database, query: string, opts: SearchMessages
   }
 
   const hits = finalizeHits(merged, limit);
-  if (status.semantic === "unavailable") for (const hit of hits) Object.assign(hit, status);
+  if (status.semantic === "unavailable" || status.semantic === "warming") for (const hit of hits) Object.assign(hit, status);
   return hits;
 }
 
@@ -178,7 +183,11 @@ export async function searchMessagesReport(db: Database, query: string, opts: Se
   const merged = literalHits(db, query, opts.source, limit);
   const semanticProvider = opts.embeddingProvider ?? null;
   let status = embeddingStatus(semanticProvider);
-  if (semanticProvider) {
+  if (semanticProvider && isSearchWarming(db)) {
+    status={semantic:"warming",reason:"search_cache_warming",embedding_failures:status.embedding_failures};
+  } else if(semanticProvider && searchWarmupFailed(db)) {
+    status={semantic:"unavailable",reason:"search_cache_warmup_failed",embedding_failures:status.embedding_failures};
+  } else if (semanticProvider) {
     const attempt = await safeAsyncEmbedding(semanticProvider, query, { kind: "query" });
     const queryEmbedding = attempt.vector;
     status = attempt.status;
@@ -187,7 +196,7 @@ export async function searchMessagesReport(db: Database, query: string, opts: Se
     }
   }
   const hits = finalizeHits(merged, limit);
-  if (status.semantic === "unavailable") for (const hit of hits) Object.assign(hit, status);
+  if (status.semantic === "unavailable" || status.semantic === "warming") for (const hit of hits) Object.assign(hit, status);
   return { hits, ...status };
 }
 

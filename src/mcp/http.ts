@@ -1,5 +1,6 @@
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import { timingSafeEqual } from "node:crypto";
+import {warmSearchCaches} from "../indexer/search-warmup";
 import { buildServer } from "./server";
 import { loadConfig } from "../config";
 import { embeddingProviderFromConfig } from "../indexer/embedding-providers";
@@ -13,6 +14,8 @@ export interface HttpServerOptions {
   canonicalDir: string;
   embeddingProvider?: EmbeddingProvider | null;
   mcpAuthToken?: string | null;
+  /** Cooperatively prepare search caches after the socket is listening. */
+  warmSearchCaches?: boolean;
 }
 
 const CORS_HEADERS: Record<string, string> = {
@@ -95,6 +98,15 @@ export async function startHttpServer(
   // Keep startup independent of index readiness; authorized MCP work opens one
   // service-owned connection lazily, then reuses it across stateless transports.
   let database:ReturnType<typeof openIndex>|undefined;
+  let warming:Promise<void>|undefined;
+  let stopped=false;
+  const warmupAbort=new AbortController();
+  function getDatabase() {
+    database ??= openIndex(opts.indexPath);
+    if(opts.warmSearchCaches && !warming)warming=warmSearchCaches(database,opts.embeddingProvider ?? null,{signal:warmupAbort.signal})
+      .catch(()=>{if(!warmupAbort.signal.aborted)console.error(JSON.stringify({event:"search_warmup_failed"}));});
+    return database;
+  }
   const server = Bun.serve({
     hostname: bindHost,
     port: opts.port,
@@ -132,7 +144,7 @@ export async function startHttpServer(
         indexPath: opts.indexPath,
         canonicalDir: opts.canonicalDir,
         embeddingProvider: opts.embeddingProvider ?? null,
-        database: database ??= openIndex(opts.indexPath),
+        database: getDatabase(),
       });
 
       await mcpServer.connect(transport);
@@ -146,9 +158,16 @@ export async function startHttpServer(
       }
     },
   });
+  const warmupTimer=opts.warmSearchCaches ? setTimeout(()=> {
+    if(stopped)return;
+    try {getDatabase();}catch {console.error(JSON.stringify({event:"search_warmup_failed"}));}
+  },0) : undefined;
   const stop=server.stop.bind(server);
   server.stop=async closeActiveConnections=> {
+    stopped=true;if(warmupTimer)clearTimeout(warmupTimer);
+    warmupAbort.abort();
     await stop(closeActiveConnections);
+    await warming;
     database?.close();
   };
 
@@ -167,5 +186,6 @@ if (import.meta.main) {
     canonicalDir: cfg.canonicalDir,
     embeddingProvider: embeddingProviderFromConfig(cfg),
     mcpAuthToken: cfg.mcpAuthToken,
+    warmSearchCaches: true,
   });
 }

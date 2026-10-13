@@ -17,20 +17,27 @@ export function createMessageLookup(db: Database): void {
 /** Build on demand in bounded transactions, never while opening the database.
  * Session triggers also run in rollback binaries, leaving a durable catch-up marker. */
 export function ensureMessageLookup(db: Database): void {
-  let state=db.query("SELECT cursor,ready FROM message_lookup_state WHERE id=1").get() as {cursor:number;ready:number};
-  while(!state.ready) {
-    state=db.transaction(()=> {
+  while (!messageLookupBatch(db)) { /* Synchronous CLI callers finish on demand. */ }
+}
+
+/** One bounded transaction for cooperative startup warmup. */
+export function messageLookupBatch(db: Database, limit=500): boolean {
+  const state=db.query("SELECT cursor,ready FROM message_lookup_state WHERE id=1").get() as {cursor:number;ready:number};
+  if(!state.ready) {
+    db.transaction(()=> {
       if(state.cursor===0) db.run("DELETE FROM message_lookup");
-      const rows=db.query("SELECT rowid,session_id,message_id FROM messages_fts WHERE rowid>? ORDER BY rowid LIMIT 500").all(state.cursor) as Array<{rowid:number;session_id:string;message_id:string}>;
+      const rows=db.query("SELECT rowid,session_id,message_id FROM messages_fts WHERE rowid>? ORDER BY rowid LIMIT ?").all(state.cursor,limit) as Array<{rowid:number;session_id:string;message_id:string}>;
       for(const row of rows) db.run("INSERT OR REPLACE INTO message_lookup VALUES (?,?,?)",[row.session_id,row.message_id,row.rowid]);
-      const next={cursor:rows.at(-1)?.rowid ?? state.cursor,ready:rows.length<500 ? 1 : 0};
-      db.run("UPDATE message_lookup_state SET cursor=?,ready=? WHERE id=1",[next.cursor,next.ready]);
-      return next;
+      db.run("UPDATE message_lookup_state SET cursor=?,ready=? WHERE id=1",[rows.at(-1)?.rowid ?? state.cursor,rows.length<limit ? 1 : 0]);
     })();
+    return false;
   }
-  for(const {session_id} of db.query("SELECT session_id FROM message_lookup_dirty").all() as Array<{session_id:string}>) db.transaction(()=> {
-    db.run("DELETE FROM message_lookup WHERE session_id=?",[session_id]);
-    db.run("INSERT OR REPLACE INTO message_lookup SELECT session_id,message_id,rowid FROM messages_fts WHERE session_id=?",[session_id]);
-    db.run("DELETE FROM message_lookup_dirty WHERE session_id=?",[session_id]);
+  const dirty=db.query("SELECT session_id FROM message_lookup_dirty LIMIT 1").get() as {session_id:string}|null;
+  if(!dirty) return true;
+  db.transaction(()=> {
+    db.run("DELETE FROM message_lookup WHERE session_id=?",[dirty.session_id]);
+    db.run("INSERT OR REPLACE INTO message_lookup SELECT session_id,message_id,rowid FROM messages_fts WHERE session_id=?",[dirty.session_id]);
+    db.run("DELETE FROM message_lookup_dirty WHERE session_id=?",[dirty.session_id]);
   })();
+  return false;
 }
