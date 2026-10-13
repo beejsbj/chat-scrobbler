@@ -20,3 +20,5 @@ fi
 bun test
 bun x tsc --noEmit
 python3 -m unittest discover -s services/embedder/tests -v
+bun build --compile src/cli/chat-scrobbler.ts --outfile /tmp/chat-scrobbler-bjs548
+/tmp/chat-scrobbler-bjs548 embed-backfill --help
