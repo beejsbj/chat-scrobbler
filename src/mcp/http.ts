@@ -3,7 +3,7 @@ import { timingSafeEqual } from "node:crypto";
 import { buildServer } from "./server";
 import { loadConfig } from "../config";
 import { embeddingProviderFromConfig } from "../indexer/embedding-providers";
-import type { EmbeddingProvider } from "../indexer/sqlite";
+import { openIndex, type EmbeddingProvider } from "../indexer/sqlite";
 import { assertTokenForExposedBind } from "../core/network";
 
 export interface HttpServerOptions {
@@ -92,6 +92,7 @@ export async function startHttpServer(
     envVarName: "MCP_AUTH_TOKEN",
     serviceName: "MCP HTTP server",
   });
+  const database=openIndex(opts.indexPath);
   const server = Bun.serve({
     hostname: bindHost,
     port: opts.port,
@@ -129,6 +130,7 @@ export async function startHttpServer(
         indexPath: opts.indexPath,
         canonicalDir: opts.canonicalDir,
         embeddingProvider: opts.embeddingProvider ?? null,
+        database,
       });
 
       await mcpServer.connect(transport);
@@ -142,6 +144,11 @@ export async function startHttpServer(
       }
     },
   });
+  const stop=server.stop.bind(server);
+  server.stop=async closeActiveConnections=> {
+    await stop(closeActiveConnections);
+    database.close();
+  };
 
   const authNote = mcpAuthToken ? " (auth token required)" : "";
   process.stderr.write(`MCP HTTP server listening on http://${bindHost}:${server.port}/mcp${authNote}\n`);

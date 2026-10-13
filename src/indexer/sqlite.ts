@@ -1,9 +1,10 @@
 import { createMessageLookup, ensureMessageLookup } from "./message-lookup";
 import { createAssetVectorTables, replaceAssetLinks, linkedAssetHashes, pruneUnownedAssetVectors, assetSemanticCandidates } from "./asset-embeddings";
-import { cosine } from "./vector-math";
+import { cachedSemanticCandidates } from "./active-vector-cache";
+import { createSearchRevision } from "./search-revision";
 // src/indexer/sqlite.ts
 import { embeddingFailed, embeddingStatus, embeddingSucceeded, validateEmbedding, type SemanticStatus } from "./embedding-status";
-import { createVectorTables, decodeVector, putTextVector, reusableTextVector, textVectorHash, vectorScope } from "./vector-store";
+import { createVectorTables, putTextVector, reusableTextVector, vectorScope } from "./vector-store";
 import { Database } from "bun:sqlite";
 import type { Session } from "../schema/types";
 import { isSessionDeleted } from "../store/tombstones";
@@ -60,6 +61,7 @@ export function openIndex(path: string): Database {
   createMessageLookup(db);
   createVectorTables(db);
   createAssetVectorTables(db);
+  createSearchRevision(db);
   return db;
 }
 
@@ -472,32 +474,7 @@ function finalizeHits(merged: Map<string, RankedHit>, limit: number): MessageHit
 }
 
 function semanticCandidates(db: Database, queryEmbedding: number[], metadata: EmbeddingMetadata, source: string | undefined, limit: number): SemanticRow[] {
-  ensureMessageLookup(db);
-  const kind = metadata.provider_kind, model = metadata.provider_model ?? "", dimension = metadata.dimension;
-  const sourceClause = source ? " AND f.source=?" : "";
-  const params = [kind,model,dimension,...(source ? [source] : [])];
-  const ranked: SemanticRow[] = [];
-  const scans = ["message_vectors", "message_embeddings"].map((table,i)=>db.query(`
-    SELECT v.session_id,v.message_id,v.embedding,${i===0 ? "v.text_hash" : "NULL"} AS text_hash,f.text,f.role,f.created_at,f.source,f.title
-    FROM ${table} v JOIN message_lookup k ON k.session_id=v.session_id AND k.message_id=v.message_id
-    JOIN messages_fts f ON f.rowid=k.fts_rowid
-    WHERE v.provider_kind=? AND v.provider_model ${i===0 ? "=" : "IS"} ? AND v.dimension=?${sourceClause}
-    AND ${i===0 ? "(v.text_hash IS NOT NULL OR v.text=f.text)" : "v.text=f.text"} AND v.title IS f.title`));
-  const legacyFallback = db.query(`SELECT embedding FROM message_embeddings WHERE session_id=? AND message_id=?
-    AND provider_kind=? AND COALESCE(provider_model,'')=? AND dimension=? AND text=? AND title IS ?`);
-  for (let i=0;i<scans.length;i++) for (const row of scans[i].iterate(...(i===0 ? params : [kind,model || null,dimension,...(source ? [source] : [])])) as Iterable<any>) {
-    if(row.text_hash && row.text_hash!==textVectorHash(row.text)) continue;
-    let vector: ArrayLike<number>;
-    try { vector=i===0 ? decodeVector(row.embedding,dimension) : parseEmbedding(row.embedding); }
-    catch {
-      const legacy=legacyFallback.get(row.session_id,row.message_id,kind,model,dimension,row.text,row.title) as {embedding:string}|null;
-      if(!legacy) continue;
-      vector=parseEmbedding(legacy.embedding);
-    }
-    const similarity=cosine(queryEmbedding,vector);
-    if(similarity<=0 || ranked.length>=limit && similarity<=ranked[ranked.length-1].similarity) continue;
-    ranked.push({...row,similarity}); ranked.sort((a,b)=>b.similarity-a.similarity); if(ranked.length>limit) ranked.pop();
-  }
+  const ranked = cachedSemanticCandidates(db,queryEmbedding,{...metadata,provider_model:metadata.provider_model ?? ""},source,limit);
   const unique=new Map<string,SemanticRow>();
   const assetRows=assetSemanticCandidates(db,queryEmbedding,metadata,source,limit);
   for(const row of [...ranked,...assetRows].sort((a,b)=>b.similarity-a.similarity)) {
@@ -523,17 +500,6 @@ function semanticSnippet(text: string, query: string): string {
   const idx = needle ? compact.toLowerCase().indexOf(needle) : -1;
   const start = idx > 40 ? idx - 40 : 0;
   return `${start > 0 ? "…" : ""}${compact.slice(start, start + 160)}${start + 160 < compact.length ? "…" : ""}`;
-}
-
-function parseEmbedding(raw: string): number[] {
-  try {
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return [];
-    const vector = parsed.map(Number);
-    return vector.every(Number.isFinite) ? vector : [];
-  } catch {
-    return [];
-  }
 }
 
 function embeddingMetadata(provider: EmbeddingProvider, embedding: number[]): EmbeddingMetadata {

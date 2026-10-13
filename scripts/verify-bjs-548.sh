@@ -12,6 +12,10 @@ chmod +x /tmp/bjs-548-bun/bun-linux-x64/bun
 export PATH="/tmp/bjs-548-bun/bun-linux-x64:$PATH"
 bun --version
 bun install --frozen-lockfile
+if [ "$#" -gt 0 ]; then
+  bun "$@"
+  exit
+fi
 bun test
 bun x tsc --noEmit
 python3 -m unittest discover -s services/embedder/tests -v

@@ -8,7 +8,11 @@ import { loadConfig } from "../config";
 import { parseSessionId } from "../core/session-id";
 import { embeddingProviderFromConfig } from "../indexer/embedding-providers";
 
-export interface ServerOptions { indexPath: string; canonicalDir: string; embeddingProvider?: EmbeddingProvider | null; }
+export interface ServerOptions {
+  indexPath: string; canonicalDir: string; embeddingProvider?: EmbeddingProvider | null;
+  /** HTTP transports share the service-owned connection and its active matrix. */
+  database?: Database;
+}
 
 type ToolResult = { structuredContent?: Record<string, unknown>; content: { type: "text"; text: string }[]; isError?: boolean };
 
@@ -39,7 +43,7 @@ export function handleListSessions(db: Database, args: { source?: string; titleC
 }
 
 export function buildServer(opts: ServerOptions): McpServer {
-  const db = openIndex(opts.indexPath);
+  const db = opts.database ?? openIndex(opts.indexPath);
   const server = new McpServer(
     { name: "chat-scrobbler", version: "0.3.0" },
     { instructions: SERVER_INSTRUCTIONS }
