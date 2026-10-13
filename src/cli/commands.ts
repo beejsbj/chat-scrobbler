@@ -176,6 +176,7 @@ export async function runList(opts: ListOpts): Promise<void> {
 // ---------------------------------------------------------------------------
 
 export interface UnifyOpts {
+  force?: boolean;
   cfg: ChatHistoryConfig;
   write: Writer;
 }
@@ -186,6 +187,7 @@ export async function runUnifyCmd(opts: UnifyOpts): Promise<void> {
     canonicalDir: opts.cfg.canonicalDir,
     indexPath: opts.cfg.indexPath,
     embeddingProvider: provider,
+    force: opts.force,
   });
   const embeddingNote = provider ? ` with ${provider.kind ?? "configured"} embeddings` : "";
   opts.write(`Reindexed ${count} sessions from canonical into index${embeddingNote}.`);

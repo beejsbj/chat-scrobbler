@@ -197,3 +197,25 @@ test("unify preserves sessions captured while an embedding rebuild is in flight"
     finally { db.close(); }
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
+
+test("unify refuses empty-mount pruning and large deletion fractions unless forced", async () => {
+  const { mkdirSync } = await import("node:fs");
+  const { spyOn } = await import("bun:test");
+  const dir = mkdtempSync(join(tmpdir(), "unify-prune-"));
+  const opts = { canonicalDir: join(dir, "canonical", "sessions"), indexPath: join(dir, "index.db") };
+  const logs = spyOn(console, "error").mockImplementation(() => {});
+  const db = openIndex(opts.indexPath);
+  try {
+    mkdirSync(opts.canonicalDir, { recursive: true });
+    const { indexSession, listSessions } = await import("../src/indexer/sqlite");
+    for (let i = 0; i < 10; i++) indexSession(db, { ...sessionA, id: `chatgpt:prune-${i}`, source_id: `prune-${i}` });
+    await runUnify(opts);
+    expect(listSessions(db)).toHaveLength(10);
+    expect(JSON.stringify(logs.mock.calls)).toContain("unify_prune_refused");
+    for (let i = 0; i < 8; i++) writeSession(opts.canonicalDir, { ...sessionA, id: `chatgpt:prune-${i}`, source_id: `prune-${i}` });
+    await runUnify(opts);
+    expect(listSessions(db)).toHaveLength(10);
+    await runUnify({ ...opts, force: true });
+    expect(listSessions(db)).toHaveLength(8);
+  } finally { db.close(); logs.mockRestore(); rmSync(dir, { recursive: true, force: true }); }
+});

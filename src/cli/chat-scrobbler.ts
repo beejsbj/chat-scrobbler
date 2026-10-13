@@ -82,7 +82,7 @@ Operate
 
   doctor                 Verify config, local services, index, embeddings, and public MCP
 
-  unify                  Rebuild the SQLite index from canonical/
+  unify [--force]        Refresh index; --force permits pruning more than 10%
                            Enable semantic recall with:
                            CHAT_SCROBBLER_EMBED_PROVIDER=gemini|ollama
                            CHAT_SCROBBLER_EMBED_MODEL=gemini-embedding-2
@@ -195,7 +195,8 @@ async function main(argv: string[]): Promise<void> {
       }
 
       case "unify": {
-        await runUnifyCmd({ cfg, write });
+        const { values } = parseArgs({ args: rest, options: { force: { type: "boolean", default: false } } });
+        await runUnifyCmd({ cfg, write, force: values.force });
         break;
       }
 
