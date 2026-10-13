@@ -3,7 +3,7 @@ import { recordParseOutcome } from "../src/monitor/parse-state";
 import { monitorReport } from "../src/monitor/report";
 import { incrementMonitorCounter, recordCaptureReceipt, readMonitorState } from "../src/monitor/state";
 import { expect, spyOn, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { handleIngestRequest } from "../packages/ingest/src/server";
 import { getParser } from "../src/parsers/registry";
@@ -462,4 +462,22 @@ test("bootstrap freshness falls back to canonical dates in CLI and the cheap ind
     expect(live.failures).toContain("FAILED freshness.parsed.claude stale threshold_days=14");
     expect(existsSync(`${opts.indexPath}.monitor.sqlite`)).toBe(false);
   } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("an unwritable state directory is reported even when the database is readable", async () => {
+  const { root, opts } = setup();
+  const dir = join(root, "telemetry");
+  const path = join(dir, "state.sqlite");
+  recordCaptureReceipt(path, "chatgpt");
+  chmodSync(dir, 0o555);
+  try {
+    const response = await handleIngestRequest(new Request("http://local/captures", { method: "POST", body: JSON.stringify(claude) }), { ...opts, monitorStatePath: path, ingestToken: null });
+    expect(response.status).toBe(200);
+    expect((await response.json()).spine[0].indexed).toBe(true);
+    const report = await monitorReport({ ...opts, monitorStatePath: path });
+    expect(report.failures).toContain("FAILED state unwritable");
+    expect(report.failures.some(line => line.includes("freshness"))).toBe(false);
+    const live = await (await handleIngestRequest(request(), { ...opts, monitorStatePath: path })).json();
+    expect(live.failures).toEqual(["FAILED state unwritable"]);
+  } finally { chmodSync(dir, 0o755); rmSync(root, { recursive: true, force: true }); }
 });

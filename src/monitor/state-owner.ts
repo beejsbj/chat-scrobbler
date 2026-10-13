@@ -16,10 +16,18 @@ export function assertStateOwner(path: string, dataDir = dirname(path)): void {
   while (!existsSync(dir) && dirname(dir) !== dir) dir = dirname(dir);
   const uid = statSync(dir).uid;
   if (process.getuid && process.getuid() !== uid) throw new MonitorStateError("owner_mismatch");
+  let parent = resolve(dirname(path));
+  while (!existsSync(parent) && dirname(parent) !== parent) parent = dirname(parent);
+  try {
+    const mode = statSync(parent).mode;
+    if (!(mode & 0o222) || !(mode & 0o111)) throw new Error("directory permissions");
+    accessSync(parent, constants.R_OK | constants.W_OK | constants.X_OK);
+  } catch { throw new MonitorStateError("unwritable"); }
   for (const file of [path, `${path}-wal`, `${path}-shm`]) {
     if (!existsSync(file)) continue;
     if (statSync(file).uid !== uid) throw new MonitorStateError("owner_mismatch");
     if (!(statSync(file).mode & 0o222)) throw new MonitorStateError("unwritable");
-    accessSync(file, constants.R_OK | constants.W_OK);
+    try { accessSync(file, constants.R_OK | constants.W_OK); }
+    catch { throw new MonitorStateError("unwritable"); }
   }
 }

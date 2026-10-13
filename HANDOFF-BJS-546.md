@@ -166,3 +166,7 @@ No production data was read, no deployment was performed, and no branch was push
   Claude history alongside fresh ChatGPT/Gemini history without creating state.
 - Compose defaults are ChatGPT 7, Claude 14 and Gemini 21 days, each overridable
   via the existing environment key on the host.
+- State permission checks include the parent directory needed for SQLite sidecars.
+  A regression leaves the database readable in a directory without write access,
+  confirms ingest/indexing continues, and confirms both reports flag state while
+  suppressing freshness.
