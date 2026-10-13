@@ -6,6 +6,7 @@ import { appendRecentCapture, RECENT_CAPTURES_KEY, type RecentCapture } from "./
 import { assetContentType, filenameFromHeaders, MAX_PROVIDER_ASSET_BYTES } from "./providers/assets";
 import { allowedAssetUrl, assetCredentials } from "./providers/asset-url";
 import { boundedAssetBuffer } from "./providers/asset-bytes";
+import { validateAssetBytes, validateAssetResponse } from "./providers/asset-response";
 import { AssetTransfers } from "./asset-transfers";
 import { uploadAssetToIngest } from "./asset-upload";
 import type {
@@ -161,14 +162,17 @@ async function postAsset(asset: AssetUploadRequest): Promise<unknown> {
 
 async function fetchAssetBytes(message: AssetFetchMessage): Promise<unknown> {
   const url = new URL(message.url);
-  if (url.protocol !== "https:" || !allowedAssetUrl(url.toString())) throw new Error("asset_url_unavailable");
+  const source = message.upload?.source;
+  if (!source || url.protocol !== "https:" || !allowedAssetUrl(url.toString(), source)) throw new Error("asset_url_unavailable");
   const settings = await getSettings();
   const maxBytes = Math.min(message.maxBytes ?? settings.maxAssetBytes, settings.maxAssetBytes);
-  const res = await fetch(url.toString(), { credentials: assetCredentials(url.toString(), message.upload?.source), signal: AbortSignal.timeout(60_000) });
+  const res = await fetch(url.toString(), { credentials: assetCredentials(url.toString(), source), redirect: "manual", signal: AbortSignal.timeout(60_000) });
+  validateAssetResponse(res, source);
   if (!res.ok) throw new Error(res.status === 404 || res.status === 410 ? "asset_expired" : "asset_download_failed");
   const bytes = await boundedAssetBuffer(res, maxBytes);
   const filename = filenameFromHeaders(res);
   const contentType = res.headers.get("content-type");
+  validateAssetBytes(bytes, contentType);
   if (message.upload) {
     let asset;
     try { asset = await uploadAssetToIngest(fetch, settings, { ...message.upload, filename: message.upload.filename ?? filename,

@@ -145,6 +145,7 @@ function installChromeStub(): void {
   const addListener = () => undefined;
   Object.defineProperty(globalThis, "chrome", {
     configurable: true,
+    writable: true,
     value: {
       action: {
         setBadgeBackgroundColor: () => undefined,
@@ -255,4 +256,18 @@ test("background rejects asset URLs outside provider hosts before fetching", asy
   expect(await sendRuntimeMessage({ type: "SCROBBLER_ASSET_FETCH", url: "http://127.0.0.1/private" })).toMatchObject({ ok: false });
   expect(await sendRuntimeMessage({ type: "SCROBBLER_ASSET_FETCH", url: "https://unrelated.example/private" })).toMatchObject({ ok: false });
   expect(fetched).toBe(false);
+});
+
+test("background media fetch rejects cross-provider and auth-document probes", async () => {
+  let uploads = 0;
+  const asset = { source: "gemini" as const, sourceId: "c", pointer: "p" };
+  globalThis.fetch = (async (input, init) => {
+    if (String(input).includes("/assets")) { uploads++; return Response.json({ ok: true }); }
+    expect(init?.redirect).toBe("manual");
+    expect(init?.credentials).toBe("include");
+    return new Response('{"accessToken":"SECRET"}', { headers: { "content-type": "image/png" } });
+  }) as typeof fetch;
+  expect(await sendRuntimeMessage({ type: "SCROBBLER_ASSET_FETCH", url: "https://claude.ai/api/organizations/org/files/f/download", upload: asset })).toMatchObject({ ok: false });
+  expect(await sendRuntimeMessage({ type: "SCROBBLER_ASSET_FETCH", url: "https://lh3.googleusercontent.com/gg-dl/image", upload: asset })).toMatchObject({ ok: false });
+  expect(uploads).toBe(0);
 });

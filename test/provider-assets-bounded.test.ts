@@ -4,7 +4,7 @@ import { allowedAssetUrl, assetCredentials } from "../packages/extension/src/pro
 
 test("legacy DALL-E signed Azure media is allowed without provider cookies", () => {
   const url = "https://oaidalleapiprodscus.blob.core.windows.net/private/image.png?sig=signed";
-  expect(allowedAssetUrl(url)).toBe(true);
+  expect(allowedAssetUrl(url, "chatgpt")).toBe(true);
   expect(assetCredentials(url, "chatgpt")).toBe("omit");
   expect(allowedAssetUrl("https://unrelated.blob.core.windows.net/image.png")).toBe(false);
 });

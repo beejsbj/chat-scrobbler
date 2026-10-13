@@ -1,4 +1,5 @@
-import { allowedAssetUrl } from "./asset-url";
+import { allowedAssetUrl, providerDownloadUrl } from "./asset-url";
+import { validateAssetResponse } from "./asset-response";
 import { asArray, asObject, type FetchLike } from "./types";
 import type { ProviderAssetCandidate } from "./assets";
 
@@ -13,7 +14,7 @@ export function chatgptFileDownloadEndpoint(pointer: string, conversationId: str
     return `/backend-api/conversation/${encodeURIComponent(conversationId)}/interpreter/download?${params}`;
   }
   if (/^file[-_]/.test(pointer)) return `/backend-api/files/download/${encodeURIComponent(pointer)}?conversation_id=${encodeURIComponent(conversationId)}&inline=false`;
-  return /^(https?:\/\/|data:)/.test(pointer) || pointer.startsWith("/") ? pointer : null;
+  return allowedAssetUrl(pointer, "chatgpt") ? pointer : null;
 }
 
 export function chatgptAssetCandidates(payload: unknown, sourceId: string, headers?: Record<string, string>): ProviderAssetCandidate[] {
@@ -37,7 +38,7 @@ export function chatgptAssetCandidates(payload: unknown, sourceId: string, heade
       if (Array.isArray(value)) { value.forEach(visit); return; }
       const item = asObject(value);
       for (const key of ["asset_pointer", "audio_asset_pointer", "video_asset_pointer", "video_container_asset_pointer", "image_url", "download_url"]) {
-        if (typeof item[key] === "string") add(item[key], item);
+        if (typeof item[key] === "string" && (key !== "image_url" || allowedAssetUrl(item[key], "chatgpt"))) add(item[key], item);
       }
       Object.values(item).forEach(visit);
     };
@@ -55,13 +56,18 @@ export function chatgptAssetCandidates(payload: unknown, sourceId: string, heade
 
 export async function resolveChatgptAssetUrl(fetcher: FetchLike, candidate: ProviderAssetCandidate): Promise<string | null> {
   if (!candidate.url) return null;
+  if (!allowedAssetUrl(candidate.url, "chatgpt")) throw new Error("asset_url_unavailable");
+  if (!providerDownloadUrl(candidate.url, "chatgpt")) return candidate.url;
   if (!candidate.url.startsWith("/backend-api/") || !candidate.url.includes("/download")) return candidate.url;
   let downloadEndpoint = candidate.url;
-  let res = await fetcher(downloadEndpoint, { credentials: "include", headers: candidate.headers, signal: AbortSignal.timeout(30_000) });
+  let res = await fetcher(downloadEndpoint, { credentials: "include", headers: candidate.headers, redirect: "manual", signal: AbortSignal.timeout(30_000) });
+  validateAssetResponse(res, "chatgpt");
   if (res.status === 404 && candidate.pointer.startsWith("sediment://")) {
     const id = candidate.pointer.slice("sediment://".length);
     downloadEndpoint = `/backend-api/conversation/${encodeURIComponent(candidate.sourceId)}/attachment/${encodeURIComponent(id)}/download`;
-    res = await fetcher(downloadEndpoint, { credentials: "include", headers: candidate.headers, signal: AbortSignal.timeout(30_000) });
+    if (!allowedAssetUrl(downloadEndpoint, "chatgpt")) throw new Error("asset_url_unavailable");
+    res = await fetcher(downloadEndpoint, { credentials: "include", headers: candidate.headers, redirect: "manual", signal: AbortSignal.timeout(30_000) });
+    validateAssetResponse(res, "chatgpt");
   }
   if (!res.ok) throw new Error(res.status === 404 || res.status === 410 ? "asset_expired" : "asset_download_failed");
   if (!res.headers.get("content-type")?.includes("json")) {
@@ -71,7 +77,7 @@ export async function resolveChatgptAssetUrl(fetcher: FetchLike, candidate: Prov
   }
   const link = asObject(await res.json());
   const url = stringValue(link.download_url ?? link.url);
-  if (!url || !allowedAssetUrl(url)) throw new Error("asset_url_unavailable");
+  if (!url || !allowedAssetUrl(url, "chatgpt")) throw new Error("asset_url_unavailable");
   if (!candidate.filename) candidate.filename = stringValue(link.file_name);
   return url;
 }

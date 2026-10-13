@@ -237,7 +237,7 @@ test("provider asset upload skips oversized responses before reading bytes", asy
       uploaded = true;
       throw new Error("should not upload oversized asset");
     },
-    [{ source: "chatgpt", sourceId: "conv", pointer: "file-service://too-big", url: "/asset" }],
+    [{ source: "chatgpt", sourceId: "conv", pointer: "file-service://too-big", url: "/backend-api/files/file-1/download" }],
     { maxBytes: 1 },
   );
 
@@ -258,7 +258,7 @@ test("provider asset upload skips oversized responses after reading bytes", asyn
       uploaded = true;
       throw new Error("should not upload oversized asset");
     },
-    [{ source: "chatgpt", sourceId: "conv", pointer: "file-service://too-big", url: "/asset" }],
+    [{ source: "chatgpt", sourceId: "conv", pointer: "file-service://too-big", url: "/backend-api/files/file-1/download" }],
     { maxBytes: 1 },
   );
 
@@ -661,7 +661,7 @@ test("asset download, size, and upload failures are reported while text capture 
       const assets = await uploadProviderAssets(
         async () => mode === "download" ? new Response("denied", { status: 403 }) : new Response(new Uint8Array([1, 2, 3])),
         async () => { throw new Error("upload failed https://example.com/?token=secret"); },
-        [{ source: "chatgpt", sourceId: "conv", messageId: "m1", pointer: "https://example.com/?token=secret", url: "/asset" }],
+        [{ source: "chatgpt", sourceId: "conv", messageId: "m1", pointer: "https://example.com/?token=secret", url: "/backend-api/files/file-1/download" }],
         { maxBytes: mode === "size" ? 2 : 100, reportFailure: async failure => { failures.push(failure); } },
       );
       expect(assets).toEqual([]);

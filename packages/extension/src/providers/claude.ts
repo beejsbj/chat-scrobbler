@@ -34,7 +34,7 @@ export function createClaudeAdapter(fetcher: FetchLike = fetch.bind(globalThis))
       }
       return uploadProviderAssets(fetcher, options.uploadAsset, references.map(ref => ({
         source: "claude", sourceId: id, pointer: ref.pointer, messageId: ref.message_id,
-        filename: ref.filename, contentType: ref.content_type,
+        filename: ref.filename, contentType: ref.content_type, inlineBytes: refreshed.get(ref.pointer)?.inlineBytes,
         url: refreshed.get(ref.pointer)?.url ?? (ref.pointer.startsWith("claude-inline:") ? null
           : ref.pointer.startsWith("sandbox:") ? claudeSandboxDownloadEndpoint(org.uuid, id, ref.pointer.slice(8))
           : ref.pointer.startsWith("/mnt/") ? claudeSandboxDownloadEndpoint(org.uuid, id, ref.pointer)

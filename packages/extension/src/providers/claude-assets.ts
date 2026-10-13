@@ -37,7 +37,8 @@ export function claudeAssetCandidates(payload: unknown, sourceId: string, orgId:
       const source = asObject(item.source);
       if (source.type === "base64" && typeof source.data === "string") {
         const mime = str(source.media_type) ?? "application/octet-stream";
-        add(`claude-inline:${messageId}:${path}`, { media_type: mime }, `data:${mime};base64,${source.data}`);
+        out.push({ source: "claude", sourceId, messageId, pointer: `claude-inline:${messageId}:${path}`, url: null,
+          contentType: mime, inlineBytes: Uint8Array.from(atob(source.data), char => char.charCodeAt(0)) });
         return;
       }
       if (["image", "document", "file", "audio", "video"].includes(String(item.type))) {

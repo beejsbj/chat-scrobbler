@@ -1,8 +1,9 @@
 import type { AssetFailure, AssetFailureReason, ProviderSource, UploadedAsset } from "../../../shared/src";
 import type { AssetFetchResponse, AssetUploadRequest } from "../messages";
 import type { FetchLike, ProviderSyncOptions } from "./types";
-import { allowedAssetUrl, assetCredentials, useBackgroundForAsset } from "./asset-url";
+import { allowedAssetUrl, assetCredentials, providerDownloadUrl, useBackgroundForAsset } from "./asset-url";
 import { boundedAssetBuffer } from "./asset-bytes";
+import { validateAssetBytes, validateAssetResponse } from "./asset-response";
 
 export const MAX_PROVIDER_ASSET_BYTES = 100 * 1024 * 1024;
 
@@ -32,6 +33,7 @@ export interface ProviderAssetCandidate {
   contentType?: string | null;
   messageId?: string | null;
   fetchViaBackground?: boolean;
+  inlineBytes?: Uint8Array;
 }
 
 export async function uploadProviderAssets(
@@ -51,15 +53,16 @@ export async function uploadProviderAssets(
     try {
       await options.beforeFetch?.();
       const url = options.resolveUrl ? await options.resolveUrl(candidate) : candidate.url;
-      if (!url || !allowedAssetUrl(url)) throw new Error("asset_url_unavailable");
-      const downloaded = (candidate.fetchViaBackground || useBackgroundForAsset(url))
-        ? await (options.fetchAsset ?? ((url) => fetchAssetViaBackground(url, maxBytes, candidate)))(url)
-        : await fetchCandidateBytes(fetcher, url, maxBytes, candidate.headers, candidate.source);
+      if (!candidate.inlineBytes && (!url || !allowedAssetUrl(url, candidate.source))) throw new Error("asset_url_unavailable");
+      const downloaded = candidate.inlineBytes ? { bytes: candidate.inlineBytes, contentType: candidate.contentType } : (candidate.fetchViaBackground || useBackgroundForAsset(url!))
+        ? await (options.fetchAsset ?? ((url) => fetchAssetViaBackground(url, maxBytes, candidate)))(url!)
+        : await fetchCandidateBytes(fetcher, url!, maxBytes, candidate.headers, candidate.source);
       if (downloaded.asset) {
         uploaded.push({ ...downloaded.asset, pointer: candidate.pointer, message_id: candidate.messageId ?? downloaded.asset.message_id ?? null });
         continue;
       }
       if (downloaded.bytes.length > maxBytes) throw new Error("asset_too_large");
+      validateAssetBytes(new Uint8Array(downloaded.bytes), downloaded.contentType);
       const contentType = assetContentType(downloaded.contentType, candidate.contentType);
       const filename = candidate.filename ?? downloaded.filename ?? null;
       const request: AssetUploadRequest = {
@@ -113,11 +116,10 @@ async function fetchCandidateBytes(
   url: string,
   maxBytes: number,
   headers?: Record<string, string>,
-  source?: ProviderSource,
+  source: ProviderSource = "chatgpt",
 ): Promise<ProviderAssetBytes> {
-  const sameOrigin = url.startsWith("/") && !url.startsWith("//")
-    || (typeof location !== "undefined" && new URL(url, location.origin).origin === location.origin);
-  const res = await fetcher(url, { credentials: assetCredentials(url, source), headers: sameOrigin ? headers : undefined, signal: AbortSignal.timeout(60_000) });
+  const res = await fetcher(url, { credentials: assetCredentials(url, source), headers: providerDownloadUrl(url, source) ? headers : undefined, redirect: "manual", signal: AbortSignal.timeout(60_000) });
+  validateAssetResponse(res, source);
   if (!res.ok) throw new Error(res.status === 404 || res.status === 410 ? "asset_expired" : "asset_download_failed");
   const bytes = await boundedAssetBuffer(res, maxBytes);
   return {
