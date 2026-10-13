@@ -180,3 +180,18 @@ test("a displaced scheduler aborts inference and reports a lost lease instead of
     finally {db.close();}
   } finally {await scheduler.stop();rmSync(root,{recursive:true,force:true});}
 });
+
+test("scheduled ticks recover a crashed lease without a manual run or cleanup", async () => {
+  const {acquireBackfillLock}=await import("../src/indexer/backfill-lock");
+  const {root,cfg}=setup(),dead=acquireBackfillLock(cfg.indexPath,{now:()=>1000})!;
+  let entered!:()=>void;const called=new Promise<void>(resolve=>{entered=resolve;});
+  const scheduler=startEmbeddingBackfillScheduler({cfg:{...cfg,embeddingBackfillIntervalMs:20,embeddingBackfillBatchSize:1},
+    provider:{...p,embed:async()=>{entered();return [1,0];}}});
+  let watchdog:ReturnType<typeof setTimeout>|undefined;
+  try {
+    await Promise.race([called,new Promise<never>((_,reject)=>{watchdog=setTimeout(()=>reject(new Error("automatic recovery did not run")),2000);})]);
+    expect(scheduler.status().lease).toMatchObject({recovered:true,recoveries:1});
+    await scheduler.stop();
+    expect(scheduler.status().last_run!.lease).toMatchObject({recovered:true});
+  } finally {clearTimeout(watchdog);dead.release();await scheduler.stop();rmSync(root,{recursive:true,force:true});}
+});
