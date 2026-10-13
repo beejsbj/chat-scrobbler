@@ -6,6 +6,7 @@ import struct
 import threading
 import time
 import unittest
+from unittest.mock import patch
 from dataclasses import replace
 
 from services.embedder.config import Config
@@ -120,6 +121,21 @@ class HttpTests(unittest.TestCase):
         self.assertFalse(worker.is_alive())
         self.assertEqual(results[0][0], 200)
         self.assertEqual(peak[0], 1)
+
+    def test_hung_health_is_503_and_watchdog_exits_for_container_restart(self):
+        now = [10.]
+        self.service.clock = lambda: now[0]
+        with patch('services.embedder.http_server.os._exit') as terminate:
+            try:
+                self.service.work_started = 10.
+                now[0] = 131.
+                status, health = self.request('GET', '/health')
+                self.assertEqual(status, 503)
+                self.assertEqual(health['status'], 'hung')
+                self.server.service_actions()
+                terminate.assert_any_call(70)
+            finally:
+                self.service.work_started = None
 
     def test_connection_slots_bounded_before_body_reads(self):
         sockets = [socket.create_connection(('127.0.0.1', self.port), timeout=3)

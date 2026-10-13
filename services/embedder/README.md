@@ -2,8 +2,11 @@
 
 One process, one lazy LiteRT-LM engine. A single request lock covers snapshots,
 ffprobe/ffmpeg, engine load, every chunk and media inference, and response creation.
-A disconnected caller never releases that lock while work is running. Health does
-not acquire it. The server checks for idle unload every 0.5 seconds, closing the
+A disconnected caller never releases that lock while work is running. Queued
+queries precede queued documents; arrival order is preserved within each class.
+This does not interrupt an active request or batch. Sustained queries can delay
+backfill until its 110-second queue wait expires. Health does not acquire the
+engine lock and reports the number of queued requests. The server checks for idle unload every 0.5 seconds, closing the
 engine after 300 seconds without work. Later requests reload it.
 
 ## HTTP contract
@@ -103,7 +106,13 @@ also checked after conversion so misleading metadata cannot exceed the cap.
 Queue wait and inference time are additive. The adapter's 120-second timeout is a
 client deadline, not a guarantee that large media or queued work finishes within
 it. Long docs should use the adapter's sequential chunks. Native inference is
-not forcibly cancelled inside a living process. Disconnects drain safely, and
+not forcibly cancelled inside a living process. Each native load/inference has a
+120-second watchdog (`EMBEDDER_INFERENCE_TIMEOUT`, at most 300 seconds).
+Overdue work makes `/health` return 503 with `status: hung`. The server watchdog
+exits the whole process with status 70, allowing Compose's restart policy to
+recover without unsafe concurrent native close. An idle close exception is
+contained, reported as `last_close_error: engine_close_failed`, and the next
+request loads a fresh engine. Disconnects drain safely, and
 may consume remaining compute. Header sockets have a 15-second inactivity timeout;
 body reads have a total deadline. Connections and parser header sizes are bounded.
 
@@ -200,7 +209,7 @@ No persistent systemd service is supplied: host loopback is unreachable from the
 production Docker bridge caller.
 
 Config environment: `EMBEDDER_NETWORK_MODE`, `EMBEDDER_PORT`,
-`EMBEDDER_IDLE_SECONDS`, `EMBEDDER_MODEL_PATH`, `EMBEDDER_CACHE_DIR`, and
+`EMBEDDER_IDLE_SECONDS`, `EMBEDDER_INFERENCE_TIMEOUT`, `EMBEDDER_MODEL_PATH`, `EMBEDDER_CACHE_DIR`, and
 `EMBEDDER_ALLOWED_ROOTS` (colon-separated existing directories).
 
 ## RSS measurement and current verification limits

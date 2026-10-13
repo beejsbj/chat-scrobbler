@@ -257,6 +257,46 @@ class ServiceTests(unittest.TestCase):
             worker.join(3)
         self.assertEqual(len(self.service.embeddings({'input': 'after'})['data']), 1)
 
+    def test_hung_native_work_is_unhealthy_without_releasing_engine(self):
+        now = [10.]
+        entered, release = threading.Event(), threading.Event()
+        e = FakeEngine()
+        def blocked(content):
+            entered.set()
+            release.wait(3)
+            return [1.] * 768
+        e.embed = blocked
+        self.service = Embedder(self.config, lambda: e, clock=lambda: now[0])
+        worker = threading.Thread(target=lambda: self.service.embeddings({'input': 'first'}))
+        worker.start()
+        try:
+            self.assertTrue(entered.wait(1))
+            now[0] = 131.
+            health = self.service.health()
+            self.assertEqual(health['status'], 'hung')
+            self.assertEqual(health['work_seconds'], 121.)
+            self.assertTrue(health['busy'])
+            self.assertFalse(self.service.unload_if_idle())
+            self.assertFalse(e.closed)
+        finally:
+            release.set()
+            worker.join(3)
+        self.assertEqual(self.service.health()['status'], 'ok')
+
+    def test_idle_close_failure_is_contained_and_next_request_reloads(self):
+        now = [10.]
+        self.service.clock = lambda: now[0]
+        self.service.embeddings({'input': 'first'})
+        def failed_close():
+            raise RuntimeError('synthetic close failure')
+        self.engines[0].close = failed_close
+        now[0] = 311.
+        self.assertTrue(self.service.unload_if_idle())
+        self.assertFalse(self.service.health()['loaded'])
+        self.assertEqual(self.service.health()['last_close_error'], 'engine_close_failed')
+        self.service.embeddings({'input': 'second'})
+        self.assertEqual(len(self.engines), 2)
+
     def test_decode_and_engine_share_lock(self):
         from services.embedder.media import MediaPart
         entered, release = threading.Event(), threading.Event()

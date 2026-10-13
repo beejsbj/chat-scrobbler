@@ -1,6 +1,7 @@
 """Loopback stdlib HTTP, bounded connections, bodies, queue, and read deadlines."""
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
+import os
 import socket
 import threading
 import time
@@ -64,7 +65,8 @@ class Handler(BaseHTTPRequestHandler):
             self._check_origin()
             if self.path != '/health':
                 raise RequestError('not found', 404, 'not_found')
-            self._reply(200, self.server.embedder.health())
+            health = self.server.embedder.health()
+            self._reply(200 if health['status'] == 'ok' else 503, health)
         except RequestError as exc:
             self._error(exc)
 
@@ -167,4 +169,9 @@ class Server(ThreadingHTTPServer):
             self._release_connection()
 
     def service_actions(self):
+        if self.embedder.health()['status'] == 'hung':
+            # Native cancellation/close is unsafe while C inference holds the mutex.
+            # Exit the whole process; Compose restart policy creates a fresh engine.
+            os._exit(70)
+            return
         self.embedder.unload_if_idle()

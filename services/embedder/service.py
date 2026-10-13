@@ -27,10 +27,16 @@ class Embedder:
         self.engine = None
         self.last_used = self.clock()
         self.stopped = False
+        self.work_started = None
+        self.last_close_error = None
 
     def health(self):
         # No engine lock: health stays responsive while decoding or computing.
-        return {'status': 'stopped' if self.stopped else 'ok', 'model': MODEL_ID,
+        started = self.work_started
+        elapsed = None if started is None else max(0., self.clock() - started)
+        hung = elapsed is not None and elapsed > self.config.inference_timeout
+        return {'status': 'stopped' if self.stopped else 'hung' if hung else 'ok',
+                'last_close_error': self.last_close_error, 'work_seconds': elapsed, 'inference_timeout': self.config.inference_timeout, 'model': MODEL_ID,
                 'model_available': self.model_available(), 'loaded': self.engine is not None, 'busy': self.lock.locked(),
                 'queued': self.queue.queued, 'threads': 2, 'vision_tokens': 140, 'idle_seconds': self.config.idle_seconds,
                 'rss_kib': current_rss_kib()}
@@ -103,11 +109,11 @@ class Embedder:
                     content = self.decoder.prepare(item, directory) if isinstance(item, dict) else None
                     if self.engine is None:
                         try:
-                            self.engine = self.factory()
+                            self.engine = self._native_call(self.factory)
                         except Exception as exc:
                             raise RequestError('local embedding engine unavailable', 503, 'unavailable') from exc
-                    vectors = ([self.engine.embed(content)] if content is not None else
-                               [self.engine.embed(chunk) for chunk in item])
+                    vectors = ([self._native_call(self.engine.embed, content)] if content is not None else
+                               [self._native_call(self.engine.embed, chunk) for chunk in item])
                     vector = pooled(vectors, dimensions)
                     if encoding == 'base64':
                         vector = base64.b64encode(struct.pack(f'<{dimensions}f', *vector)).decode('ascii')
@@ -120,6 +126,14 @@ class Embedder:
         finally:
             self.last_used = self.clock()
             self.queue.release()
+
+    def _native_call(self, operation, *args):
+        # Health/watchdog read this without waiting for the native mutex.
+        self.work_started = self.clock()
+        try:
+            return operation(*args)
+        finally:
+            self.work_started = None
 
     def unload_if_idle(self):
         if not self.lock.acquire(blocking=False):
@@ -136,9 +150,15 @@ class Embedder:
     def _unload(self):
         engine, self.engine = self.engine, None
         if engine is not None:
-            engine.close()
-            del engine
-            gc.collect()
+            try:
+                self._native_call(engine.close)
+                self.last_close_error = None
+            except Exception:
+                # Close failures cannot take down the HTTP server's idle loop.
+                self.last_close_error = 'engine_close_failed'
+            finally:
+                del engine
+                gc.collect()
 
     def close(self):
         with self.lock:
