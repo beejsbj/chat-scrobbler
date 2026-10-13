@@ -278,7 +278,12 @@ for (const status of [400, 401, 403, 404, 413, 429, 500, 503]) test(`background 
   expect(result).toMatchObject({ ok: false, error_type: status < 500 && status !== 429 ? "deterministic" : "transient" });
 });
 
-test("persistent pointer cache checks the receiver hash and reuses bytes across sessions", async () => {
+for (const identity of [
+  { source: "chatgpt" as const, sourceId: "c", pointer: "sediment://file_immutable" },
+  { source: "claude" as const, sourceId: "c", pointer: "a2532b3f-751b-4d54-8890-cb3e971ab982" },
+  { source: "gemini" as const, sourceId: "c", pointer: "file-immutable" },
+  { source: "gemini" as const, sourceId: "c", pointer: `sha256:${"a".repeat(64)}` },
+]) test(`content-addressed ${identity.pointer} cache verifies receiver existence across sessions`, async () => {
   const hash = "a".repeat(64);
   const calls: Array<{ url: string; method: string; bytes: boolean }> = [];
   globalThis.fetch = (async (input, init) => {
@@ -286,7 +291,6 @@ test("persistent pointer cache checks the receiver hash and reuses bytes across 
     if (!init?.method) return Response.json({ exists: calls.length > 2 });
     return Response.json({ pointer: "https://lh3.googleusercontent.com/voice", local_path: "assets/gemini/c/hash.wav", sha256: hash });
   }) as typeof fetch;
-  const identity = { source: "gemini" as const, sourceId: "c", pointer: "https://lh3.googleusercontent.com/voice" };
   await sendRuntimeMessage({ type: "SCROBBLER_ASSET_UPLOAD", asset: { ...identity, bytes: [1, 2] } });
   const result = await sendRuntimeMessage({ type: "SCROBBLER_ASSET_LOOKUP", asset: { ...identity, sourceId: "other" } });
   expect(result).toMatchObject({ ok: true, asset: { sha256: hash } });
@@ -330,4 +334,35 @@ test("an interrupted ingest acknowledgement remains an environmental failure", a
   globalThis.fetch = (async () => new Response(new ReadableStream({ start(controller) { controller.error(new TypeError("connection lost")); } }), { headers: { "content-type": "application/json" } })) as unknown as typeof fetch;
   expect(await sendRuntimeMessage({ type: "SCROBBLER_CAPTURE_READY", capture: buildRawCapture({ source: "chatgpt", sourceId: "c", endpoint: "/detail", payload: {} }) }))
     .toMatchObject({ ok: false, error_type: "transient" });
+});
+
+for (const secondConversation of ["convB", "convA"]) test(`sandbox path reuse in ${secondConversation} never links convA's old bytes`, async () => {
+  const pointer = "sandbox:/mnt/data/plot.png";
+  const hashA = "a".repeat(64), hashB = "b".repeat(64);
+  let byteUploads = 0;
+  globalThis.fetch = (async (_input, init) => {
+    if (!init?.method) return Response.json({ exists: true });
+    if (init.body) { byteUploads++; return Response.json({ pointer, sha256: byteUploads === 1 ? hashA : hashB, local_path: "assets/plot.png" }); }
+    return Response.json({ pointer, sha256: hashA, local_path: "assets/plot.png" });
+  }) as typeof fetch;
+  const identity = { source: "chatgpt" as const, sourceId: "convA", pointer };
+  expect(await sendRuntimeMessage({ type: "SCROBBLER_ASSET_UPLOAD", asset: { ...identity, bytes: [1] } })).toMatchObject({ ok: true });
+  expect((storageData["scrobbler.assetPointerCache"] as Record<string, string> | undefined)?.[JSON.stringify([identity.source, pointer])]).toBeUndefined();
+  // Include a legacy cache entry left by 0.4.1, to exercise upgrades as well as new writes.
+  storageData["scrobbler.assetPointerCache"] = { [JSON.stringify([identity.source, pointer])]: hashA };
+  const second = { ...identity, sourceId: secondConversation };
+  expect(await sendRuntimeMessage({ type: "SCROBBLER_ASSET_LOOKUP", asset: second })).toMatchObject({ ok: true, asset: null });
+  // The receiver already knows B's actual hash; byte dedup can still link B after a fresh download.
+  globalThis.fetch = (async (_input, init) => init?.method
+    ? Response.json({ pointer, sha256: hashB, local_path: "assets/new-plot.png" }) : Response.json({ exists: true })) as typeof fetch;
+  expect(await sendRuntimeMessage({ type: "SCROBBLER_ASSET_UPLOAD", asset: { ...second, bytes: [2] } }))
+    .toMatchObject({ ok: true, asset: { sha256: hashB } });
+});
+
+for (const pointer of ["/mnt/data/plot.png", "https://lh3.googleusercontent.com/gg-dl/mutable", "claude-inline:m:/content/1"]) test(`mutable ${pointer} is never reused from the pointer cache`, async () => {
+  storageData["scrobbler.assetPointerCache"] = { [JSON.stringify(["gemini", pointer])]: "a".repeat(64) };
+  let requests = 0;
+  globalThis.fetch = (async () => { requests++; return Response.json({ exists: true }); }) as unknown as typeof fetch;
+  expect(await sendRuntimeMessage({ type: "SCROBBLER_ASSET_LOOKUP", asset: { source: "gemini", sourceId: "c", pointer } })).toMatchObject({ ok: true, asset: null });
+  expect(requests).toBe(0);
 });
