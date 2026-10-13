@@ -1,6 +1,9 @@
 import type { Database } from "bun:sqlite";
 import type { EmbeddingProvider } from "./sqlite";
 import { validateEmbedding } from "./embedding-status";
+import { createHash } from "node:crypto";
+
+export const textVectorHash = (text: string): string => createHash("sha256").update(text).digest("hex");
 
 export interface VectorScope { provider_kind: string; provider_model: string; dimension: number; }
 export interface TextVectorRow extends VectorScope {
@@ -41,21 +44,24 @@ export function createVectorTables(db: Database): void {
     text TEXT NOT NULL, role TEXT, created_at TEXT, source TEXT, title TEXT,
     PRIMARY KEY(session_id,message_id,provider_kind,provider_model,dimension))`);
   db.run(`CREATE INDEX IF NOT EXISTS message_vector_scope ON message_vectors(provider_kind,provider_model,dimension,source)`);
+  if (!(db.query("PRAGMA table_info(message_vectors)").all() as Array<{name:string}>).some(c=>c.name==="text_hash"))
+    db.run("ALTER TABLE message_vectors ADD COLUMN text_hash TEXT");
   db.run(`CREATE TABLE IF NOT EXISTS vector_migration (name TEXT PRIMARY KEY, cursor INTEGER NOT NULL)`);
   db.run(`CREATE INDEX IF NOT EXISTS legacy_vector_scope ON message_embeddings(provider_kind,provider_model,dimension)`);
 }
 export function putTextVector(db: Database, row: TextVectorRow): void {
   if (row.embedding.length !== row.dimension) throw new Error("embedding dimension mismatch");
   db.run(`INSERT OR REPLACE INTO message_vectors
-    (session_id,message_id,provider_kind,provider_model,dimension,embedding,text,role,created_at,source,title)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?)`, [row.session_id,row.message_id,row.provider_kind,row.provider_model,row.dimension,
-    encodeVector(row.embedding),row.text,row.role,row.created_at,row.source,row.title]);
+    (session_id,message_id,provider_kind,provider_model,dimension,embedding,text,text_hash,role,created_at,source,title)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`, [row.session_id,row.message_id,row.provider_kind,row.provider_model,row.dimension,
+    encodeVector(row.embedding),"",textVectorHash(row.text),row.role,row.created_at,row.source,row.title]);
 }
 export function reusableBinaryTextVector(db: Database, sessionId: string, messageId: string, text: string, title: string | null, provider: EmbeddingProvider): number[] | null {
   const kind = provider.kind?.trim() || "unknown", model = provider.model?.trim() || "";
-  const params = [sessionId,messageId,kind,model,provider.dimensions ?? null,provider.dimensions ?? null,text,title];
+  const params = [sessionId,messageId,kind,model,provider.dimensions ?? null,provider.dimensions ?? null,textVectorHash(text),text,title];
   const rows = db.query(`SELECT embedding,dimension FROM message_vectors WHERE session_id=? AND message_id=?
-    AND provider_kind=? AND provider_model=? AND (? IS NULL OR dimension=?) AND text=? AND title IS ? ORDER BY dimension DESC`).all(...params) as Iterable<{embedding:Uint8Array;dimension:number}>;
+    AND provider_kind=? AND provider_model=? AND (? IS NULL OR dimension=?)
+    AND (text_hash=? OR (text_hash IS NULL AND text=?)) AND title IS ? ORDER BY dimension DESC`).all(...params) as Iterable<{embedding:Uint8Array;dimension:number}>;
   for (const row of rows) {
     try { return Array.from(decodeVector(row.embedding,row.dimension)); } catch { /* Try another matching dimension or valid legacy snapshot. */ }
   }

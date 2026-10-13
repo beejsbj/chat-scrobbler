@@ -4,6 +4,18 @@ import { migrateLegacyVectors, decodeVector } from "../src/indexer/vector-store"
 
 import { fixture } from "./support/embedding-fixture";
 const provider = (model: string) => ({ kind: "test", model, dimensions: 2, embed: () => [1, 0] });
+test("new model sets store a digest instead of another copy of chat text", async () => {
+  const db=openIndex(":memory:");
+  try {
+    const p=provider("digest");
+    await indexSessionWithEmbeddings(db,fixture(),{embeddingProvider:p});
+    const row=db.query("SELECT text,text_hash FROM message_vectors").get() as any;
+    expect(row.text).toBe(""); expect(row.text_hash).toHaveLength(64);
+    expect(searchMessages(db,"unmatched",{embeddingProvider:p})).toHaveLength(1);
+    indexSession(db,fixture("edited"));
+    expect(searchMessages(db,"unmatched",{embeddingProvider:p})).toEqual([]);
+  } finally {db.close();}
+});
 test("binary vectors coexist across models, reuse after switching, and scope search", async () => {
   const db = openIndex(":memory:");
   try {
