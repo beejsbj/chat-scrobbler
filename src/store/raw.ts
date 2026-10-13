@@ -1,3 +1,4 @@
+import { latestRaw, rawContentHash, writeLatestRaw } from "./raw-latest";
 import { writeImmutableFile } from "./immutable-file";
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
@@ -22,14 +23,18 @@ export function listRawCaptures(rawDir: string, source: string, sourceId: string
     .sort().map(name => relative(rawDir, join(dir, name)));
 }
 
-/** Append-only, hashed over the complete envelope, including unknown fields. */
+/** Retain exact bytes when endpoint/payload changes; skip unchanged polling. */
 export function storeRawCapture(rawDir: string, capture: RawCapture, serialized = JSON.stringify(capture)): string {
+  const sessionDir = join(segment(capture.source), segment(capture.source_id));
+  const dir = join(rawDir, sessionDir);
+  const contentHash = rawContentHash(capture);
+  const latest = latestRaw(dir);
+  if (latest?.content_hash === contentHash) return join(sessionDir, latest.file);
   const hash = createHash("sha256").update(serialized).digest("hex");
-  const existing = listRawCaptures(rawDir, capture.source, capture.source_id).find(ref => ref.endsWith(`-${hash}.json.gz`));
-  if (existing) return existing;
   const ref = join(segment(capture.source), segment(capture.source_id), `${capture.fetched_at.replace(/[^\dTZ-]/g, "-")}-${hash}.json.gz`);
   const path = join(rawDir, ref);
   writeImmutableFile(path, Bun.gzipSync(Buffer.from(serialized)));
+  writeLatestRaw(dir, { file: basename(ref), content_hash: contentHash });
   return ref;
 }
 

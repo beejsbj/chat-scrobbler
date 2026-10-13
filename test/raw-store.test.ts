@@ -68,3 +68,22 @@ test("raw write failures reject capture before canonical writes with a retriable
     expect(JSON.stringify(logs.mock.calls)).toContain("raw_capture_store_failed");
   } finally { logs.mockRestore(); rmSync(root, { recursive: true, force: true }); }
 });
+
+test("raw store deduplicates unchanged content across timestamps and preserves changed versions verbatim", () => {
+  const { readFileSync } = require("node:fs");
+  const root = mkdtempSync(join(tmpdir(), "raw-content-"));
+  try {
+    const first = buildRawCapture({ source: "gemini", sourceId: "repeat", endpoint: "/rpc", fetchedAt: "2026-01-01T00:00:00Z", payload: { nested: { a: 1, b: 2 } } });
+    const ref = storeRawCapture(root, first);
+    const polled = { ...first, fetched_at: "2026-01-02T00:00:00Z", cursor: "volatile", payload: { nested: { b: 2, a: 1 } } };
+    expect(storeRawCapture(root, polled)).toBe(ref);
+    expect(listRawCaptures(root, "gemini", "repeat")).toHaveLength(1);
+    const changed = { ...polled, endpoint: "/new-rpc" };
+    const exact = JSON.stringify(changed, null, 3);
+    const next = storeRawCapture(root, changed, exact);
+    expect(Buffer.from(Bun.gunzipSync(readFileSync(join(root, next)))).toString()).toBe(exact);
+    expect(storeRawCapture(root, { ...changed, fetched_at: "2026-01-03T00:00:00Z" })).toBe(next);
+    storeRawCapture(root, { ...changed, payload: { nested: { b: 3, a: 1 } } });
+    expect(listRawCaptures(root, "gemini", "repeat")).toHaveLength(3);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
