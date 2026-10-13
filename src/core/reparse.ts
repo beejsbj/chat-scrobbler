@@ -17,12 +17,12 @@ export interface ReparseOptions {
   embeddingProvider?: EmbeddingProvider | null;
 }
 export interface ReparseItem {
-  id: string; status: "changed" | "unchanged" | "no_raw" | "deleted" | "failed";
+  id: string; status: "changed" | "unchanged" | "no_raw" | "deleted" | "raced" | "failed";
   reason?: "raw_read_failed" | "canonical_read_failed" | "parse_failed" | "write_failed" | "index_failed";
   canonical_updated?: boolean;
 }
 export interface ReparseReport {
-  dry_run: boolean; changed: number; unchanged: number; no_raw: number; deleted: number; failed: number;
+  dry_run: boolean; changed: number; unchanged: number; no_raw: number; deleted: number; raced: number; failed: number;
   embedding_failures: number; items: ReparseItem[];
 }
 
@@ -49,7 +49,7 @@ function identities(opts: ReparseOptions, rawDir: string): RawIdentity[] {
 export async function reparse(opts: ReparseOptions): Promise<ReparseReport> {
   const rawDir = opts.rawDir ?? rawDirForCanonicalDir(opts.canonicalDir);
   const report: ReparseReport = { dry_run: opts.dryRun ?? false, changed: 0, unchanged: 0, no_raw: 0,
-    deleted: 0, failed: 0, embedding_failures: 0, items: [] };
+    deleted: 0, raced: 0, failed: 0, embedding_failures: 0, items: [] };
   let db: Database | undefined;
   try {
     for (const { source, source_id } of identities(opts, rawDir)) {
@@ -77,6 +77,8 @@ export async function reparse(opts: ReparseOptions): Promise<ReparseReport> {
         session.raw_ref = ref;
         // A payload without a title must not erase one recovered from a sidebar.
         session.title ??= existing?.title ?? null;
+        if (isSessionDeleted(opts.canonicalDir, source, source_id)) { item.status = "deleted"; report.deleted++; continue; }
+        if (latestRawReference(rawDir, source, source_id) !== ref) { item.status = "raced"; report.raced++; continue; }
         if (existing && JSON.stringify(existing) === JSON.stringify(session)) {
           item.status = "unchanged"; report.unchanged++; continue;
         }
@@ -84,23 +86,33 @@ export async function reparse(opts: ReparseOptions): Promise<ReparseReport> {
           reason = "index_failed";
           if (!db) { mkdirSync(dirname(opts.indexPath), { recursive: true }); db = openIndex(opts.indexPath); }
           reason = "write_failed";
+          if (isSessionDeleted(opts.canonicalDir, source, source_id)) { item.status = "deleted"; report.deleted++; continue; }
+          if (latestRawReference(rawDir, source, source_id) !== ref) { item.status = "raced"; report.raced++; continue; }
           writeSession(opts.canonicalDir, session);
           item.canonical_updated = true;
-          const snapshot = readFileSync(file, "utf8");
+          if (isSessionDeleted(opts.canonicalDir, source, source_id)) { item.status = "deleted"; report.deleted++; continue; }
+          const snapshot = JSON.stringify(session, null, 2);
           reason = "index_failed";
           const result = await indexSessionWithEmbeddings(db, session, {
             embeddingProvider: opts.embeddingProvider,
+            canonicalDir: opts.canonicalDir,
             shouldReplaceEmbeddings: () => {
               try { return !isSessionDeleted(opts.canonicalDir, source, source_id) && readFileSync(file, "utf8") === snapshot; }
               catch { return false; }
             },
           });
+          if (result === "stale") {
+            if (isSessionDeleted(opts.canonicalDir, source, source_id)) { item.status = "deleted"; report.deleted++; }
+            else { item.status = "raced"; report.raced++; }
+            continue;
+          }
           if (result === "failed") report.embedding_failures++;
         }
         item.status = "changed"; report.changed++;
       } catch {
         // Error messages can contain payload data or URLs. Report categories only.
-        item.reason = reason; report.failed++;
+        if (isSessionDeleted(opts.canonicalDir, source, source_id)) { item.status = "deleted"; report.deleted++; }
+        else { item.reason = reason; report.failed++; }
       }
     }
   } finally { db?.close(); }

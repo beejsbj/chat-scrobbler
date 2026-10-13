@@ -12,7 +12,7 @@ export async function runReparseCmd(opts: { cfg: ChatHistoryConfig; source?: str
     for (const item of report.items) {
       opts.write(`${item.id}: ${item.status}${item.reason ? ` (${item.reason})` : ""}${item.canonical_updated && item.status === "failed" ? "; canonical updated, run unify to repair index" : ""}`);
     }
-    opts.write(`${report.dry_run ? "Would reparse" : "Reparsed"} ${report.changed} session(s); ${report.unchanged} unchanged, ${report.no_raw} without raw, ${report.deleted} deleted, ${report.failed} failed, ${report.embedding_failures} embedding failures.`);
+    opts.write(`${report.dry_run ? "Would reparse" : "Reparsed"} ${report.changed} session(s); ${report.unchanged} unchanged, ${report.no_raw} without raw, ${report.deleted} deleted, ${report.raced} raced, ${report.failed} failed, ${report.embedding_failures} embedding failures.`);
   }
   return report;
 }

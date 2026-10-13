@@ -31,7 +31,7 @@ export function foldCaptureIntoSpine(capture: RawCapture, ctx: SpineContext): Sp
   return sessions.map((session) => {
     if (ctx.rawRef) session.raw_ref = ctx.rawRef;
     writeSession(ctx.canonicalDir, session);
-    indexSession(ctx.db, session);
+    indexSession(ctx.db, session, { canonicalDir: ctx.canonicalDir });
     return { session_id: session.id, source: session.source, source_id: session.source_id, indexed: true };
   });
 }
@@ -45,7 +45,7 @@ export async function foldCaptureIntoSpineWithEmbeddings(capture: RawCapture, ct
   for (const session of sessions) {
     if (ctx.rawRef) session.raw_ref = ctx.rawRef;
     writeSession(ctx.canonicalDir, session);
-    await indexSessionWithEmbeddings(ctx.db, session, { embeddingProvider: ctx.embeddingProvider });
+    await indexSessionWithEmbeddings(ctx.db, session, { embeddingProvider: ctx.embeddingProvider, canonicalDir: ctx.canonicalDir });
     results.push({ session_id: session.id, source: session.source, source_id: session.source_id, indexed: true });
   }
   return results;
