@@ -118,3 +118,13 @@ test("Claude falls back to message text when content has only empty text blocks"
   expect(message.text).toBe("fallback prose");
   expect(message.blocks).toEqual([{ type: "text", text: "fallback prose" }]);
 });
+
+test("Claude retains unfamiliar content alongside message text fallback", () => {
+  const capture = structuredClone(sample) as any;
+  capture.payload.chat_messages[1].content = [{ type: "flag" }];
+  capture.payload.chat_messages[1].text = "hello from text field";
+  const message = parseClaude(capture)[0].messages[1];
+  expect(message.text).toBe("hello from text field");
+  expect(message.blocks).toContainEqual(expect.objectContaining({ type: "unknown", provider_type: "flag" }));
+  expect(message.blocks).toContainEqual({ type: "text", text: "hello from text field" });
+});
