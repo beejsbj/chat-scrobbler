@@ -71,9 +71,10 @@ export function indexSession(db: Database, s: Session, opts: IndexSessionOptions
   if (!embeddingProvider) return;
 
   try {
-    const rows = collectSyncEmbeddingRows(s, embeddingProvider);
+    const {rows,failed} = collectSyncEmbeddingRows(db, s, embeddingProvider);
     db.transaction(() => replaceEmbeddingRows(db, s, rows, opts))();
-    embeddingSucceeded(embeddingProvider, "ingest");
+    if(failed) embeddingFailed(embeddingProvider,"embedding_document_failed","ingest");
+    else embeddingSucceeded(embeddingProvider, "ingest");
   } catch {
     embeddingFailed(embeddingProvider, "embedding_document_failed", "ingest");
   }
@@ -85,15 +86,25 @@ export async function indexSessionWithEmbeddings(db: Database, s: Session, opts:
   if (!db.transaction(() => indexLiteralSession(db, s, opts))()) return "stale";
   if (!embeddingProvider) return "disabled";
 
-  try {
-    const rows = await collectAsyncEmbeddingRows(db, s, embeddingProvider);
-    const replaced = db.transaction(() => replaceEmbeddingRows(db, s, rows, opts))();
-    embeddingSucceeded(embeddingProvider, "ingest");
-    return replaced ? "indexed" : "stale";
-  } catch {
-    embeddingFailed(embeddingProvider, "embedding_document_failed", "ingest");
-    return "failed";
+  let failed=false;
+  for(const message of s.messages) {
+    if(!message.text.trim()) continue;
+    try {
+      const embedding=reusableEmbedding(db,s,message.id,message.text,embeddingProvider)
+        ?? validateEmbedding(await embeddingProvider.embed(message.text,{kind:"document",title:s.title}));
+      const row={session_id:s.id,message_id:message.id,text:message.text,role:message.role,
+        created_at:message.created_at,source:s.source,title:s.title,embedding,...embeddingMetadata(embeddingProvider,embedding)};
+      const written=db.transaction(()=> {
+        const live=db.query("SELECT f.text,f.title FROM message_lookup k JOIN messages_fts f ON f.rowid=k.fts_rowid WHERE k.session_id=? AND k.message_id=?")
+          .get(s.id,message.id) as {text:string;title:string|null}|null;
+        if(!live || live.text!==message.text || live.title!==s.title || opts.shouldReplaceEmbeddings && !opts.shouldReplaceEmbeddings()) return false;
+        putTextVector(db,{...row,provider_model:row.provider_model ?? ""});return true;
+      })();
+      if(!written) return "stale";
+    } catch {failed=true;}
   }
+  if(failed) {embeddingFailed(embeddingProvider,"embedding_document_failed","ingest");return "failed";}
+  embeddingSucceeded(embeddingProvider,"ingest");return "indexed";
 }
 
 /** Look up the indexed updated_at for given (source, source_id) pairs.
@@ -299,24 +310,17 @@ function indexLiteralSession(db: Database, s: Session, opts: IndexSessionOptions
   return true;
 }
 
-function collectSyncEmbeddingRows(s: Session, provider: EmbeddingProvider): EmbeddingRow[] {
-  const rows: EmbeddingRow[] = [];
-  for (const m of s.messages) {
-    if (!m.text) continue;
-    const embedding = syncEmbedding(provider, m.text, { kind: "document", title: s.title });
-    rows.push({
-      session_id: s.id,
-      message_id: m.id,
-      embedding,
-      text: m.text,
-      role: m.role,
-      created_at: m.created_at,
-      source: s.source,
-      title: s.title,
-      ...embeddingMetadata(provider, embedding),
-    });
+function collectSyncEmbeddingRows(db:Database,s: Session, provider: EmbeddingProvider): {rows:EmbeddingRow[];failed:boolean} {
+  const rows:EmbeddingRow[]=[];let failed=false;
+  for(const m of s.messages) {
+    if(!m.text.trim()) continue;
+    try {
+      const embedding=reusableEmbedding(db,s,m.id,m.text,provider) ?? syncEmbedding(provider,m.text,{kind:"document",title:s.title});
+      rows.push({session_id:s.id,message_id:m.id,embedding,text:m.text,role:m.role,created_at:m.created_at,
+        source:s.source,title:s.title,...embeddingMetadata(provider,embedding)});
+    } catch {failed=true;}
   }
-  return rows;
+  return {rows,failed};
 }
 
 // Providers re-send whole conversations on every sync (Gemini re-captures every
@@ -324,27 +328,6 @@ function collectSyncEmbeddingRows(s: Session, provider: EmbeddingProvider): Embe
 // (text, title, provider identity) are unchanged instead of re-embedding them.
 function reusableEmbedding(db: Database, s: Session, messageId: string, text: string, provider: EmbeddingProvider): number[] | null {
   return reusableTextVector(db, s.id, messageId, text, s.title ?? null, provider);
-}
-
-async function collectAsyncEmbeddingRows(db: Database, s: Session, provider: EmbeddingProvider): Promise<EmbeddingRow[]> {
-  const rows: EmbeddingRow[] = [];
-  for (const m of s.messages) {
-    if (!m.text) continue;
-    const embedding = reusableEmbedding(db, s, m.id, m.text, provider)
-      ?? validateEmbedding(await provider.embed(m.text, { kind: "document", title: s.title }));
-    rows.push({
-      session_id: s.id,
-      message_id: m.id,
-      embedding,
-      text: m.text,
-      role: m.role,
-      created_at: m.created_at,
-      source: s.source,
-      title: s.title,
-      ...embeddingMetadata(provider, embedding),
-    });
-  }
-  return rows;
 }
 
 function replaceEmbeddingRows(db: Database, session: Session, rows: EmbeddingRow[], opts: IndexSessionOptions): boolean {
