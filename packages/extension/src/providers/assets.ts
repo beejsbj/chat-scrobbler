@@ -3,6 +3,7 @@ import type { AssetFetchResponse, AssetUploadRequest } from "../messages";
 import { isRateLimitError, type FetchLike, type ProviderSyncOptions } from "./types";
 import { allowedAssetUrl, useBackgroundForAsset } from "./asset-url";
 import { fetchAllowedAsset } from "./asset-fetch";
+import { isGeminiPageBlob, fetchGeminiPageBlob, validateGeminiPageBlobResponse } from "./gemini-page-blob";
 import { boundedAssetBuffer } from "./asset-bytes";
 import { validateAssetBytes, validateAssetResponse } from "./asset-response";
 import { lookupCapturedAsset, backgroundAssetError, paceAssetDownload } from "./asset-cache-client";
@@ -39,6 +40,8 @@ export interface ProviderAssetCandidate {
   inlineBase64?: string;
   /** A resolver may receive bytes directly, instead of download-link JSON. Consume them once. */
   downloadResponse?: Response;
+  /** Set only from the current Gemini page's audio/video/source elements. Never from API data. */
+  providerPageBlob?: boolean;
   sha256?: string | null;
 }
 
@@ -58,7 +61,7 @@ export async function uploadProviderAssets(
     seen.add(`${candidate.messageId ?? ""}:${candidate.pointer}`);
     let reason: AssetFailureReason = "asset_download_failed";
     try {
-      if (candidate.url && !allowedAssetUrl(candidate.url, candidate.source)) throw new Error("asset_url_unavailable");
+      if (candidate.url && !candidateUrlAllowed(candidate.url, candidate)) throw new Error("asset_url_unavailable");
       const cached = await lookupCapturedAsset(candidate);
       if (cached) { uploaded.push({ ...cached, pointer: candidate.pointer, message_id: candidate.messageId ?? null }); continue; }
       if (downloadBlock) throw downloadBlock;
@@ -66,12 +69,13 @@ export async function uploadProviderAssets(
       const url = options.resolveUrl ? await options.resolveUrl(candidate) : candidate.url;
       const inlineBytes = candidate.inlineBytes ?? (candidate.inlineBase64 !== undefined
         ? Uint8Array.from(atob(candidate.inlineBase64), char => char.charCodeAt(0)) : undefined);
-      if (!inlineBytes && (!url || !allowedAssetUrl(url, candidate.source))) throw new Error("asset_url_unavailable");
+      if (!inlineBytes && (!url || !candidateUrlAllowed(url, candidate))) throw new Error("asset_url_unavailable");
+      const pageBlobId = candidate.providerPageBlob && candidate.source === "gemini" && isGeminiPageBlob(url!, candidate.sourceId) ? candidate.sourceId : undefined;
       const downloaded = inlineBytes ? { bytes: inlineBytes, contentType: candidate.contentType } : candidate.downloadResponse
-        ? await fetchCandidateBytes(fetcher, url!, maxBytes, candidate.headers, candidate.source, candidate.downloadResponse)
+        ? await fetchCandidateBytes(fetcher, url!, maxBytes, candidate.headers, candidate.source, candidate.downloadResponse, pageBlobId)
         : (candidate.fetchViaBackground || useBackgroundForAsset(url!))
         ? await (options.fetchAsset ?? ((url) => fetchAssetViaBackground(url, maxBytes, candidate)))(url!)
-        : await fetchCandidateBytes(fetcher, url!, maxBytes, candidate.headers, candidate.source);
+        : await fetchCandidateBytes(fetcher, url!, maxBytes, candidate.headers, candidate.source, undefined, pageBlobId);
       if (downloaded.asset) {
         uploaded.push({ ...downloaded.asset, pointer: candidate.pointer, message_id: candidate.messageId ?? downloaded.asset.message_id ?? null });
         continue;
@@ -135,9 +139,11 @@ async function fetchCandidateBytes(
   headers?: Record<string, string>,
   source: ProviderSource = "chatgpt",
   prefetched?: Response,
+  pageBlobId?: string,
 ): Promise<ProviderAssetBytes> {
-  const res = prefetched ?? (await fetchAllowedAsset(fetcher, url, source, headers)).response;
-  validateAssetResponse(res, source);
+  const res = prefetched ?? (pageBlobId ? await fetchGeminiPageBlob(fetcher, url, pageBlobId) : (await fetchAllowedAsset(fetcher, url, source, headers)).response);
+  if (pageBlobId) validateGeminiPageBlobResponse(res, url, pageBlobId);
+  else validateAssetResponse(res, source);
   if (!res.ok) throw new Error(res.status === 404 || res.status === 410 ? "asset_expired" : "asset_download_failed");
   const bytes = await boundedAssetBuffer(res, maxBytes);
   return {
@@ -145,6 +151,11 @@ async function fetchCandidateBytes(
     filename: filenameFromHeaders(res),
     contentType: res.headers.get("content-type"),
   };
+}
+
+function candidateUrlAllowed(url: string, candidate: ProviderAssetCandidate): boolean {
+  return allowedAssetUrl(url, candidate.source) || candidate.providerPageBlob === true
+    && candidate.source === "gemini" && isGeminiPageBlob(url, candidate.sourceId);
 }
 
 export function isOversizedContentLength(value: string | null, maxBytes = MAX_PROVIDER_ASSET_BYTES): boolean {

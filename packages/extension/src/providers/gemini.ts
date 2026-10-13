@@ -39,6 +39,7 @@ import { buildRawCapture } from "../../../shared/src";
 import { assetReferences, uploadProviderAssets, type ProviderAssetCandidate } from "./assets";
 import { geminiApiAssetCandidates } from "./gemini-assets";
 import { captureHash } from "./capture-hash";
+import { isGeminiPageBlob } from "./gemini-page-blob";
 import {
   maxIso,
   parseRetryAfterMs,
@@ -74,7 +75,7 @@ export interface GeminiPageContext {
   /** Optionally reads rendered conversation text from the current page DOM. */
   readConversationDom(id: string): string | null;
   /** Best-effort rendered asset URLs from the current page DOM. */
-  readConversationAssets?(id: string): Array<{ pointer: string; url: string; filename?: string | null; contentType?: string | null }>;
+  readConversationAssets?(id: string): Array<{ pointer: string; url: string; filename?: string | null; contentType?: string | null; providerPageBlob?: boolean }>;
 }
 
 export interface WizData {
@@ -155,7 +156,8 @@ export function createBrowserPageContext(): GeminiPageContext {
         ...Array.from(conversationEl.querySelectorAll<HTMLElement>("audio[src], video[src], source[src], a[download][href]"))].flatMap((element) => {
         const url = element.getAttribute("src") ?? element.getAttribute("href");
         if (!url) return [];
-        return [{ pointer: url, url, filename: element.getAttribute("download") || null, contentType: element.getAttribute("type") ?? undefined }];
+        return [{ pointer: url, url, filename: element.getAttribute("download") || null, contentType: element.getAttribute("type") ?? undefined,
+          providerPageBlob: ["AUDIO", "VIDEO", "SOURCE"].includes(element.tagName) && isGeminiPageBlob(url, id) }];
       });
     },
   };
@@ -265,6 +267,7 @@ function geminiAssetCandidates(pageCtx: GeminiPageContext, sourceId: string): Pr
     url: asset.url,
     filename: asset.filename ?? null,
     contentType: asset.contentType ?? null,
+    providerPageBlob: asset.providerPageBlob === true,
     fetchViaBackground: /^https?:/.test(asset.url) && !asset.url.startsWith("https://gemini.google.com/"),
   }));
 }
