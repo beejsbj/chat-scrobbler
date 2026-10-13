@@ -459,12 +459,12 @@ test("bootstrap freshness falls back to canonical dates in CLI and the cheap ind
     const full = await monitorReport(options);
     expect(full.providers.claude.last_capture_at).toBe(old);
     expect(full.failures).toContain("FAILED freshness.claude stale threshold_days=14");
-    expect(full.failures).toContain("FAILED freshness.parsed.claude stale threshold_days=14");
+    expect(full.failures).not.toContain("FAILED freshness.parsed.claude stale threshold_days=14");
     expect(full.failures.some(line => line.includes("no_captures"))).toBe(false);
     const live = await (await handleIngestRequest(request(), options)).json();
     expect(live.providers.claude.last_capture_at).toBe(old);
     expect(live.failures).toContain("FAILED freshness.claude stale threshold_days=14");
-    expect(live.failures).toContain("FAILED freshness.parsed.claude stale threshold_days=14");
+    expect(live.failures).not.toContain("FAILED freshness.parsed.claude stale threshold_days=14");
     expect(existsSync(`${opts.indexPath}.monitor.sqlite`)).toBe(false);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });

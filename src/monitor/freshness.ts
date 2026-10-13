@@ -11,7 +11,8 @@ export function providerFreshness(days: Record<Source, number | null>, receipts:
     const stale = stateAvailable ? isStale(last) : null;
     const parsedStale = stateAvailable && success ? isStale(success) : null;
     if (stale) failures.push(`FAILED freshness.${source} ${last ? `stale threshold_days=${threshold}` : "no_captures"}`);
-    if (parsedStale) failures.push(`FAILED freshness.parsed.${source} stale threshold_days=${threshold}`);
+    // A stale receipt already explains a stale parse; report the parse line only when captures still arrive.
+    if (parsedStale && !stale) failures.push(`FAILED freshness.parsed.${source} stale threshold_days=${threshold}`);
     return [source, { last_capture_at: last, last_parsed_at: success, threshold_days: threshold, stale, parsed_stale: parsedStale }];
   }));
   return { providers, failures };
