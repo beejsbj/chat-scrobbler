@@ -29,7 +29,7 @@ export function textCoverage(db: Database, provider: EmbeddingProvider) {
   const covered=new Set<string>();
   for(const row of db.query(`SELECT v.session_id,v.message_id,v.embedding,v.dimension,v.text_hash,f.text,f.title FROM message_vectors v
     JOIN message_lookup k ON k.session_id=v.session_id AND k.message_id=v.message_id
-    JOIN messages_fts f ON f.rowid=k.fts_rowid WHERE v.provider_kind=? AND v.provider_model=?
+    JOIN messages_fts f ON f.rowid=k.fts_rowid AND f.session_id=k.session_id AND f.message_id=k.message_id WHERE v.provider_kind=? AND v.provider_model=?
     AND (? IS NULL OR v.dimension=?) AND (v.text_hash IS NOT NULL OR v.text=f.text) AND v.title IS f.title`)
     .iterate(kind,model,dimension,dimension) as Iterable<{session_id:string;message_id:string;embedding:Uint8Array;dimension:number;text_hash:string|null;text:string;title:string|null}>) {
     if (!row.text.trim()) continue;
@@ -39,7 +39,7 @@ export function textCoverage(db: Database, provider: EmbeddingProvider) {
   }
   for(const row of db.query(`SELECT v.session_id,v.message_id,v.embedding,v.dimension,f.text FROM message_embeddings v
     JOIN message_lookup k ON k.session_id=v.session_id AND k.message_id=v.message_id
-    JOIN messages_fts f ON f.rowid=k.fts_rowid WHERE v.provider_kind=? AND v.provider_model IS ?
+    JOIN messages_fts f ON f.rowid=k.fts_rowid AND f.session_id=k.session_id AND f.message_id=k.message_id WHERE v.provider_kind=? AND v.provider_model IS ?
     AND (? IS NULL OR v.dimension=?) AND v.text=f.text AND v.title IS f.title`)
     .iterate(kind,model || null,dimension,dimension) as Iterable<{session_id:string;message_id:string;embedding:string;dimension:number;text:string}>) {
     if (!row.text.trim()) continue;
@@ -152,19 +152,19 @@ export async function embedBackfill(db: Database, opts: {
       const cached=reusableTextVector(db,row.session_id,row.message_id,row.text,row.title ?? null,provider);
       if (attempted >= limit) break;
       if (cached) await wait();
-      const current=db.query("SELECT f.text,f.title FROM message_lookup k JOIN messages_fts f ON f.rowid=k.fts_rowid WHERE k.session_id=? AND k.message_id=?").get(row.session_id,row.message_id) as MessageRow|null;
+      const current=db.query("SELECT f.text,f.title FROM message_lookup k JOIN messages_fts f ON f.rowid=k.fts_rowid AND f.session_id=k.session_id AND f.message_id=k.message_id WHERE k.session_id=? AND k.message_id=?").get(row.session_id,row.message_id) as MessageRow|null;
       if (!current || current.text!==row.text || (current.title ?? null)!==(row.title ?? null)) { stale++; continue; }
       attempted++;
       const requestsBefore=requests;
       try {
         const checkCurrent=()=> {
-          const live=db.query("SELECT f.text,f.title FROM message_lookup k JOIN messages_fts f ON f.rowid=k.fts_rowid WHERE k.session_id=? AND k.message_id=?").get(row.session_id,row.message_id) as MessageRow|null;
+          const live=db.query("SELECT f.text,f.title FROM message_lookup k JOIN messages_fts f ON f.rowid=k.fts_rowid AND f.session_id=k.session_id AND f.message_id=k.message_id WHERE k.session_id=? AND k.message_id=?").get(row.session_id,row.message_id) as MessageRow|null;
           if(!live || live.text!==row.text || (live.title ?? null)!==(row.title ?? null)) throw new StaleEmbeddingInput();
         };
         const embedding=cached ?? await infer(context=>provider.embed(row.text,context),checkCurrent,row.title);
         signal?.throwIfAborted();
         const written=db.transaction(()=> {
-          const live=db.query("SELECT f.text,f.title FROM message_lookup k JOIN messages_fts f ON f.rowid=k.fts_rowid WHERE k.session_id=? AND k.message_id=?").get(row.session_id,row.message_id) as MessageRow|null;
+          const live=db.query("SELECT f.text,f.title FROM message_lookup k JOIN messages_fts f ON f.rowid=k.fts_rowid AND f.session_id=k.session_id AND f.message_id=k.message_id WHERE k.session_id=? AND k.message_id=?").get(row.session_id,row.message_id) as MessageRow|null;
           if (!live || live.text!==row.text || (live.title ?? null)!==(row.title ?? null)) return false;
           putTextVector(db,{...row,...vectorScope(provider,embedding.length),embedding}); return true;
         })();

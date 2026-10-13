@@ -31,6 +31,52 @@ test("backfill commits each message, continues after failure, and rejects a stal
     expect(stale).toMatchObject({ stale: 1, embedded: 0 });
   } finally { db.close(); }
 });
+
+test("an old writer reusing an FTS rowid for another identity during inference cannot resurrect a vector", async () => {
+  for (const replacement of [
+    { session_id:"chatgpt:replacement", message_id:"m" },
+    { session_id:"chatgpt:test", message_id:"replacement" },
+  ]) {
+    const db=openIndex(":memory:");
+    try {
+      const session=fixture();
+      indexSession(db,session);
+      const report=await embedBackfill(db,{
+        provider:{...p,embed:async text=> {
+          const row=db.query("SELECT rowid FROM messages_fts WHERE session_id=? AND message_id=?")
+            .get(session.id,session.messages[0].id) as {rowid:number};
+          // Simulate an old binary writing raw FTS while its lookup stays stale.
+          db.run("DELETE FROM messages_fts WHERE rowid=?",[row.rowid]);
+          db.run(`INSERT INTO messages_fts(rowid,text,message_id,session_id,role,created_at,source,title)
+            VALUES (?,?,?,?,?,?,?,?)`,[row.rowid,text,replacement.message_id,replacement.session_id,"user",null,"chatgpt",session.title]);
+          return [1,0];
+        }},
+        limit:1,sleep:async()=>{},
+      });
+      expect(report).toMatchObject({stale:1,embedded:0,converted:0,failed:0});
+      expect(db.query("SELECT COUNT(*) AS total FROM message_vectors").get()).toEqual({total:0});
+    } finally {db.close();}
+  }
+});
+
+test("coverage rejects binary and legacy vectors attached to an FTS rowid reused by another identity", async () => {
+  for (const store of ["binary","legacy"]) {
+    const db=openIndex(":memory:");
+    try {
+      const session=fixture();
+      indexSession(db,session);
+      if (store === "binary") await embedBackfill(db,{provider:p,sleep:async()=>{}});
+      else db.run(`INSERT INTO message_embeddings(session_id,message_id,embedding,text,title,provider_kind,provider_model,dimension)
+        VALUES (?,?,?,?,?,?,?,?)`,[session.id,session.messages[0].id,"[1,0]",session.messages[0].text,session.title,"test","m",2]);
+      expect(textCoverage(db,p)).toEqual({total:1,embedded:1});
+      const row=db.query("SELECT rowid FROM messages_fts").get() as {rowid:number};
+      db.run("DELETE FROM messages_fts WHERE rowid=?",[row.rowid]);
+      db.run(`INSERT INTO messages_fts(rowid,text,message_id,session_id,role,created_at,source,title)
+        VALUES (?,?,?,?,?,?,?,?)`,[row.rowid,session.messages[0].text,"replacement","chatgpt:replacement","user",null,"chatgpt",session.title]);
+      expect(textCoverage(db,p)).toEqual({total:1,embedded:0});
+    } finally {db.close();}
+  }
+});
 test("invalid backfill controls fail before inference and cancellation interrupts load pause", async () => {
   const db = openIndex(":memory:");
   try {
