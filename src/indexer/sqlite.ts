@@ -1,4 +1,4 @@
-import { createMessageLookup } from "./message-lookup";
+import { createMessageLookup, ensureMessageLookup } from "./message-lookup";
 import { createAssetVectorTables, replaceAssetLinks, linkedAssetHashes, pruneUnownedAssetVectors, assetSemanticCandidates } from "./asset-embeddings";
 import { cosine } from "./vector-math";
 // src/indexer/sqlite.ts
@@ -293,6 +293,7 @@ function indexLiteralSession(db: Database, s: Session, opts: IndexSessionOptions
     const result = stmt.run(m.text, m.id, s.id, m.role, m.created_at, s.source, s.title);
     db.run("INSERT OR REPLACE INTO message_lookup(session_id,message_id,fts_rowid) VALUES (?,?,?)", [s.id,m.id,result.lastInsertRowid]);
   }
+  db.run("DELETE FROM message_lookup_dirty WHERE session_id=?",[s.id]);
   return true;
 }
 
@@ -471,6 +472,7 @@ function finalizeHits(merged: Map<string, RankedHit>, limit: number): MessageHit
 }
 
 function semanticCandidates(db: Database, queryEmbedding: number[], metadata: EmbeddingMetadata, source: string | undefined, limit: number): SemanticRow[] {
+  ensureMessageLookup(db);
   const kind = metadata.provider_kind, model = metadata.provider_model ?? "", dimension = metadata.dimension;
   const sourceClause = source ? " AND f.source=?" : "";
   const params = [kind,model,dimension,...(source ? [source] : [])];
