@@ -116,3 +116,26 @@ test("keeps undocumented references and unknown content even when it has string 
   expect(s.messages[2].blocks.map(b => b.type)).toEqual(["unknown", "unknown", "unknown"]);
   expect(s.messages[2].blocks[0]).toMatchObject({ raw_json: message.content });
 });
+
+test("unknown content in disconnected mapping nodes survives with an escaped raw pointer", () => {
+  const capture = structuredClone(sample) as any;
+  capture.payload.mapping["orphan/key~1"] = { id: "orphan/key~1", parent: null, children: [], message: {
+    id: "orphan-message", author: { role: "assistant" }, content: { content_type: "new_visual", data: 42 },
+  } };
+  const [s] = parseChatgpt(capture, { raw_ref: "version" });
+  const orphan = s.messages.find(m => m.id === "orphan-message");
+  expect(orphan?.blocks[0]).toMatchObject({ type: "unknown", raw_ref: "version", raw_path: "/payload/mapping/orphan~1key~01/message/content" });
+});
+
+test("unfamiliar tool names stay string labels without being confused with known families", () => {
+  const capture = structuredClone(sample) as any;
+  capture.payload.mapping.n3.message.recipient = "constructor.run";
+  expect(parseChatgpt(capture)[0].messages[2].blocks).toEqual([{ type: "tool_call", name: "constructor.run", tool_type: "constructor" }]);
+});
+
+test("preserves unfamiliar non-array reference containers instead of dropping them", () => {
+  const capture = structuredClone(sample) as any;
+  capture.payload.mapping.n3.message.metadata.content_references = { type: "future_reference_container", entries: [{ opaque: true }] };
+  const [s] = parseChatgpt(capture);
+  expect(s.messages[2].blocks).toContainEqual(expect.objectContaining({ type: "unknown", provider_type: "future_reference_container", raw_json: capture.payload.mapping.n3.message.metadata.content_references }));
+});

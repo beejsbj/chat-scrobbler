@@ -26,12 +26,12 @@
 //   candidate[0] = rc_<choiceId>
 //   candidate[1] = [text_part_string, ...]              -- response text parts
 //
-// The parser selects the FIRST candidate in turn[3][0] for the canonical text.
+// All candidates are retained. Provider selection determines the active branch.
 // The conversation ID comes from the capture envelope source_id (no c_ prefix).
 // The title is not present in hNvQHb; the envelope may carry an explicit title or
 // be null -- parsers do not fabricate it.
 
-import type { Session, Message, Block } from "../schema/types";
+import type { Session, Message } from "../schema/types";
 import { SCHEMA_VERSION, makeSessionId } from "../schema/types";
 import { assetLookupFromRaw } from "./assets";
 import { renderText } from "./render";

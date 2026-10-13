@@ -29,7 +29,8 @@ export function mediaBlock(type: "image" | "audio" | "video" | "file", pointer: 
 /** Classify known tool families; keep unfamiliar names without inventing a family. */
 export function toolCall(name: string): Block {
   const prefix = name.split(".")[0];
-  const tool_type = ({ canmore: "canvas", artifacts: "canvas", image_gen: "image_gen", dalle: "image_gen",
-    browser: "browsing", web: "browsing", web_search: "browsing", python: "python" } as Record<string, string>)[prefix] ?? prefix;
+  const families = new Map(Object.entries({ canmore: "canvas", artifacts: "canvas", image_gen: "image_gen", dalle: "image_gen",
+    browser: "browsing", web: "browsing", web_search: "browsing", python: "python" }));
+  const tool_type = families.get(prefix) ?? prefix;
   return { type: "tool_call", name, tool_type };
 }

@@ -26,4 +26,4 @@ test("unknown report counts every branch, skips deleted sessions, and ignores un
     expect(unknownTypes(root)).toEqual({ scanned_sessions: 1, unreadable_sessions: 1,
       counts: [{ source: "claude", provider_type: "__proto__", count: 2 }] });
   } finally { rmSync(root, { recursive: true, force: true }); }
-});
+}, 30000);

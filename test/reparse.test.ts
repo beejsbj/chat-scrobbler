@@ -120,3 +120,40 @@ test("reparse applies source and session filters and reuses unchanged vectors", 
     } finally { db.close(); }
   } finally { rmSync(root, { recursive: true, force: true }); }
 }, 30000);
+
+test("a corrupt latest raw version fails locally while other sessions still rebuild", async () => {
+  const { writeFileSync } = await import("node:fs");
+  const root = mkdtempSync(join(tmpdir(), "reparse-corrupt-"));
+  const opts = { canonicalDir: join(root, "canonical", "sessions"), indexPath: join(root, "index.db") };
+  try {
+    const beforeFile = writeSession(opts.canonicalDir, parseChatgpt(sample)[0]);
+    const before = readFileSync(beforeFile, "utf8");
+    const ref = storeRawCapture(join(root, "raw"), sample as any);
+    writeFileSync(join(root, "raw", ref), "invalid gzip with payload-secret");
+    const healthy = { ...sample, source_id: "healthy", payload: { ...sample.payload, conversation_id: "healthy" } };
+    storeRawCapture(join(root, "raw"), healthy as any);
+    const report = await reparse(opts);
+    expect(report).toMatchObject({ failed: 1, changed: 1 });
+    expect(report.items).toContainEqual({ id: "chatgpt:conv-1", status: "failed", reason: "raw_read_failed" });
+    expect(readFileSync(beforeFile, "utf8")).toBe(before);
+    expect(readSession(opts.canonicalDir, "chatgpt", "healthy").messages).toHaveLength(3);
+    expect(JSON.stringify(report)).not.toContain("payload-secret");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+}, 30000);
+
+test("embedding failure reports degraded vectors while rebuilt canonical and FTS remain usable", async () => {
+  const { spyOn } = await import("bun:test");
+  const logs = spyOn(console, "error").mockImplementation(() => {});
+  const root = mkdtempSync(join(tmpdir(), "reparse-embed-failure-"));
+  const opts = { canonicalDir: join(root, "canonical", "sessions"), indexPath: join(root, "index.db") };
+  try {
+    storeRawCapture(join(root, "raw"), sample as any);
+    const report = await reparse({ ...opts, embeddingProvider: { async embed() { throw new Error("provider-secret"); } } });
+    expect(report).toMatchObject({ changed: 1, failed: 0, embedding_failures: 1 });
+    expect(readSession(opts.canonicalDir, "chatgpt", "conv-1").schema_version).toBe(2);
+    const db = openIndex(opts.indexPath);
+    try { expect(searchMessages(db, "What is ego")).toHaveLength(1); }
+    finally { db.close(); }
+    expect(JSON.stringify(logs.mock.calls)).not.toContain("provider-secret");
+  } finally { logs.mockRestore(); rmSync(root, { recursive: true, force: true }); }
+}, 30000);
