@@ -46,6 +46,7 @@ export interface IngestResponse {
   ok: true;
   count: number;
   spine: SpineResult[];
+  skipped_deleted: Array<{ source: ProviderSource; source_id: string }>;
 }
 
 export interface AssetUploadResponse {
@@ -198,19 +199,27 @@ export async function handleIngestRequest(req: Request, opts: IngestServerOption
   try {
     const serialized = await req.text();
     const body = JSON.parse(serialized);
-    const captures = toCaptureArray(body);
-    if (opts.canonicalDir && captures.some(capture => isSessionDeleted(opts.canonicalDir!, capture.source, capture.source_id))) return json({ ok: false, error: "session was deleted" }, 410);
+    const incoming = toCaptureArray(body);
+    const entries = captureJsonEntries(serialized);
+    const skipped_deleted: IngestResponse["skipped_deleted"] = [];
+    const accepted = incoming.flatMap((capture, i) => {
+      if (opts.canonicalDir && isSessionDeleted(opts.canonicalDir, capture.source, capture.source_id)) {
+        skipped_deleted.push({ source: capture.source, source_id: capture.source_id });
+        return [];
+      }
+      return [{ capture, serialized: entries[i] }];
+    });
+    const captures = accepted.map(entry => entry.capture);
     const rawDir = opts.rawDir ?? (opts.canonicalDir ? rawDirForCanonicalDir(opts.canonicalDir) : null);
     if (!rawDir) return json({ ok: false, error: "raw store is not configured" }, 503);
-    const entries = captureJsonEntries(serialized);
     let rawRefs: string[];
-    try { rawRefs = captures.map((capture, i) => storeRawCapture(rawDir, capture, entries[i])); }
+    try { rawRefs = captures.map((capture, i) => storeRawCapture(rawDir, capture, accepted[i].serialized)); }
     catch {
       console.error(JSON.stringify({ event: "raw_capture_store_failed", reason: "raw_store_write_failed" }));
       return json({ ok: false, error: "raw_store_write_failed" }, 503);
     }
     const spine: SpineResult[] = [];
-    if (fat) {
+    if (fat && captures.length) {
       const db = indexFor(fat.indexPath);
       for (const [i, capture] of captures.entries()) {
         try {
@@ -226,7 +235,7 @@ export async function handleIngestRequest(req: Request, opts: IngestServerOption
         }
       }
     }
-    return json({ ok: true, count: captures.length, spine } satisfies IngestResponse);
+    return json({ ok: true, count: captures.length, spine, skipped_deleted } satisfies IngestResponse);
   } catch (error) {
     return json({ ok: false, error: error instanceof Error ? error.message : String(error) }, 400);
   }

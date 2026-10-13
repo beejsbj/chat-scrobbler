@@ -39,7 +39,9 @@ test("delete erases raw, private blobs and aliases, preserves shared blobs, and 
   const tombstone = JSON.parse(readFileSync(join(opts.canonicalDir, ".deleted", "chatgpt", "gone.json"), "utf8"));
   expect(Object.keys(tombstone).sort()).toEqual(["deleted_at", "source", "source_id"]);
   expect(() => writeSession(opts.canonicalDir, session("gone"))).toThrow(/deleted/);
-  expect((await handleIngestRequest(new Request("http://local/captures", { method: "POST", body: JSON.stringify(capture) }), opts)).status).toBe(410);
+  const recapture = await handleIngestRequest(new Request("http://local/captures", { method: "POST", body: JSON.stringify(capture) }), opts);
+  expect(recapture.status).toBe(200);
+  expect(await recapture.json()).toMatchObject({ ok: true, count: 0, skipped_deleted: [{ source: "chatgpt", source_id: "gone" }] });
   expect(listRawCaptures(opts.rawDir, "chatgpt", "gone")).toEqual([]);
   expect((await handleIngestRequest(new Request("http://local/assets?source=chatgpt&source_id=gone&pointer=p", { method: "POST", body: "again" }), opts)).status).toBe(410);
   expect((await handleIngestRequest(new Request("http://local/captures?source=chatgpt&source_id=gone", { method: "DELETE" }), opts)).status).toBe(200);
@@ -78,4 +80,20 @@ test("blob collection respects surviving raw references without upload aliases",
   expect(existsSync(assetBlobPath(opts.canonicalDir, asset.sha256))).toBe(true);
   expect((await remove("raw-owner")).status).toBe(200);
   expect(existsSync(assetBlobPath(opts.canonicalDir, asset.sha256))).toBe(false);
+});
+
+
+test("mixed capture batches archive and index live entries while acknowledging deleted entries", async () => {
+  const opts = setup();
+  await handleIngestRequest(new Request("http://local/captures?source=chatgpt&source_id=gone", { method: "DELETE" }), opts);
+  const fixture = (await import("./fixtures/chatgpt-api-sample.json")).default;
+  const deleted = { ...fixture, source_id: "gone" };
+  const exactLive = JSON.stringify(fixture, null, 3);
+  const response = await handleIngestRequest(new Request("http://local/captures", { method: "POST", body: `[${JSON.stringify(deleted)},${exactLive},${JSON.stringify(deleted)}]` }), opts);
+  expect(response.status).toBe(200);
+  expect(await response.json()).toMatchObject({ ok: true, count: 1, skipped_deleted: [{ source: "chatgpt", source_id: "gone" }, { source: "chatgpt", source_id: "gone" }], spine: [{ indexed: true }] });
+  expect(listRawCaptures(opts.rawDir, "chatgpt", "gone")).toHaveLength(0);
+  const refs = listRawCaptures(opts.rawDir, fixture.source, fixture.source_id);
+  expect(refs).toHaveLength(1);
+  expect(Buffer.from(Bun.gunzipSync(readFileSync(join(opts.rawDir, refs[0])))).toString()).toBe(exactLive);
 });
