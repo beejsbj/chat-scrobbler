@@ -117,7 +117,7 @@ test("ingest failures on a shared provider do not increase MCP failure counters 
     await indexSessionWithEmbeddings(db, { id: "claude:counters", source: "claude", source_id: "counters", capture_method: "api", title: null, created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z", default_model: null, account: null, raw_ref: "ref", schema_version: 1, messages: [{ id: "m", role: "user", created_at: null, parent_id: null, model: null, blocks: [], text: "counter" }] }, { embeddingProvider: provider });
     const result = await handleSearch(db, { query: "counter" }, provider);
     expect(result.structuredContent).toMatchObject({ semantic: "unavailable", embedding_failures: 1 });
-    expect(result.structuredContent).not.toHaveProperty("hits");
+    expect((result.structuredContent as { hits: unknown[] }).hits).toHaveLength(1);
     expect(embeddingStatus(provider, "ingest").embedding_failures).toBe(1);
     expect(JSON.parse(result.content[0].text)).toHaveLength(1);
   } finally { db.close(); }
