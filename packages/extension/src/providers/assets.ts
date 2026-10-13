@@ -1,6 +1,6 @@
 import type { AssetFailure, AssetFailureReason, ProviderSource, UploadedAsset } from "../../../shared/src";
 import type { AssetFetchResponse, AssetUploadRequest } from "../messages";
-import type { FetchLike, ProviderSyncOptions } from "./types";
+import { isRateLimitError, type FetchLike, type ProviderSyncOptions } from "./types";
 import { allowedAssetUrl, assetCredentials, providerDownloadUrl, useBackgroundForAsset } from "./asset-url";
 import { boundedAssetBuffer } from "./asset-bytes";
 import { validateAssetBytes, validateAssetResponse } from "./asset-response";
@@ -36,6 +36,7 @@ export interface ProviderAssetCandidate {
   messageId?: string | null;
   fetchViaBackground?: boolean;
   inlineBytes?: Uint8Array;
+  inlineBase64?: string;
   sha256?: string | null;
 }
 
@@ -49,6 +50,7 @@ export async function uploadProviderAssets(
   const maxBytes = options.maxBytes ?? await configuredAssetLimit();
   const uploaded: UploadedAsset[] = [];
   const seen = new Set<string>();
+  let downloadBlock: unknown;
   for (const candidate of candidates) {
     if (!candidate.pointer || seen.has(`${candidate.messageId ?? ""}:${candidate.pointer}`)) continue;
     seen.add(`${candidate.messageId ?? ""}:${candidate.pointer}`);
@@ -57,10 +59,13 @@ export async function uploadProviderAssets(
       if (candidate.url && !allowedAssetUrl(candidate.url, candidate.source)) throw new Error("asset_url_unavailable");
       const cached = await lookupCapturedAsset(candidate);
       if (cached) { uploaded.push({ ...cached, pointer: candidate.pointer, message_id: candidate.messageId ?? null }); continue; }
+      if (downloadBlock) throw downloadBlock;
       await (options.beforeFetch ?? paceAssetDownload)();
       const url = options.resolveUrl ? await options.resolveUrl(candidate) : candidate.url;
-      if (!candidate.inlineBytes && (!url || !allowedAssetUrl(url, candidate.source))) throw new Error("asset_url_unavailable");
-      const downloaded = candidate.inlineBytes ? { bytes: candidate.inlineBytes, contentType: candidate.contentType } : (candidate.fetchViaBackground || useBackgroundForAsset(url!))
+      const inlineBytes = candidate.inlineBytes ?? (candidate.inlineBase64 !== undefined
+        ? Uint8Array.from(atob(candidate.inlineBase64), char => char.charCodeAt(0)) : undefined);
+      if (!inlineBytes && (!url || !allowedAssetUrl(url, candidate.source))) throw new Error("asset_url_unavailable");
+      const downloaded = inlineBytes ? { bytes: inlineBytes, contentType: candidate.contentType } : (candidate.fetchViaBackground || useBackgroundForAsset(url!))
         ? await (options.fetchAsset ?? ((url) => fetchAssetViaBackground(url, maxBytes, candidate)))(url!)
         : await fetchCandidateBytes(fetcher, url!, maxBytes, candidate.headers, candidate.source);
       if (downloaded.asset) {
@@ -96,7 +101,8 @@ export async function uploadProviderAssets(
       console.error(JSON.stringify({ event: "asset_capture_failed", ...failure }));
       try { await (options.reportFailure ?? reportAssetFailure)(failure); }
       catch { console.error(JSON.stringify({ event: "asset_failure_report_failed", source: candidate.source, source_id: candidate.sourceId })); }
-      if (error instanceof TransientSyncError) throw error;
+      // Throttling stops further downloads in this batch, while every skipped asset is reported.
+      if (isRateLimitError(error)) downloadBlock = error;
     }
   }
   return uploaded;
@@ -172,6 +178,7 @@ async function configuredAssetLimit(): Promise<number> {
 
 export function assetReferences(candidates: ProviderAssetCandidate[]): import("../../../shared/src").AssetBackfillReference[] {
   const seen = new Set<string>();
+  let downloadBlock: unknown;
   return candidates.flatMap(candidate => {
     const key = JSON.stringify([candidate.messageId ?? null, candidate.pointer]);
     if (seen.has(key)) return [];

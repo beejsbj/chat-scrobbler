@@ -1,4 +1,4 @@
-import { abortTransientCapture } from "./sync-errors";
+import { abortTransientCapture, DetailFailureStreak } from "./sync-errors";
 import { logSyncFailure, SyncFailureTracker } from "./sync-failures";
 import { buildRawCapture } from "../../../shared/src";
 import { assetReferences, uploadProviderAssets } from "./assets";
@@ -7,6 +7,7 @@ import {
   asArray,
   asObject,
   fetchJson,
+  fetchDetailJson,
   maxIso,
   shouldCapture,
   type ConversationSummary,
@@ -60,7 +61,7 @@ async function captureChatgptOne(
   const token = await getAccessToken(fetcher);
   const headers = token ? { authorization: `Bearer ${token}` } : undefined;
   const detailEndpoint = `/backend-api/conversation/${encodeURIComponent(id)}`;
-  const payload = await fetchJson(fetcher, detailEndpoint, { headers });
+  const payload = await fetchDetailJson(fetcher, detailEndpoint, { headers });
   const candidates = chatgptAssetCandidates(payload, id, headers);
   const assets = await uploadProviderAssets(
     fetcher,
@@ -85,6 +86,7 @@ async function syncChatgpt(fetcher: FetchLike, options: ProviderSyncOptions): Pr
   const headers = token ? { authorization: `Bearer ${token}` } : undefined;
   let offset = 0;
   const failures = new SyncFailureTracker((options.captureFailures ?? []).filter(f => !options.shouldIgnore?.("chatgpt", f.source_id)));
+  const detailFailures = new DetailFailureStreak();
   let scanned = 0;
   let captured = 0;
   let skipped = 0;
@@ -113,6 +115,7 @@ async function syncChatgpt(fetcher: FetchLike, options: ProviderSyncOptions): Pr
       const retry = failures.shouldRetry(item.id, item.updatedAt);
       scanned += 1;
       if (options.shouldIgnore?.("chatgpt", item.id)) {
+        detailFailures.succeeded();
         failures.succeeded(item.id);
         skipped += 1;
         continue;
@@ -129,7 +132,7 @@ async function syncChatgpt(fetcher: FetchLike, options: ProviderSyncOptions): Pr
 
       try {
         const detailEndpoint = `/backend-api/conversation/${encodeURIComponent(item.id)}`;
-        const payload = await fetchJson(fetcher, detailEndpoint, { headers });
+        const payload = await fetchDetailJson(fetcher, detailEndpoint, { headers });
         const candidates = chatgptAssetCandidates(payload, item.id, headers);
         const assets = await uploadProviderAssets(
           fetcher,
@@ -147,6 +150,7 @@ async function syncChatgpt(fetcher: FetchLike, options: ProviderSyncOptions): Pr
           conversationUpdatedAt: item.updatedAt,
           rawUrl: `${currentOrigin()}${detailEndpoint}`,
         }));
+        detailFailures.succeeded();
         failures.succeeded(item.id);
         if (didCapture === false) {
           skipped += 1;
@@ -155,7 +159,7 @@ async function syncChatgpt(fetcher: FetchLike, options: ProviderSyncOptions): Pr
         captured += 1;
         maxConversationUpdatedAt = maxIso(maxConversationUpdatedAt, item.updatedAt);
       } catch (error) {
-        abortTransientCapture(error);
+        detailFailures.failed(error);
         failed++;
         failures.failed(item.id, item.updatedAt);
         if (failures.isQuarantined(item.id, item.updatedAt)) maxConversationUpdatedAt = maxIso(maxConversationUpdatedAt, item.updatedAt);

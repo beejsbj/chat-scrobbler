@@ -235,9 +235,9 @@ test("Gemini adapter only advances cursor for captured conversations", async () 
 
 test("Gemini adapter aborts on an RPC outage without sending a DOM substitute", async () => {
   const captures: unknown[] = [];
-  await expect(createGeminiAdapter(async () => new Response("", { status: 500 }), makeFakePageCtx(["failconv1234abcd"])).sync({
+  await expect(createGeminiAdapter(async () => new Response("", { status: 503 }), makeFakePageCtx(["failconv1234abcd"])).sync({
     emitCapture: async capture => { captures.push(capture); },
-  })).rejects.toMatchObject({ name: "TransientSyncError" });
+  })).rejects.toMatchObject({ name: "RateLimitError" });
   expect(captures).toEqual([]);
 });
 
@@ -326,9 +326,9 @@ test("Gemini captureOne emits a single capture via the RPC path", async () => {
 });
 
 test("Gemini captureOne aborts on an RPC outage", async () => {
-  await expect(createGeminiAdapter(async () => new Response("", { status: 500 }), makeFakePageCtx(["failconv1234abcd"])).captureOne!(
+  await expect(createGeminiAdapter(async () => new Response("", { status: 503 }), makeFakePageCtx(["failconv1234abcd"])).captureOne!(
     "failconv1234abcd", null, { emitCapture: async () => { throw new Error("must not emit"); } },
-  )).rejects.toMatchObject({ name: "TransientSyncError" });
+  )).rejects.toMatchObject({ name: "RateLimitError" });
 });
 
 test("Gemini captureOne uploads discovered attachment bytes into raw capture assets", async () => {

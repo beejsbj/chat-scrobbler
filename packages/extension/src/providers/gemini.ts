@@ -1,4 +1,4 @@
-import { abortTransientCapture, DeterministicCaptureError, TransientSyncError } from "./sync-errors";
+import { DetailFailureStreak, ProviderDetailError, DeterministicCaptureError, TransientSyncError } from "./sync-errors";
 import { logSyncFailure, SyncFailureTracker } from "./sync-failures";
 /**
  * Gemini scrobbler provider.
@@ -275,6 +275,7 @@ async function syncGemini(
   options: ProviderSyncOptions,
 ): Promise<ProviderSyncResult> {
   const failures = new SyncFailureTracker((options.captureFailures ?? []).filter(f => !options.shouldIgnore?.("gemini", f.source_id)));
+  const detailFailures = new DetailFailureStreak();
   let scanned = 0;
   let captured = 0;
   let skipped = 0;
@@ -322,12 +323,13 @@ async function syncGemini(
         emitCapture: options.emitCapture,
         uploadAsset: options.uploadAsset,
       }, true);
+      detailFailures.succeeded();
       failures.succeeded(id);
       if (!didCapture) { skipped++; maxConversationUpdatedAt = maxIso(maxConversationUpdatedAt, fetchedAt); continue; }
       captured += 1;
       maxConversationUpdatedAt = maxIso(maxConversationUpdatedAt, fetchedAt);
     } catch (error) {
-      abortTransientCapture(error);
+      detailFailures.failed(error);
       failed++;
       failures.failed(id, null);
       if (failures.isQuarantined(id, null)) maxConversationUpdatedAt = maxIso(maxConversationUpdatedAt, fetchedAt);
@@ -380,9 +382,10 @@ async function fetchConversationRpc(
   }); } catch { throw new TransientSyncError("Provider network unavailable"); }
 
   if (res.status === 429 || res.status === 503) throw new RateLimitError(BATCHEXECUTE_PATH, res.status, parseRetryAfterMs(res.headers.get("retry-after")));
-  if (res.status >= 500) throw new TransientSyncError(`Provider temporarily unavailable (${res.status})`);
+  if (res.status >= 500) throw new ProviderDetailError(res.status);
   if (!res.ok) throw new DeterministicCaptureError(`Provider rejected capture (${res.status})`, res.status);
-  const text = await res.text();
+  let text: string;
+  try { text = await res.text(); } catch { throw new TransientSyncError("Provider response interrupted"); }
   return parseBatchExecuteResponse(text, CONVERSATION_RPC_ID);
 }
 

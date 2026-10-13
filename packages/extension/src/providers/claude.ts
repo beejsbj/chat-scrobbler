@@ -1,4 +1,4 @@
-import { abortTransientCapture } from "./sync-errors";
+import { abortTransientCapture, DetailFailureStreak } from "./sync-errors";
 import { logSyncFailure, SyncFailureTracker } from "./sync-failures";
 import { buildRawCapture } from "../../../shared/src";
 import { assetReferences, uploadProviderAssets } from "./assets";
@@ -7,6 +7,7 @@ import {
   asArray,
   asObject,
   fetchJson,
+  fetchDetailJson,
   maxIso,
   shouldCapture,
   type ConversationSummary,
@@ -34,7 +35,7 @@ export function createClaudeAdapter(fetcher: FetchLike = fetch.bind(globalThis))
       }
       return uploadProviderAssets(fetcher, options.uploadAsset, references.map(ref => ({
         source: "claude", sourceId: id, pointer: ref.pointer, messageId: ref.message_id,
-        filename: ref.filename, contentType: ref.content_type, inlineBytes: refreshed.get(ref.pointer)?.inlineBytes,
+        filename: ref.filename, contentType: ref.content_type, inlineBytes: refreshed.get(ref.pointer)?.inlineBytes, inlineBase64: refreshed.get(ref.pointer)?.inlineBase64,
         url: refreshed.get(ref.pointer)?.url ?? (ref.pointer.startsWith("claude-inline:") ? null
           : ref.pointer.startsWith("sandbox:") ? claudeSandboxDownloadEndpoint(org.uuid, id, ref.pointer.slice(8))
           : ref.pointer.startsWith("/mnt/") ? claudeSandboxDownloadEndpoint(org.uuid, id, ref.pointer)
@@ -69,7 +70,7 @@ async function captureClaudeOne(
 ): Promise<void> {
   const org = await getOrganization(fetcher);
   const detailEndpoint = `/api/organizations/${encodeURIComponent(org.uuid)}/chat_conversations/${encodeURIComponent(id)}?tree=True&rendering_mode=messages&render_all_tools=true`;
-  const payload = await fetchJson(fetcher, detailEndpoint);
+  const payload = await fetchDetailJson(fetcher, detailEndpoint);
   const candidates = claudeAssetCandidates(payload, id, org.uuid);
   const assets = await uploadProviderAssets(
     fetcher,
@@ -93,6 +94,7 @@ async function syncClaude(fetcher: FetchLike, options: ProviderSyncOptions): Pro
   const org = await getOrganization(fetcher);
   let offset = 0;
   const failures = new SyncFailureTracker((options.captureFailures ?? []).filter(f => !options.shouldIgnore?.("claude", f.source_id)));
+  const detailFailures = new DetailFailureStreak();
   let scanned = 0;
   let captured = 0;
   let skipped = 0;
@@ -110,6 +112,7 @@ async function syncClaude(fetcher: FetchLike, options: ProviderSyncOptions): Pro
       const retry = failures.shouldRetry(item.id, item.updatedAt);
       scanned += 1;
       if (options.shouldIgnore?.("claude", item.id)) {
+        detailFailures.succeeded();
         failures.succeeded(item.id);
         skipped += 1;
         continue;
@@ -130,7 +133,7 @@ async function syncClaude(fetcher: FetchLike, options: ProviderSyncOptions): Pro
       // (see docs/superpowers/specs/2026-06-05-api-vs-export-validation-diff.md).
       try {
         const detailEndpoint = `/api/organizations/${encodeURIComponent(org.uuid)}/chat_conversations/${encodeURIComponent(item.id)}?tree=True&rendering_mode=messages&render_all_tools=true`;
-        const payload = await fetchJson(fetcher, detailEndpoint);
+        const payload = await fetchDetailJson(fetcher, detailEndpoint);
         const candidates = claudeAssetCandidates(payload, item.id, org.uuid);
         const assets = await uploadProviderAssets(
           fetcher,
@@ -148,6 +151,7 @@ async function syncClaude(fetcher: FetchLike, options: ProviderSyncOptions): Pro
           conversationUpdatedAt: item.updatedAt,
           rawUrl: `${currentOrigin()}${detailEndpoint}`,
         }));
+        detailFailures.succeeded();
         failures.succeeded(item.id);
         if (didCapture === false) {
           skipped += 1;
@@ -156,7 +160,7 @@ async function syncClaude(fetcher: FetchLike, options: ProviderSyncOptions): Pro
         captured += 1;
         maxConversationUpdatedAt = maxIso(maxConversationUpdatedAt, item.updatedAt);
       } catch (error) {
-        abortTransientCapture(error);
+        detailFailures.failed(error);
         failed++;
         failures.failed(item.id, item.updatedAt);
         if (failures.isQuarantined(item.id, item.updatedAt)) maxConversationUpdatedAt = maxIso(maxConversationUpdatedAt, item.updatedAt);

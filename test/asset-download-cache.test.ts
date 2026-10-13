@@ -2,10 +2,13 @@ import { expect, test } from "bun:test";
 import { uploadProviderAssets } from "../packages/extension/src/providers/assets";
 import { createGeminiAdapter } from "../packages/extension/src/providers/gemini";
 
-for (const status of [429, 503]) test(`asset ${status} stops downloads with Retry-After`, async () => {
+for (const status of [429, 503]) test(`asset ${status} stops downloads and reports each failure without failing the chat`, async () => {
   let calls = 0;
-  await expect(uploadProviderAssets(async () => { calls++; return new Response("", { status, headers: { "retry-after": "60" } }); }, async () => { throw new Error("must not upload"); },
-    ["a", "b"].map(pointer => ({ source: "gemini" as const, sourceId: "c", pointer, url: `https://lh3.googleusercontent.com/${pointer}` })), { beforeFetch: async () => {} })).rejects.toMatchObject({ name: "RateLimitError", retryAfterMs: 60_000 });
+  const failures: unknown[] = [];
+  const result = await uploadProviderAssets(async () => { calls++; return new Response("", { status, headers: { "retry-after": "60" } }); }, async () => { throw new Error("must not upload"); },
+    ["a", "b"].map(pointer => ({ source: "gemini" as const, sourceId: "c", pointer, url: `https://lh3.googleusercontent.com/${pointer}` })), { beforeFetch: async () => {}, reportFailure: async f => { failures.push(f); } });
+  expect(result).toEqual([]);
+  expect(failures).toHaveLength(2);
   expect(calls).toBe(1);
 });
 
@@ -33,9 +36,12 @@ test("Gemini unchanged payload is not re-emitted or re-downloaded across fresh a
   } finally { if (savedChrome) Object.defineProperty(globalThis, "chrome", savedChrome); else delete (globalThis as any).chrome; }
 });
 
-test("a provider stream outage aborts sync instead of becoming a lost asset", async () => {
+test("a provider stream outage reports an asset failure without failing the chat", async () => {
   const stream = new ReadableStream<Uint8Array>({ start(controller) { controller.error(new TypeError("network disconnected")); } });
-  await expect(uploadProviderAssets(async () => new Response(stream), async () => { throw new Error("must not upload"); }, [{
+  const failures: unknown[] = [];
+  const result = await uploadProviderAssets(async () => new Response(stream), async () => { throw new Error("must not upload"); }, [{
     source: "chatgpt", sourceId: "c", pointer: "file-1", url: "/backend-api/files/file-1/download",
-  }], { beforeFetch: async () => {}, reportFailure: async () => {} })).rejects.toMatchObject({ name: "TransientSyncError" });
+  }], { beforeFetch: async () => {}, reportFailure: async f => { failures.push(f); } });
+  expect(result).toEqual([]);
+  expect(failures).toMatchObject([{ source_id: "c", reason: "asset_download_failed" }]);
 });

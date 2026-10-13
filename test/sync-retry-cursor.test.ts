@@ -88,7 +88,7 @@ test("Gemini automatically retries a timestamp-less quarantine after its cooldow
   expect(result.captureFailures).toEqual([]);
 });
 
-for (const source of ["chatgpt", "claude", "gemini"] as const) for (const mode of ["provider-network", "provider-500", "ingest-network", "ingest-500"] as const) {
+for (const source of ["chatgpt", "claude", "gemini"] as const) for (const mode of ["provider-network", "provider-503", "ingest-network", "ingest-500"] as const) {
   test(`${source}: ${mode} aborts sync without quarantining after repeated outages`, async () => {
     const { TransientSyncError } = await import("../packages/extension/src/providers/sync-errors");
     let details = 0;
@@ -101,7 +101,7 @@ for (const source of ["chatgpt", "claude", "gemini"] as const) for (const mode o
       }
       details++;
       if (mode === "provider-network") throw new TypeError("Failed to fetch");
-      if (mode === "provider-500") return new Response("", { status: 500 });
+      if (mode === "provider-503") return new Response("", { status: 503 });
       return source === "gemini" ? new Response(JSON.stringify([["wrb.fr", "hNvQHb", JSON.stringify([[]])]])) : Response.json({ mapping: {}, chat_messages: [] });
     };
     const adapter = source === "gemini" ? createGeminiAdapter(fetcher, {

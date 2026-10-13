@@ -272,10 +272,10 @@ test("background media fetch rejects cross-provider and auth-document probes", a
   expect(uploads).toBe(0);
 });
 
-for (const status of [400, 401, 403, 404, 500]) test(`background carries ${status} capture rejection classification to the tab`, async () => {
+for (const status of [400, 401, 403, 404, 413, 429, 500, 503]) test(`background carries ${status} capture rejection classification to the tab`, async () => {
   globalThis.fetch = (async () => new Response("rejected", { status })) as unknown as typeof fetch;
   const result = await sendRuntimeMessage({ type: "SCROBBLER_CAPTURE_READY", capture: buildRawCapture({ source: "chatgpt", sourceId: "c", endpoint: "/detail", payload: {} }) });
-  expect(result).toMatchObject({ ok: false, error_type: status === 400 ? "deterministic" : "transient" });
+  expect(result).toMatchObject({ ok: false, error_type: status < 500 && status !== 429 ? "deterministic" : "transient" });
 });
 
 test("persistent pointer cache checks the receiver hash and reuses bytes across sessions", async () => {
@@ -324,4 +324,10 @@ test("sync reports carry a stable per-install id, and a different installation g
     await sendRuntimeMessage({ type: "SCROBBLER_SYNC_ACTIVE_TAB" });
     expect(ids[2]).not.toBe(ids[0]);
   } finally { tabs.query = oldQuery; tabs.sendMessage = oldSend; }
+});
+
+test("an interrupted ingest acknowledgement remains an environmental failure", async () => {
+  globalThis.fetch = (async () => new Response(new ReadableStream({ start(controller) { controller.error(new TypeError("connection lost")); } }), { headers: { "content-type": "application/json" } })) as unknown as typeof fetch;
+  expect(await sendRuntimeMessage({ type: "SCROBBLER_CAPTURE_READY", capture: buildRawCapture({ source: "chatgpt", sourceId: "c", endpoint: "/detail", payload: {} }) }))
+    .toMatchObject({ ok: false, error_type: "transient" });
 });
