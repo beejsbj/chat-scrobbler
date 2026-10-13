@@ -14,6 +14,7 @@ export function recordAssetFailures(indexPath: string, source: string, value: un
     return { source_id: item.source_id, message_id: item.message_id ?? null, reason: item.reason };
   });
   for (const failure of failures) console.error(JSON.stringify({ event: "asset_capture_failed", source, ...failure }));
+  if (!failures.length) return 0;
   const path = monitorStatePath(indexPath, statePath);
   monitorWrite(path, () => incrementMonitorCounter(path, "asset_failures", failures.length));
   return failures.length;

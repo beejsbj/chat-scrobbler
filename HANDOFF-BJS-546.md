@@ -2,16 +2,17 @@
 
 ## Built
 
-- `GET /status/report`: requires a configured ingest bearer token, coalesces
-  state reads, caches for 60 seconds, returns HTTP 200 with `ok` and
+- `GET /status/report`: requires a configured ingest bearer token, caches live
+  state snapshots for 60 seconds, returns HTTP 200 with `ok` and
   `failures`. Its `live` scope contains operational state only; heavy checks run
   in the CLI and are listed in `deferred_checks`. Unauthorized requests get 401, including when no token is configured.
 - Offline `monitor`: reads raw, canonical and SQLite directly, checks provider
   freshness, new unknown types, vector coverage, upload and attachment failures,
-  orphan parse failures, store write health and index readability. It does not
+  parser failures, store access checks and index readability. It does not
   require a running ingest server. A missing index is reported without replacement.
 - A separate transactional SQLite state database retains asset and embedding
-  failure totals, capture receipt times and unknown acknowledgements across
+  failure totals, capture receipt and successful parse times, unresolved parser
+  failures and unknown acknowledgements across
   restarts. Default container path: `/data/index/sessions.db.monitor.sqlite`.
 - Three sanitized raw contracts derived from existing test samples. All currently
   parse with zero unknown blocks. Drop additional envelopes into
@@ -46,8 +47,10 @@ Example problem output, showing independent checks:
 FAILED assets missing_recent_blocks=2
 FAILED assets recent_upload_failures=1
 FAILED embeddings recent_with_vectors=10 recent_without_vectors=90 threshold=0.95
-FAILED freshness.claude stale threshold_days=7
+FAILED freshness.claude stale threshold_days=14
+FAILED freshness.parsed.claude stale threshold_days=14
 FAILED parse failed_versions_without_canonical=1
+FAILED parse.claude recent_failed_sessions=1
 FAILED semantic unavailable
 FAILED unknown.chatgpt type_id=6f37d151e084cf28 count=2
 ```
@@ -105,7 +108,8 @@ report; HTTP defers unknown-type scanning to the CLI.
 
 ## Verification
 
-- `bun test`: 425 passed, 0 failed across 45 files (1419 assertions).
+- `bun test`: 439 passed, 0 failed across 45 files (1479 assertions), including
+  the review regressions.
 - `bun x tsc --noEmit`: passed.
 - Contract fixture check after final identifier sanitization: 4 passed, 0 failed.
 
@@ -114,6 +118,10 @@ secret omission, counters after fresh processes/provider instances, receipt
 freshness, per-provider overrides, stale text and old models, semantic availability
 with no recent messages, missing assets, orphan failures and tombstones, broken
 stores/indexes, custom state paths, invalid arguments and concurrent cache expiry.
+Review regressions cover locked and corrupt state during ingest, UID refusal,
+read-only monitoring during rebuilds, cheap HTTP snapshots, parser failures on
+existing sessions and recovery, canonical activity dates, slow embeddings,
+bootstrap dates and Compose defaults.
 
 ## Practical limits
 
@@ -170,3 +178,9 @@ No production data was read, no deployment was performed, and no branch was push
   A regression leaves the database readable in a directory without write access,
   confirms ingest/indexing continues, and confirms both reports flag state while
   suppressing freshness.
+- Empty capture/status polls no longer clear failed-write markers, because
+  they perform no telemetry write. The lock regression confirms the alert survives
+  empty polls until an actual successful write clears it.
+- Final gates after all review fixes: `bun test` 439 passed / 0 failed
+  (1479 assertions), `bun x tsc --noEmit` passed. No production data, deployment
+  or push was involved.

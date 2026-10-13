@@ -450,8 +450,8 @@ timestamp-free `FAILED <check> <detail>` lines. It reads local raw, canonical an
 index stores without contacting the ingest server, so it works while that server
 is down. It checks directory permissions with access checks, opens the index and
 existing monitoring state read-only, and uses a real embedding probe with a
-ten-second deadline (reported as `slow` after two seconds). Ordinary monitoring creates no state or store directories;
-`--ack` intentionally writes acknowledgement state. It leaves a missing index
+ten-second deadline (reported as `slow` after two seconds). Ordinary monitoring
+creates no state or store directories; `--ack` intentionally writes acknowledgement state. It leaves a missing index
 missing. Paid embedding providers incur a diagnostic request per CLI invocation.
 Cockpit delivery and the Hermes schedule are supplied separately.
 
@@ -460,9 +460,9 @@ header, even on localhost. Authenticated reports return HTTP 200 with `ok` and
 `failures`; callers inspect the body. Reports coalesce concurrent requests and
 cache results for 60 seconds. The HTTP scope is `live`: persisted counters,
 receipts, successful parse times, unresolved recent parser failures and state
-health only. `deferred_checks` names the archive, vector, asset
-and provider checks performed only by the CLI. HTTP performs no archive scan or
-embedding call. No titles, chat text, provider URLs, credentials or raw fragments
+health, with indexed session dates as a bootstrap fallback. `deferred_checks`
+names the archive, vector, asset and provider checks performed only by the CLI.
+HTTP performs no archive scan or embedding call. No titles, chat text, provider URLs, credentials or raw fragments
 are included. The CLI replaces unknown type names with opaque type IDs.
 
 | JSON config key | Environment override | Default |
@@ -495,9 +495,9 @@ has coverage 1, but does not hide a dead semantic leg.
 
 The recent window also covers upload failure reports and missing attachment
 blocks. Attachment recency uses session `updated_at` or the latest message time;
-unify/reparse file rewrites do not make old attachments recent. Upload failures use hourly buckets, so they can
-remain recent for up to one extra hour. Lifetime totals persist without causing
-permanent upload alerts. Orphaned raw versions are parsed read-only to distinguish
+unify/reparse file rewrites do not make old attachments recent. Upload failures
+use hourly buckets, so they can remain recent for up to one extra hour. Lifetime
+totals persist without causing permanent upload alerts. Orphaned raw versions are parsed read-only to distinguish
 parse failures from successful captures missing their canonical projection;
 versions with a canonical session and tombstoned sessions are excluded from that
 legacy orphan check. Actual ingest parser outcomes also persist provider failure

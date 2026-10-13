@@ -305,6 +305,11 @@ test("a locked state writer does not stall ingest and its failure is visible off
     const response = await handleIngestRequest(new Request("http://local/captures", { method: "POST", body: JSON.stringify(claude) }), { ...opts, ingestToken: null });
     expect(response.status).toBe(200);
     expect(performance.now() - start).toBeLessThan(1000);
+    // Empty polls perform no telemetry write and must not clear a failed-write marker.
+    const emptyStatus = await handleIngestRequest(new Request("http://local/status", { method: "POST", body: JSON.stringify({ source: "claude", conversations: [], asset_failures: [] }) }), { ...opts, ingestToken: null });
+    expect(emptyStatus.status).toBe(200);
+    const emptyCaptures = await handleIngestRequest(new Request("http://local/captures", { method: "POST", body: "[]" }), { ...opts, ingestToken: null });
+    expect(emptyCaptures.status).toBe(200);
     expect(cli(opts).stdout.toString()).toContain("FAILED state write_failed");
   } finally { lock.run("ROLLBACK"); lock.close(); rmSync(root, { recursive: true, force: true }); }
 }, 15000);

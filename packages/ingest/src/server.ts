@@ -231,7 +231,7 @@ export async function handleIngestRequest(req: Request, opts: IngestServerOption
       console.error(JSON.stringify({ event: "raw_capture_store_failed", reason: "raw_store_write_failed" }));
       return json({ ok: false, error: "raw_store_write_failed" }, 503);
     }
-    if (opts.indexPath) {
+    if (opts.indexPath && captures.length) {
       const path = monitorStatePath(opts.indexPath, opts.monitorStatePath);
       monitorWrite(path, () => {
         for (const source of new Set(captures.map(capture => capture.source))) recordCaptureReceipt(path, source);
