@@ -22,6 +22,15 @@ function vectorRows(db:Database,scope:VectorScope,table:string,session?:string,a
   // Startup uses indexed rowid batches; refresh uses the session index rather
   // than rescanning every legacy row in this model for each affected session.
   const index=session!==undefined ? `INDEXED BY ${binary ? "message_vector_session" : "legacy_vector_session"}` : after!==undefined ? "NOT INDEXED" : "";
+  if(!binary) {
+    // Valid binary identities are already in the matrix. Reading legacy FTS
+    // text for those duplicates adds I/O to every dirty-session refresh.
+    const statement=db.query(`SELECT v.rowid AS vector_rowid,v.session_id,v.message_id FROM ${table} v ${index}
+      WHERE v.provider_kind=? AND COALESCE(v.provider_model,'')=? AND v.dimension=?
+      ${session!==undefined ? "AND v.session_id=?" : ""}
+      ${after!==undefined ? "AND v.rowid>? ORDER BY v.rowid LIMIT ?" : ""}`);
+    return after===undefined ? statement.iterate(...params) : statement.all(...params);
+  }
   const statement=db.query(`SELECT v.rowid AS vector_rowid,v.session_id,v.message_id,${binary ? "v.embedding" : "NULL"} AS embedding,
     ${binary ? "v.text_hash" : "NULL"} AS text_hash,f.rowid,f.text,f.source,f.title
     FROM ${table} v ${index} JOIN message_lookup k ON k.session_id=v.session_id AND k.message_id=v.message_id
@@ -34,13 +43,21 @@ function vectorRows(db:Database,scope:VectorScope,table:string,session?:string,a
 }
 function appendVectors(db:Database,cache:Cache,scope:VectorScope,table:string,rows:Iterable<any>):void {
   const binary=table==="message_vectors";
-  for(const row of rows) {
+  for(let row of rows) {
       const key=identity(row.session_id,row.message_id);
-      if(cache.identities.has(key) || row.text_hash && row.text_hash!==textVectorHash(row.text)) continue;
+      if(cache.identities.has(key))continue;
+      if(!binary) {
+        row=db.query(`SELECT v.embedding,f.text,f.source,f.title,f.rowid,v.session_id,v.message_id FROM message_embeddings v
+          JOIN message_lookup k ON k.session_id=v.session_id AND k.message_id=v.message_id
+          JOIN messages_fts f ON f.rowid=k.fts_rowid AND f.session_id=v.session_id AND f.message_id=v.message_id
+          WHERE v.session_id=? AND v.message_id=? AND v.provider_kind=? AND COALESCE(v.provider_model,'')=? AND v.dimension=?
+          AND v.title IS f.title AND v.text=f.text`).get(row.session_id,row.message_id,scope.provider_kind,scope.provider_model,scope.dimension);
+        if(!row)continue;
+      }
+      if(row.text_hash && row.text_hash!==textVectorHash(row.text)) continue;
       let vector:ArrayLike<number>;
       try {
-        vector=binary ? decodeVector(row.embedding,scope.dimension) : JSON.parse((db.query(`SELECT embedding FROM message_embeddings
-          WHERE session_id=? AND message_id=?`).get(row.session_id,row.message_id) as {embedding:string}).embedding);
+        vector=binary ? decodeVector(row.embedding,scope.dimension) : JSON.parse(row.embedding);
         if(!binary && (!Array.isArray(vector) || vector.length!==scope.dimension || !vector.every(v=>typeof v==="number" && Number.isFinite(v)))) continue;
       } catch {continue;}
       let norm=0;for(let i=0;i<scope.dimension;i++) norm+=vector[i]*vector[i];
