@@ -78,22 +78,3 @@ export async function monitorReport(opts: IngestServerOptions, ack = false) {
   failures.sort();
   return { ok: failures.length === 0, failures, providers, unknown_types: types.map(type => ({ ...type, acknowledged: state?.acknowledged.has(type.type_id) ?? false })), embeddings: { semantic: noVectors ? "unavailable" : health.semantic, coverage }, assets: { missing_recent_blocks: missingAssets, upload_failures: state?.counters.asset_failures ?? 0, recent_upload_failures: state?.recentAssets ?? 0 }, parse: { failed_versions_without_canonical: raw.parseFailures }, counters: state?.counters ?? {}, health };
 }
-
-type Report = Awaited<ReturnType<typeof monitorReport>>;
-const reports = new Map<string, { expires: number; result: Promise<Report> }>();
-const providerReports = new WeakMap<object, typeof reports>();
-export function cachedMonitorReport(opts: IngestServerOptions): Promise<Report> {
-  let cache = reports;
-  if (opts.embeddingProvider) {
-    cache = providerReports.get(opts.embeddingProvider) ?? new Map();
-    providerReports.set(opts.embeddingProvider, cache);
-  }
-  const key = JSON.stringify([opts.canonicalDir, opts.indexPath, opts.rawDir, monitorSettings(opts)]);
-  const previous = cache.get(key);
-  if (previous && previous.expires > Date.now()) return previous.result;
-  for (const [key, entry] of cache) if (entry.expires <= Date.now()) cache.delete(key);
-  const entry = { expires: Infinity, result: monitorReport(opts) };
-  entry.result = entry.result.then(result => { entry.expires = Date.now() + 60_000; return result; }, error => { cache.delete(key); throw error; });
-  cache.set(key, entry);
-  return entry.result;
-}

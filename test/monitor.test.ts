@@ -1,6 +1,6 @@
 import { Database } from "bun:sqlite";
 import { monitorReport } from "../src/monitor/report";
-import { recordCaptureReceipt, readMonitorState } from "../src/monitor/state";
+import { incrementMonitorCounter, recordCaptureReceipt, readMonitorState } from "../src/monitor/state";
 import { expect, spyOn, test } from "bun:test";
 import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -42,6 +42,7 @@ test("status report is token gated and healthy with recent captures of old conve
   try {
     expect((await handleIngestRequest(new Request("http://local/status/report"), opts)).status).toBe(401);
     expect((await handleIngestRequest(request(), { ...opts, ingestToken: null })).status).toBe(401);
+    for (const source of ["chatgpt", "claude", "gemini"] as const) recordCaptureReceipt(`${opts.indexPath}.monitor.sqlite`, source);
     const response = await handleIngestRequest(request(), opts);
     expect(response.status).toBe(200);
     const report = await response.json();
@@ -91,7 +92,7 @@ test("asset counters and capture receipt freshness survive a fresh CLI process",
     expect(output.exitCode).toBe(0);
     expect(output.stdout.toString()).toBe("FAILED assets recent_upload_failures=1\n");
     expect(output.stderr.toString()).toBe("");
-    const report = await (await handleIngestRequest(request(), opts)).json();
+    const report = await monitorReport(opts);
     expect(report.assets).toMatchObject({ upload_failures: 1, recent_upload_failures: 1 });
     const capture = { ...structuredClone(claude), fetched_at: "2020-01-01T00:00:00Z" };
     const ingest = await handleIngestRequest(new Request("http://local/captures", { method: "POST", body: JSON.stringify(capture) }), { ...opts, ingestToken: null });
@@ -127,12 +128,12 @@ test("recent coverage excludes old-model and stale-text vectors; missing assets 
     const db = openIndex(opts.indexPath);
     indexSession(db, session);
     db.close();
-    const report = await (await handleIngestRequest(request(), opts)).json();
+    const report = await monitorReport(opts);
     expect(report.embeddings.coverage).toMatchObject({ recent_with_vectors: 0, recent_without_vectors: 2, recent_coverage: 0 });
     expect(report.failures).toContain("FAILED embeddings recent_with_vectors=0 recent_without_vectors=2 threshold=0.95");
     expect(report.failures).toContain("FAILED assets missing_recent_blocks=1");
     const changedModel = Object.assign(new HashEmbeddingProvider(), { model: "replacement-model" });
-    const next = await (await handleIngestRequest(request(), { ...opts, embeddingProvider: changedModel })).json();
+    const next = await monitorReport({ ...opts, embeddingProvider: changedModel });
     expect(next.embeddings.coverage).toMatchObject({ with_vectors: 0, without_vectors: 9 });
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
@@ -164,10 +165,10 @@ test("freshness defaults detect stale and absent providers and support independe
     storeRawCapture(join(root, "raw"), capture);
     // Legacy canonical is enough for parse-orphan suppression, but not capture freshness.
     writeSession(opts.canonicalDir, getParser("chatgpt", "api")(capture)[0]);
-    const report = await (await handleIngestRequest(request(), opts)).json();
+    const report = await monitorReport(opts);
     expect(report.failures).toContain("FAILED freshness.chatgpt stale threshold_days=7");
     expect(report.failures).toContain("FAILED freshness.claude no_captures");
-    const tuned = await (await handleIngestRequest(request(), { ...opts, monitorStaleDays: { chatgpt: 14, claude: null, gemini: null } })).json();
+    const tuned = await monitorReport({ ...opts, monitorStaleDays: { chatgpt: 14, claude: null, gemini: null } });
     expect(tuned.failures.some((line: string) => line.includes("freshness"))).toBe(false);
     const receipt = await handleIngestRequest(new Request("http://local/captures", { method: "POST", body: JSON.stringify(capture) }), { ...opts, ingestToken: null });
     expect(receipt.status).toBe(200);
@@ -175,22 +176,21 @@ test("freshness defaults detect stale and absent providers and support independe
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
-test("HTTP reports coalesce concurrent probes and expire after 60 seconds", async () => {
+test("HTTP snapshots cache small state reads for 60 seconds", async () => {
   const { root, opts } = setup();
   const originalNow = Date.now;
-  let probes = 0;
-  const provider = { kind: "test", model: "contract-model", embed() { probes++; return [1, 0]; } };
-  const options = { ...opts, embeddingProvider: provider };
+  const path = `${opts.indexPath}.monitor.sqlite`;
   try {
-    const responses = await Promise.all([handleIngestRequest(request(), options), handleIngestRequest(request(), options)]);
-    expect(probes).toBe(1);
-    expect(await responses[0].json()).toEqual(await responses[1].json());
+    for (const source of ["chatgpt", "claude", "gemini"] as const) recordCaptureReceipt(path, source);
+    const responses = await Promise.all([handleIngestRequest(request(), opts), handleIngestRequest(request(), opts)]);
+    const first = await responses[0].json();
+    expect(first).toEqual(await responses[1].json());
+    incrementMonitorCounter(path, "asset_failures");
     Date.now = () => originalNow() + 59_000;
-    await handleIngestRequest(request(), options);
-    expect(probes).toBe(1);
+    expect(await (await handleIngestRequest(request(), opts)).json()).toEqual(first);
     Date.now = () => originalNow() + 61_000;
-    await handleIngestRequest(request(), options);
-    expect(probes).toBe(2);
+    const expired = await (await handleIngestRequest(request(), opts)).json();
+    expect(expired.assets.recent_upload_failures).toBe(1);
   } finally { Date.now = originalNow; rmSync(root, { recursive: true, force: true }); }
 });
 
@@ -210,8 +210,8 @@ test("semantic leg alerts with no usable vectors even when messages are older th
   const { root, opts } = setup();
   try {
     const provider = Object.assign(new HashEmbeddingProvider(), { model: "not-indexed-yet" });
-    const report = await (await handleIngestRequest(request(), { ...opts, embeddingProvider: provider })).json();
-    expect(report.embeddings.coverage.recent_without_vectors).toBe(0);
+    const report = await monitorReport({ ...opts, embeddingProvider: provider });
+    expect(report.embeddings.coverage?.recent_without_vectors).toBe(0);
     expect(report.failures).toContain("FAILED semantic no_usable_vectors");
     expect(report.embeddings.semantic).toBe("unavailable");
     expect(report.health.semantic).toBe("available");
@@ -228,7 +228,7 @@ test("store failures remain categorical and a configured state path is shared by
     expect(processResult.stdout.toString()).toBe("FAILED assets recent_upload_failures=1\n");
     rmSync(join(root, "raw"), { recursive: true });
     writeFileSync(join(root, "raw"), "chat-secret");
-    const report = await (await handleIngestRequest(request(), { ...opts, monitorStatePath: statePath })).json();
+    const report = await monitorReport({ ...opts, monitorStatePath: statePath });
     expect(report.failures).toContain("FAILED store.raw store_access_failed");
     expect(JSON.stringify(report)).not.toContain("chat-secret");
     const brokenIndex = join(root, "broken.db");
@@ -262,7 +262,7 @@ test("recent media blocks missing a local_path field still alert", async () => {
       if ("local_path" in block) delete (block as any).local_path;
     }
     writeSession(opts.canonicalDir, session);
-    const report = await (await handleIngestRequest(request(), opts)).json();
+    const report = await monitorReport(opts);
     expect(report.assets.missing_recent_blocks).toBe(1);
     expect(report.failures).toContain("FAILED assets missing_recent_blocks=1");
   } finally { rmSync(root, { recursive: true, force: true }); }
@@ -279,7 +279,7 @@ test("a broken monitor database cannot stop parsing, canonical writes or indexin
     expect(response.status).toBe(200);
     expect((await response.json()).spine[0].indexed).toBe(true);
     expect(readSession(opts.canonicalDir, "claude", "cl-1").title).toBe("Updated fixture");
-    const report = await (await handleIngestRequest(request(), { ...opts, monitorStatePath: statePath })).json();
+    const report = await monitorReport({ ...opts, monitorStatePath: statePath });
     expect(report.failures.some((line: string) => line.startsWith("FAILED state "))).toBe(true);
     expect(report.failures.some((line: string) => line.includes("freshness"))).toBe(false);
   } finally { rmSync(root, { recursive: true, force: true }); }
@@ -341,5 +341,24 @@ test("monitor does not create missing stores while checking their permissions", 
   try {
     await monitorReport({ canonicalDir: join(root, "canonical", "sessions"), indexPath: join(root, "index", "missing.db"), embeddingProvider: new HashEmbeddingProvider() });
     expect(readdirSync(root)).toEqual([]);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("HTTP snapshots use persisted receipts without archive scans or embedding calls", async () => {
+  const { root, opts } = setup();
+  const path = `${opts.indexPath}.monitor.sqlite`;
+  for (const source of ["chatgpt", "claude", "gemini"] as const) recordCaptureReceipt(path, source);
+  let probes = 0;
+  const provider = { kind: "hash", embed() { probes++; throw new Error("must not probe"); } };
+  try {
+    rmSync(join(root, "raw"), { recursive: true });
+    writeFileSync(join(root, "raw"), "blocked");
+    writeFileSync(join(opts.canonicalDir, "claude", "cl-1.json"), "invalid JSON");
+    const report = await (await handleIngestRequest(request(), { ...opts, embeddingProvider: provider })).json();
+    expect(report.scope).toBe("live");
+    expect(probes).toBe(0);
+    expect(report.failures).toEqual([]);
+    expect(report.deferred_checks).toContain("embedding_coverage");
+    expect(report.deferred_checks).toContain("canonical");
   } finally { rmSync(root, { recursive: true, force: true }); }
 });

@@ -3,8 +3,9 @@
 ## Built
 
 - `GET /status/report`: requires a configured ingest bearer token, coalesces
-  concurrent requests, caches for 60 seconds, returns HTTP 200 with `ok` and
-  `failures`. Unauthorized requests get 401, including when no token is configured.
+  state reads, caches for 60 seconds, returns HTTP 200 with `ok` and
+  `failures`. Its `live` scope contains operational state only; heavy checks run
+  in the CLI and are listed in `deferred_checks`. Unauthorized requests get 401, including when no token is configured.
 - Offline `monitor`: reads raw, canonical and SQLite directly, checks provider
   freshness, new unknown types, vector coverage, upload and attachment failures,
   orphan parse failures, store write health and index readability. It does not
@@ -94,8 +95,8 @@ ignore tombstones. They work on historical raw without process logs.
 3. Subsequent monitor invocations suppress those provider/type pairs, including
    additional occurrences. Newly seen types alert. Other failures remain visible.
 
-The report shows acknowledgement flags. HTTP reports can retain the old result
-for up to 60 seconds; the CLI always computes a new report.
+The full CLI report shows acknowledgement flags. The CLI always computes a new
+report; HTTP defers unknown-type scanning to the CLI.
 
 ## Verification
 
@@ -135,3 +136,7 @@ No production data was read, no deployment was performed, and no branch was push
   permissions without probe writes, new directories or writer transactions.
   Regression tests hold an index rebuild transaction while monitoring succeeds.
   `--ack` remains an explicit state write.
+- HTTP now serves a cheap `live` snapshot of counters, receipts and state, with
+  explicit `deferred_checks`. It performs no raw/canonical/vector scans or
+  embedding calls. Full diagnostics remain in the offline CLI. Tests deliberately
+  break archive files and supply a throwing embedder while HTTP stays healthy.

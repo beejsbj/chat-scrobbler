@@ -69,7 +69,7 @@ Endpoints:
 |--------|------|------|---------|
 | GET | /health | none | cheap receiver liveness |
 | GET | /health/deep | required bearer | write checks for index/stores and bounded embedder probe |
-| GET | /status/report | required bearer | cached freshness, drift, coverage and store report |
+| GET | /status/report | required bearer | cheap cached operational state and receipt report |
 | POST | /captures | optional bearer | receive raw captures, parse, store, index |
 | POST | /assets | optional bearer | receive provider-authenticated attachment bytes |
 | POST | /status | optional bearer | conversation state and optional asset failure reports |
@@ -458,9 +458,11 @@ Cockpit delivery and the Hermes schedule are supplied separately.
 `GET /status/report` requires a configured `INGEST_TOKEN` and its matching bearer
 header, even on localhost. Authenticated reports return HTTP 200 with `ok` and
 `failures`; callers inspect the body. Reports coalesce concurrent requests and
-cache results for 60 seconds. No titles, chat text, provider URLs, credentials or
-raw fragments are included. Unknown type names are replaced with opaque
-`type_id` values; the report includes their counts and acknowledgement state.
+cache results for 60 seconds. The HTTP scope is `live`: persisted counters,
+receipts and state health only. `deferred_checks` names the archive, vector, asset
+and provider checks performed only by the CLI. HTTP performs no archive scan or
+embedding call. No titles, chat text, provider URLs, credentials or raw fragments
+are included. The CLI replaces unknown type names with opaque type IDs.
 
 | JSON config key | Environment override | Default |
 |-----------------|----------------------|---------|
@@ -500,8 +502,7 @@ all currently seen provider/type pairs with:
 ```
 
 Acknowledgement survives restarts and suppresses only those types. New types still
-alert; all other checks still run. The HTTP cache can lag an acknowledgement by
-60 seconds. The state database contains counters, hourly upload buckets, receipt
+alert; all other checks still run. The CLI computes a fresh report after acknowledgement. The state database contains counters, hourly upload buckets, receipt
 times and opaque type IDs only. Keep it when replacing the index directory; it is
 separate from rebuildable index tables and is not included in current backups.
 Sanitized parser contracts and instructions for adding captures live in

@@ -1,7 +1,7 @@
 import { monitorWrite } from "../../../src/monitor/state-fault";
 import { persistEmbeddingStatus } from "../../../src/indexer/embedding-status";
 import { monitorStatePath, recordCaptureReceipt } from "../../../src/monitor/state";
-import { cachedMonitorReport } from "../../../src/monitor/report";
+import { cachedLiveMonitorReport } from "../../../src/monitor/live-report";
 import type { MonitorConfig } from "../../../src/monitor/config";
 import { cachedIngestHealth } from "./health";
 import { Database } from "bun:sqlite";
@@ -115,7 +115,7 @@ export async function handleIngestRequest(req: Request, opts: IngestServerOption
 
   if (req.method === "GET" && url.pathname === `${STATUS_PATH}/report`) {
     if (!opts.ingestToken || req.headers.get("authorization") !== `Bearer ${opts.ingestToken}`) return json({ ok: false, error: "Unauthorized" }, 401);
-    try { return json(await cachedMonitorReport(opts)); }
+    try { return json(cachedLiveMonitorReport(opts)); }
     catch { return json({ ok: false, failures: ["FAILED monitor report_unavailable"] }); }
   }
 
