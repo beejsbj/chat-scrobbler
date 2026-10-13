@@ -183,7 +183,8 @@ interface Message {
 `image`, `audio`, `video`, `file`, `citation`, `ui_widget`, and `unknown`, plus legacy
 `tool_result` and `attachment`. New tool calls keep name/family only; tool payloads
 and unknown JSON are excluded from rendered recall text. Unknown parts retain up
-to 16 KiB of JSON plus a raw version reference and JSON pointer. Version 1 files
+to 16 KiB of JSON per part and 64 KiB inline JSON per session, plus raw references
+and JSON pointers. Known Gemini metadata stays in raw only. Version 1 files
 remain loadable. See [BJS-545 handoff](../HANDOFF-BJS-545.md) for the contract.
 Media blocks preserve the provider `pointer`; `local_path` is a
 canonical-relative asset path when bytes were captured successfully, otherwise null.
@@ -199,8 +200,9 @@ root and reverses the result -- that is the active conversation path. Legacy ses
 without `active_leaf_id` fall back to `messages[]` as-is.
 
 The FTS5 index indexes **every message** across all branches (so search can reach
-edited-away text). `message_count` in the sessions table and markdown rendering use the
-active path only.
+edited-away text). `message_count` in the sessions table counts messages on the
+active path with nonempty rendered text. Markdown rendering also uses the active path. Opaque-only
+messages remain archived but do not inflate the count.
 
 ---
 

@@ -11,16 +11,17 @@ Branch: `feat/bjs-545-typed-parts`. One PR slice; no push or deployment.
 - Parsers retain opaque content instead of silently discarding it. Unknown blocks
   have the provider type, a bounded JSON fragment, and a raw version plus JSON pointer.
   Ingest and reparse pass the actual archived version into the parser.
-- Tool calls retain name and family only. Tool replies become classification labels.
-  New parsers never copy ordinary tool input/output into canonical. The renderer
-  excludes legacy tool_result payloads and unknown JSON from recall text.
+- Tool calls retain name and family only. Tool replies keep classification labels
+  plus media, citations and opaque parts. Ordinary tool prose, legacy tool_result
+  payloads and unknown JSON are excluded from recall text.
 - ChatGPT preserves recipient families, opaque references and disconnected mapping
   nodes. Claude preserves artifact edits and message models. Gemini keeps opaque
   positional fields and candidates with no prose, alongside verified text parsing.
 - `reparse` rebuilds safely from raw and refreshes changed sessions through the
   existing async indexer. `unknown-types` provides counts for BJS-546.
 - No runtime dependencies, embedding-provider changes, embedding-storage changes,
-  SQLite indexer changes, or MCP response-shape changes.
+  or MCP response-shape changes. SQLite edits are limited to deletion guards and
+  renderable active-message counts.
 
 ## Schema examples
 
@@ -99,7 +100,8 @@ A provider's short recap cannot be expanded into reasoning it did not expose.
 ```
 
 `size_bytes` is the actual UTF-8 JSON byte count, not a character count. The cap is
-16,384 bytes per fragment. Above it, `raw_json` becomes null and `truncated` becomes
+16,384 bytes per fragment, with a 65,536-byte inline budget across each session.
+Above either limit, `raw_json` becomes null and `truncated` becomes
 true; the full fragment is accessible through `raw_ref` plus the RFC 6901 JSON
 pointer in `raw_path`. JSON pointer escaping handles slash and tilde. The whole
 raw capture remains verbatim even when the inline fragment is below the cap.
@@ -146,8 +148,9 @@ retention, not undocumented provider schemas.
 The production audit's numerical counts were not rechecked: production data access
 was prohibited. The identified dropping behavior was verified against code and repo
 fixtures. Gemini's positional fallback names such as `gemini.candidate.12` identify
-an opaque slot where there is no provider type string. Some are ordinary metadata;
-BJS-546 must baseline these before treating them as new features.
+an opaque slot where there is no provider type string. The review fixes below leave known metadata in raw and use stable content
+categories. Reparse removes the original metadata-only blocks; the report groups
+legacy positional names while older projections await reparse.
 
 ## Reparse semantics
 
@@ -183,21 +186,23 @@ chat-scrobbler unknown-types --source chatgpt --json
   canonical write reports `canonical_updated: true`; run `unify` to repair the
   derived index. A later reparse may see that canonical as unchanged.
 - Dry-run parses and reports planned changed/unchanged/no_raw/deleted/failed counts
-  and affected IDs. It creates no canonical directory, index, vectors or raw marker,
+  and affected IDs, including `raced` skips. It creates no canonical directory, index, vectors or raw marker,
   and makes no embedding calls.
 - JSON reports and errors contain IDs, statuses and categorical reasons, never raw
   fragments, provider error strings or secrets. Any session or embedding failure
   makes the CLI exit 1. Invalid arguments also exit 1.
 - `unknown-types` counts all branches in nondeleted canonical sessions by provider
   and type. It reports unreadable sessions separately and excludes their partial
-  counts. No unknown types is a normal empty report, not an error.
+  counts. No unknown types is a normal empty report, not an error. Legacy Gemini
+  index-suffixed categories are grouped into stable content categories.
 
 ## Decisions and remaining work
 
-- Opaque fragments are per-block capped; there is no total per-session cap. This
-  retains independent content parts and may grow canonical for many small parts.
+- Opaque fragments are capped at 16 KiB each and 64 KiB inline JSON per session.
+  Independent parts are retained as raw pointers when either budget is exceeded.
+  Block and pointer metadata is outside the inline JSON budget.
 - Ordinary tool machinery stays raw. Artifact bodies and structured edits are the
-  explicit semantic exception. New tool replies carry labels, not copied outputs.
+  explicit semantic exception. New tool replies keep labels and non-prose content, not copied tool prose.
 - Known parts are projections, not full provider objects; additional metadata stays
   in raw. Unknown parts retain their JSON below the cap and raw pointers above it.
 - No guessed structures for late-2026 visual features. Schema capacity and raw
@@ -216,7 +221,7 @@ chat-scrobbler unknown-types --source chatgpt --json
 Baseline before edits: `bun test`, **368 pass, 0 fail**, 1,134 expectations.
 The supplied three failures did not reproduce on that first run.
 
-Final `bun test`: **387 pass, 0 fail**, 1,244 expectations across 40 files,
+Pre-review `bun test`: **387 pass, 0 fail**, 1,244 expectations across 40 files,
 11.46 seconds. `bun x tsc --noEmit`: **exit 0**, no diagnostics.
 
 An intermediate full run hit four five-second timeouts, three in unchanged tests
@@ -234,3 +239,82 @@ changed-text FTS replacement, degraded embeddings, and both CLI commands.
 
 Test temporary directories and logs were confined to this worktree with
 `TMPDIR="$PWD/.tmp"`. No production archive was opened or changed.
+
+
+## Review fixes
+
+The independent review reported successful v1 loading/rendering against 5,572
+production sessions, no-raw byte preservation, read-only dry-run and unchanged MCP
+shape. These fixes use repo fixtures and synthetic regression probes; no production
+archive was accessed by this implementation session.
+
+### ChatGPT tool media and unfamiliar prose
+
+- Tool-role and directed-recipient messages now run the content parser. Their
+  tool label is followed by media, files, citations and unknown blocks when present.
+  Text/reasoning/tool-payload blocks are filtered from those tool messages.
+- Regression probes cover both tool-role `dalle.text2im` and directed assistant
+  messages with an image pointer, SHA-256 and local path, plus an unfamiliar part.
+- Unrecognized ordinary content such as `tether_quote` emits extracted string
+  `text`/`parts` and the original unknown fragment. String parts within mixed lists
+  remain searchable. Direct tool traffic still excludes that extracted prose.
+- `content_type: text` string parts use single newline joins again. Existing
+  multimodal block separation is retained.
+
+### Concurrent ingest and deletion
+
+- Reparse re-resolves the latest raw version after parsing and immediately before
+  writing. A changed reference is skipped as `raced`; JSON and text summaries
+  include the raced count. A raced skip alone does not make the CLI exit 1.
+- Tombstones are checked before writing and before indexing. Deletion during a
+  write/read failure is reported as `deleted` rather than a generic failure.
+- The indexing guard compares current canonical against the exact serialization
+  of the session being indexed, rather than adopting whatever file a concurrent
+  writer has produced. An async stale result is classified as `raced` or `deleted`.
+- Index writers accept optional `canonicalDir` and check tombstones inside the
+  literal transaction and before delayed vector replacement. Ingest, unify and
+  reparse all supply it. Standalone callers can supply it for the same protection.
+- Deterministic regression tests simulate ingest during parsing, ingest after the
+  canonical write, deletion after the canonical write, and independent index writes
+  of tombstoned sessions. Canonical/raw/SQLite are still separate stores, without
+  a shared cross-process transaction or lock.
+
+### Gemini size and unknown reports
+
+- The verified fixture now emits **zero metadata unknown blocks**, rather than 29
+  across the session. User control fields, candidate status/locale/branding fields,
+  and response locale/suggestion/status fields stay in raw only.
+- Metadata is ignored only when its fixture-backed shape matches. New objects or
+  populated positional content in a formerly empty slot still become unknown;
+  the allowlist does not assume that every future value at that index is metadata.
+- New fallback names are stable categories such as `gemini.candidate.content`.
+  Provider type strings such as `interactive_visual` take precedence. The report
+  also groups earlier `gemini.candidate.N` names into the same content category.
+- All three parsers apply a **64 KiB per-session inline unknown JSON budget**,
+  spanning every message and branch, in addition to the existing **16 KiB per-part
+  cap**. Parts that do not fit retain `raw_ref`, `raw_path`, original `size_bytes`,
+  null `raw_json` and `truncated: true`. Recognized prose and media are unaffected.
+- UTF-8 regression probes add 12 independent fragments across separate messages
+  for each provider and verify bounded inline bytes plus surviving raw pointers.
+  This bounds opaque payload bytes, not the overhead of arbitrarily many blocks.
+
+### Recall and fallback behavior
+
+- `message_count` counts only active-branch messages with nonempty rendered text.
+  Media and tool labels count as renderable. Opaque-only messages remain in canonical
+  for preservation but do not inflate the count. FTS still indexes all branches.
+  Existing index counts adopt this rule when refreshed; no data migration is needed.
+- `get --text-only` excludes unknown, reasoning and tool blocks and regenerates
+  `Message.text` from the retained blocks, keeping JSON and Markdown consistent.
+- Claude's `m.text` fallback is restored when content has only empty text blocks.
+
+### Review verification
+
+- `bun test`: **401 pass, 0 fail**, 1,299 expectations across 42 files,
+  13.56 seconds, using the default test command and timeout settings.
+- `bun x tsc --noEmit`: **exit 0**, no diagnostics.
+- Every finding has a regression test that failed before its implementation.
+  The race tests inject concurrent actions at public parser/store boundaries;
+  they do not depend on scheduler timing or sleeps.
+- All test data and temporary output stayed inside the worktree via `TMPDIR`.
+  No push, deployment, production archive reads or production data changes.
