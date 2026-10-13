@@ -70,7 +70,7 @@ test("POST /captures keeps canonical and literal index reliable when embeddings 
     try {
       expect(searchMessages(db, "protective", { embeddingProvider: null })).toHaveLength(1);
       const embeddingRows = db.query(
-        "SELECT COUNT(*) AS count FROM message_embeddings WHERE session_id = ?",
+        "SELECT COUNT(*) AS count FROM message_vectors WHERE session_id = ?",
       ).get("chatgpt:conv-1") as { count: number };
       expect(embeddingRows.count).toBe(0);
     } finally {

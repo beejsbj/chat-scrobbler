@@ -1,3 +1,4 @@
+import { decodeVector } from "../src/indexer/vector-store";
 // test/reindex.test.ts
 // Verifies that runUnify reads canonical session files and makes them searchable.
 import { test, expect, afterAll } from "bun:test";
@@ -166,10 +167,10 @@ test("unify preserves vectors when rebuilding with a failed embedder", async () 
     writeSession(opts.canonicalDir, sessionA);
     await runUnify({ ...opts, embeddingProvider: provider });
     const db = openIndex(opts.indexPath);
-    const before = db.query("SELECT * FROM message_embeddings").all();
+    const before = db.query("SELECT * FROM message_vectors").all();
     failing = true;
     await runUnify({ ...opts, embeddingProvider: provider });
-    expect(db.query("SELECT * FROM message_embeddings").all()).toEqual(before);
+    expect(db.query("SELECT * FROM message_vectors").all()).toEqual(before);
     expect(searchMessages(db, "photosynthesis")).toHaveLength(2);
     db.close();
   } finally { rmSync(dir, { recursive: true, force: true }); }
@@ -256,7 +257,7 @@ test("unify skips vector replacement when canonical mtime or indexed revision ch
         return [1, 0];
       } };
       await runUnify({ ...opts, embeddingProvider: provider });
-      expect(db.query("SELECT embedding FROM message_embeddings").all()).toEqual([{ embedding: "[0,1]" }, { embedding: "[0,1]" }]);
+      expect((db.query("SELECT embedding FROM message_vectors").all() as Array<{embedding: Uint8Array}>).map(row => Array.from(decodeVector(row.embedding, 2)))).toEqual([[0,1], [0,1]]);
     } finally { db.close(); rmSync(dir, { recursive: true, force: true }); }
   }
 });

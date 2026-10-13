@@ -1,5 +1,6 @@
 // src/indexer/sqlite.ts
 import { embeddingFailed, embeddingStatus, embeddingSucceeded, validateEmbedding, type SemanticStatus } from "./embedding-status";
+import { createVectorTables, decodeVector, putTextVector, reusableTextVector, vectorScope } from "./vector-store";
 import { Database } from "bun:sqlite";
 import type { Session } from "../schema/types";
 import { isSessionDeleted } from "../store/tombstones";
@@ -26,6 +27,7 @@ export interface EmbeddingProvider {
   readonly model?: string | null;
   readonly dimensions?: number | null;
   embed(text: string, context?: EmbeddingContext): number[] | Promise<number[]>;
+  embedAsset?(input: { type: "image" | "audio" | "video"; path?: string; base64?: string }, context?: EmbeddingContext): number[] | Promise<number[]>;
 }
 
 export interface IndexSessionOptions { canonicalDir?: string; embeddingProvider?: EmbeddingProvider | null; shouldReplaceEmbeddings?: () => boolean; }
@@ -50,6 +52,7 @@ export function openIndex(path: string): Database {
     provider_kind TEXT, provider_model TEXT, dimension INTEGER,
     PRIMARY KEY (session_id, message_id));`);
   migrateMessageEmbeddings(db);
+  createVectorTables(db);
   return db;
 }
 
@@ -105,6 +108,7 @@ export function deleteIndexedSession(db: Database, source: string, sourceId: str
   for (const sessionId of sessionIds) {
     db.run(`DELETE FROM messages_fts WHERE session_id = ?`, [sessionId]);
     db.run(`DELETE FROM message_embeddings WHERE session_id = ?`, [sessionId]);
+    db.run(`DELETE FROM message_vectors WHERE session_id = ?`, [sessionId]);
     db.run(`DELETE FROM sessions WHERE id = ?`, [sessionId]);
   }
   return { deleted: rows.length > 0, sessionIds };
@@ -302,16 +306,7 @@ function collectSyncEmbeddingRows(s: Session, provider: EmbeddingProvider): Embe
 // visible chat each poll), so reuse a stored vector whenever the embedded inputs
 // (text, title, provider identity) are unchanged instead of re-embedding them.
 function reusableEmbedding(db: Database, s: Session, messageId: string, text: string, provider: EmbeddingProvider): number[] | null {
-  const row = db.query(
-    `SELECT embedding, text, title, provider_kind, provider_model FROM message_embeddings WHERE session_id = ? AND message_id = ?`,
-  ).get(s.id, messageId) as { embedding: string; text: string; title: string | null; provider_kind: string | null; provider_model: string | null } | null;
-  if (!row || row.text !== text || (row.title ?? null) !== (s.title ?? null)) return null;
-  if (row.provider_kind !== (provider.kind?.trim() || "unknown") || row.provider_model !== (provider.model?.trim() || null)) return null;
-  try {
-    return validateEmbedding(JSON.parse(row.embedding));
-  } catch {
-    return null;
-  }
+  return reusableTextVector(db, s.id, messageId, text, s.title ?? null, provider);
 }
 
 async function collectAsyncEmbeddingRows(db: Database, s: Session, provider: EmbeddingProvider): Promise<EmbeddingRow[]> {
@@ -339,25 +334,12 @@ function replaceEmbeddingRows(db: Database, session: Session, rows: EmbeddingRow
   const current = db.query("SELECT updated_at FROM sessions WHERE id = ?").get(session.id) as { updated_at: string } | null;
   if ((opts.canonicalDir && isSessionDeleted(opts.canonicalDir, session.source, session.source_id)) || current?.updated_at !== session.updated_at || (opts.shouldReplaceEmbeddings && !opts.shouldReplaceEmbeddings())) return false;
   const sessionId = session.id;
-  db.run(`DELETE FROM message_embeddings WHERE session_id = ?`, [sessionId]);
-  const stmt = db.prepare(
-    `INSERT INTO message_embeddings (session_id, message_id, embedding, text, role, created_at, source, title, provider_kind, provider_model, dimension)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?)`);
-  for (const row of rows) {
-    stmt.run(
-      row.session_id,
-      row.message_id,
-      JSON.stringify(row.embedding),
-      row.text,
-      row.role,
-      row.created_at,
-      row.source,
-      row.title,
-      row.provider_kind,
-      row.provider_model,
-      row.dimension,
-    );
+  // Retain other model sets. Remove disappeared messages across every derived set.
+  const ids = new Set(session.messages.map(message => message.id));
+  for (const row of db.query("SELECT DISTINCT message_id FROM message_vectors WHERE session_id=?").all(sessionId) as Array<{message_id: string}>) {
+    if (!ids.has(row.message_id)) db.run("DELETE FROM message_vectors WHERE session_id=? AND message_id=?", [sessionId, row.message_id]);
   }
+  for (const row of rows) putTextVector(db, { ...row, provider_model: row.provider_model ?? "" });
   return true;
 }
 
@@ -475,24 +457,22 @@ function finalizeHits(merged: Map<string, RankedHit>, limit: number): MessageHit
 }
 
 function semanticCandidates(db: Database, queryEmbedding: number[], metadata: EmbeddingMetadata, source: string | undefined, limit: number): SemanticRow[] {
-  const clauses = ["provider_kind = ?", "dimension = ?"];
-  const params: any[] = [metadata.provider_kind, metadata.dimension];
-  if (metadata.provider_model === null) {
-    clauses.push("provider_model IS NULL");
-  } else {
-    clauses.push("provider_model = ?");
-    params.push(metadata.provider_model);
-  }
-  if (source) {
-    clauses.push("source = ?");
-    params.push(source);
-  }
+  const kind = metadata.provider_kind, model = metadata.provider_model ?? "", dimension = metadata.dimension;
+  const sourceClause = source ? " AND source=?" : "";
+  const params = [kind, model, dimension, ...(source ? [source] : [])];
   const ranked: SemanticRow[] = [];
-  const query = db.query(`SELECT session_id, message_id, embedding, text, role, created_at, source, title
-     FROM message_embeddings WHERE ${clauses.join(" AND ")}`);
-  // Stream vectors so query memory is bounded by the candidate window, not the archive.
-  for (const row of query.iterate(...params) as Iterable<any>) {
-    const similarity = cosine(queryEmbedding, parseEmbedding(row.embedding));
+  const scans = [
+    db.query(`SELECT session_id,message_id,embedding,text,role,created_at,source,title FROM message_vectors
+      WHERE provider_kind=? AND provider_model=? AND dimension=?${sourceClause}`),
+    db.query(`SELECT session_id,message_id,embedding,text,role,created_at,source,title FROM message_embeddings l
+      WHERE provider_kind=? AND COALESCE(provider_model,'')=? AND dimension=?${sourceClause}
+      AND NOT EXISTS(SELECT 1 FROM message_vectors b WHERE b.session_id=l.session_id AND b.message_id=l.message_id
+        AND b.provider_kind=l.provider_kind AND b.provider_model=COALESCE(l.provider_model,'') AND b.dimension=l.dimension)`),
+  ];
+  for (let i = 0; i < scans.length; i++) for (const row of scans[i].iterate(...params) as Iterable<any>) {
+    let vector: ArrayLike<number>;
+    try { vector = i === 0 ? decodeVector(row.embedding, dimension) : parseEmbedding(row.embedding); } catch { continue; }
+    const similarity = cosine(queryEmbedding, vector);
     if (similarity <= 0 || (ranked.length >= limit && similarity <= ranked[ranked.length - 1].similarity)) continue;
     ranked.push({ ...row, similarity });
     ranked.sort((a, b) => b.similarity - a.similarity);
@@ -501,11 +481,11 @@ function semanticCandidates(db: Database, queryEmbedding: number[], metadata: Em
   if (!ranked.length) return [];
   // FTS metadata is unindexed: one scan returns text only for the top-K identities.
   const values = ranked.map(() => "(?,?)").join(",");
-  const currentRows = db.query(`SELECT session_id, message_id, text FROM messages_fts
+  const currentRows = db.query(`SELECT session_id, message_id, text, title FROM messages_fts
     WHERE (session_id, message_id) IN (VALUES ${values})`)
-    .all(...ranked.flatMap(row => [row.session_id, row.message_id])) as Array<{ session_id: string; message_id: string; text: string }>;
-  const currentText = new Map(currentRows.map(row => [hitKey(row.session_id, row.message_id), row.text]));
-  return ranked.filter(row => currentText.get(hitKey(row.session_id, row.message_id)) === row.text);
+    .all(...ranked.flatMap(row => [row.session_id, row.message_id])) as Array<{ session_id: string; message_id: string; text: string; title: string | null }>;
+  const currentText = new Map(currentRows.map(row => [hitKey(row.session_id, row.message_id), row]));
+  return ranked.filter(row => { const current = currentText.get(hitKey(row.session_id, row.message_id)); return current?.text === row.text && (current.title ?? null) === (row.title ?? null); });
 }
 
 function fusedScore(literalRank?: number, semanticRank?: number): number {
@@ -538,7 +518,7 @@ function parseEmbedding(raw: string): number[] {
   }
 }
 
-function cosine(a: number[], b: number[]): number {
+function cosine(a: ArrayLike<number>, b: ArrayLike<number>): number {
   if (a.length === 0 || a.length !== b.length) return 0;
   const n = a.length;
   let dot = 0, a2 = 0, b2 = 0;
@@ -551,11 +531,8 @@ function cosine(a: number[], b: number[]): number {
 }
 
 function embeddingMetadata(provider: EmbeddingProvider, embedding: number[]): EmbeddingMetadata {
-  return {
-    provider_kind: provider.kind?.trim() || "unknown",
-    provider_model: provider.model?.trim() || null,
-    dimension: embedding.length,
-  };
+  if (provider.dimensions && embedding.length !== provider.dimensions) throw new Error("embedding dimension mismatch");
+  return vectorScope(provider, embedding.length);
 }
 
 function syncEmbedding(provider: EmbeddingProvider, text: string, context: EmbeddingContext): number[] {
