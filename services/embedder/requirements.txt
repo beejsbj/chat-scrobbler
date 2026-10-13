@@ -1,0 +1,3 @@
+# Already present in /mnt/server-ssd/spikes/bjs-544/venv-a. No install is needed.
+litert-lm==0.18.0
+# ffmpeg + ffprobe are required executables, not Python packages.

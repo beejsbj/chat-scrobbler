@@ -1,0 +1,73 @@
+# Merge after docker-compose.bjslab.yml from the merged production repo root.
+# This adds connectivity and a dependency; it does not switch the provider.
+services:
+  scrobbler:
+    networks:
+      - default
+      - embeddings
+    depends_on:
+      embedder:
+        condition: service_healthy
+
+  embedder:
+    build:
+      context: .
+      dockerfile: services/embedder/Dockerfile
+    init: true
+    restart: unless-stopped
+    cpus: 2
+    mem_limit: 2g
+    memswap_limit: 2g
+    pids_limit: 64
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    stop_grace_period: 300s
+    networks:
+      - embeddings
+    # No ports or proxy network. Only the scrobbler can reach this network.
+    environment:
+      EMBEDDER_NETWORK_MODE: private-docker
+      EMBEDDER_PORT: "4320"
+      EMBEDDER_IDLE_SECONDS: "300"
+      EMBEDDER_ALLOWED_ROOTS: /data/canonical/assets
+      EMBEDDER_CACHE_DIR: /mnt/server-ssd/spikes/bjs-544/litert-cache
+    volumes:
+      - type: bind
+        source: /mnt/server-ssd/spikes/bjs-544/venv-a
+        target: /mnt/server-ssd/spikes/bjs-544/venv-a
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: /mnt/server-ssd/spikes/bjs-544/hf
+        target: /mnt/server-ssd/spikes/bjs-544/hf
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: /mnt/server-ssd/spikes/bjs-544/litert-cache
+        target: /mnt/server-ssd/spikes/bjs-544/litert-cache
+        bind:
+          create_host_path: false
+      - type: bind
+        source: /mnt/server-ssd/chat-scrobbler/canonical/assets
+        target: /data/canonical/assets
+        read_only: true
+        bind:
+          create_host_path: false
+    healthcheck:
+      test:
+        - CMD
+        - /mnt/server-ssd/spikes/bjs-544/venv-a/bin/python
+        - -c
+        - "import json,urllib.request; r=json.load(urllib.request.urlopen('http://localhost:4320/health',timeout=3)); assert r['status']=='ok' and r['model_available'] and r['model']=='litert-community/embeddinggemma-2-740m-litert-lm'"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+networks:
+  embeddings:
+    internal: true

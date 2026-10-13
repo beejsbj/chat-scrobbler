@@ -1,0 +1,30 @@
+{
+  "date": "2026-10-13",
+  "status": "incomplete_high_load_abort",
+  "runtime": "existing venv-a Python 3.12, litert-lm 0.18.0",
+  "model": "litert-community/embeddinggemma-2-740m-litert-lm",
+  "native_context_limit": 2048,
+  "vision_tokens_per_image": 140,
+  "effective_caps": {
+    "memory_max_bytes": 2147483648,
+    "memory_swap_max_bytes": 0,
+    "cpu_max": "200000 100000",
+    "nice": 19,
+    "runtime_max_seconds": 300
+  },
+  "samples": [
+    {"stage": "baseline_before_litert_import", "rss_kib": 16364, "peak_rss_kib": 16000, "cgroup_bytes": 9965568, "load": [7.7265625, 9.25439453125, 10.2060546875]},
+    {"stage": "after_native_load", "rss_kib": 249216, "peak_rss_kib": 248304, "cgroup_bytes": 269983744, "elapsed_seconds": 2.040609569987282},
+    {"stage": "after_lazy_load_and_text", "rss_kib": 351832, "peak_rss_kib": 350832, "cgroup_bytes": 373760000, "elapsed_seconds": 3.2234376589767635},
+    {"stage": "aborted_high_load", "rss_kib": 351840, "load": [9.10986328125, 9.51611328125, 10.28564453125]}
+  ],
+  "systemd_receipt": {
+    "exit_status": 75,
+    "runtime_seconds": 4.283,
+    "cpu_seconds": 2.825,
+    "memory_peak_display": "419.5M",
+    "memory_swap_peak_bytes": 0
+  },
+  "not_measured": ["image/audio/video completion", "eight-frame native peak", "idle unload RSS release", "reload RSS", "Ubuntu Docker runtime ABI execution"],
+  "interpretation": "Only lazy load and short text completed. The watchdog stopped work above one-minute load 8. This does not establish idle RSS release or maximum media memory. Peak process RSS and instantaneous RSS come from different Linux counters; cgroup accounting also includes descendants and charged cache."
+}
