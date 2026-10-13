@@ -192,6 +192,71 @@ class ServiceTests(unittest.TestCase):
         self.assertFalse(worker.is_alive())
         self.assertEqual(errors, [])
 
+    def test_queued_query_overtakes_documents_and_documents_keep_fifo(self):
+        entered, release = threading.Event(), threading.Event()
+        e = FakeEngine()
+        active, peak, errors = [0], [0], []
+        def blocked(content):
+            active[0] += 1
+            peak[0] = max(peak[0], active[0])
+            e.calls.append(content)
+            if 'first' in content:
+                entered.set()
+                release.wait(4)
+            active[0] -= 1
+            return [1.] * 768
+        e.embed = blocked
+        self.service = Embedder(replace(self.config, queue_size=3), lambda: e)
+        def work(text, role):
+            try:
+                self.service.embeddings({'input': text, 'role': role})
+            except Exception as exc:
+                errors.append(exc)
+        workers = [threading.Thread(target=work, args=(text, role)) for text, role in
+                   [('first', 'document'), ('doc1', 'document'), ('doc2', 'document'), ('find', 'query')]]
+        try:
+            workers[0].start()
+            self.assertTrue(entered.wait(1))
+            for count, worker in enumerate(workers[1:], 1):
+                worker.start()
+                deadline = time.monotonic() + 1
+                while self.service.health().get('queued', 0) < count and time.monotonic() < deadline:
+                    time.sleep(.005)
+                self.assertEqual(self.service.health().get('queued'), count)
+        finally:
+            release.set()
+            for worker in workers:
+                if worker.ident is not None:
+                    worker.join(3)
+        self.assertEqual(errors, [])
+        self.assertEqual(peak[0], 1)
+        self.assertEqual(e.calls, ['title: none | text: first', 'task: search result | query: find',
+                                  'title: none | text: doc1', 'title: none | text: doc2'])
+
+    def test_expired_waiter_frees_capacity_for_next_request(self):
+        entered, release = threading.Event(), threading.Event()
+        e = FakeEngine()
+        def blocked(content):
+            if 'first' in content:
+                entered.set()
+                release.wait(3)
+            return [1.] * 768
+        e.embed = blocked
+        self.service = Embedder(replace(self.config, queue_size=1, queue_timeout=.03), lambda: e)
+        worker = threading.Thread(target=lambda: self.service.embeddings({'input': 'first'}))
+        worker.start()
+        try:
+            self.assertTrue(entered.wait(1))
+            for role in ('document', 'query'):
+                with self.assertRaises(RequestError) as caught:
+                    self.service.embeddings({'input': 'waiting', 'role': role})
+                self.assertEqual(caught.exception.code, 'queue_timeout')
+                self.assertEqual(self.service.health()['queued'], 0)
+        finally:
+            release.set()
+            worker.join(3)
+        self.assertEqual(len(self.service.embeddings({'input': 'after'})['data']), 1)
+
     def test_decode_and_engine_share_lock(self):
         from services.embedder.media import MediaPart
         entered, release = threading.Event(), threading.Event()

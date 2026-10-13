@@ -11,6 +11,7 @@ from .config import MODEL_ID
 from .errors import RequestError
 from .media import Decoder, validate_media
 from .text import byte_length, pooled, text_chunks
+from .queue import EngineQueue
 
 
 class Embedder:
@@ -22,7 +23,7 @@ class Embedder:
         self.factory, self.clock = factory, clock
         self.decoder = Decoder(config)
         self.lock = threading.Lock()
-        self.slots = threading.BoundedSemaphore(config.queue_size + 1)
+        self.queue = EngineQueue(self.lock, config.queue_size, config.queue_timeout)
         self.engine = None
         self.last_used = self.clock()
         self.stopped = False
@@ -31,7 +32,7 @@ class Embedder:
         # No engine lock: health stays responsive while decoding or computing.
         return {'status': 'stopped' if self.stopped else 'ok', 'model': MODEL_ID,
                 'model_available': self.model_available(), 'loaded': self.engine is not None, 'busy': self.lock.locked(),
-                'threads': 2, 'vision_tokens': 140, 'idle_seconds': self.config.idle_seconds,
+                'queued': self.queue.queued, 'threads': 2, 'vision_tokens': 140, 'idle_seconds': self.config.idle_seconds,
                 'rss_kib': current_rss_kib()}
 
     def model_available(self):
@@ -85,13 +86,11 @@ class Embedder:
 
     def embeddings(self, request):
         plan, dimensions, encoding = self._plan(request)
-        if not self.slots.acquire(blocking=False):
-            raise RequestError('embedding queue is full', 429, 'queue_full')
-        acquired = False
+        items = request['input'] if isinstance(request['input'], list) else [request['input']]
+        query = any((item.get('role', request.get('role', 'document')) if isinstance(item, dict)
+                     else request.get('role', 'document')) == 'query' for item in items)
+        self.queue.acquire(query)
         try:
-            acquired = self.lock.acquire(timeout=self.config.queue_timeout)
-            if not acquired:
-                raise RequestError('embedding queue wait expired', 503, 'queue_timeout')
             if self.stopped:
                 raise RequestError('service stopped', 503, 'unavailable')
             data = []
@@ -119,10 +118,8 @@ class Embedder:
         except Exception as exc:
             raise RequestError('embedding failed', 500, 'engine_error') from exc
         finally:
-            if acquired:
-                self.last_used = self.clock()
-                self.lock.release()
-            self.slots.release()
+            self.last_used = self.clock()
+            self.queue.release()
 
     def unload_if_idle(self):
         if not self.lock.acquire(blocking=False):
@@ -134,6 +131,7 @@ class Embedder:
             return False
         finally:
             self.lock.release()
+            self.queue.notify()
 
     def _unload(self):
         engine, self.engine = self.engine, None
