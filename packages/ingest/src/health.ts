@@ -1,6 +1,6 @@
 import { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
-import { mkdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { assetsDirForCanonicalDir } from "../../../src/store/assets";
 import { rawDirForCanonicalDir } from "../../../src/store/raw";
@@ -50,23 +50,25 @@ async function probeEmbedding(provider: EmbeddingProvider | null) {
     });
     const vector = await Promise.race([provider.embed("chat-scrobbler health check", { kind: "query", signal: controller.signal }), deadline]);
     validateEmbedding(vector);
-    return { semantic: "available" as const, embedding_failures: embeddingStatus(provider, "ingest").embedding_failures };
+    return { semantic: "available" as const, embedding_dimension: vector.length, embedding_failures: embeddingStatus(provider, "ingest").embedding_failures };
   } catch {
     return { semantic: "unavailable" as const, reason: "embedding_health_failed", embedding_failures: embeddingStatus(provider, "ingest").embedding_failures };
   }
   finally { clearTimeout(timer); }
 }
 
-export async function ingestHealth(opts: IngestServerOptions) {
+export async function ingestHealth(opts: IngestServerOptions, requireExistingIndex = false) {
   const rawDir = opts.rawDir ?? (opts.canonicalDir ? rawDirForCanonicalDir(opts.canonicalDir) : undefined);
-  const index = writableIndex(opts.indexPath);
+  const index = requireExistingIndex && opts.indexPath && !existsSync(opts.indexPath)
+    ? { writable: false, reason: "index_missing" }
+    : writableIndex(opts.indexPath);
   const raw = writableDirectory(rawDir);
   const assets = writableDirectory(opts.canonicalDir ? assetsDirForCanonicalDir(opts.canonicalDir) : undefined);
   const canonical = writableDirectory(opts.canonicalDir);
   const provider = opts.embeddingProvider ?? null;
   const semantic = await probeEmbedding(provider);
   const ok = index.writable && raw.writable && assets.writable && canonical.writable;
-  return { ok, status: ok && semantic.semantic !== "unavailable" ? "ok" : "degraded", service: "chat-scrobbler-ingest", index, raw, assets, canonical, ...semantic, asset_failures: opts.indexPath ? assetFailureCount(opts.indexPath) : 0 };
+  return { ok, status: ok && semantic.semantic !== "unavailable" ? "ok" : "degraded", service: "chat-scrobbler-ingest", index, raw, assets, canonical, ...semantic, asset_failures: opts.indexPath ? assetFailureCount(opts.indexPath, opts.monitorStatePath) : 0 };
 }
 
 
@@ -81,7 +83,7 @@ export function cachedIngestHealth(opts: IngestServerOptions) {
     cache = providerCaches.get(provider) ?? new Map();
     providerCaches.set(provider, cache);
   }
-  const key = JSON.stringify([opts.indexPath, opts.canonicalDir, opts.rawDir]);
+  const key = JSON.stringify([opts.indexPath, opts.canonicalDir, opts.rawDir, opts.monitorStatePath]);
   const previous = cache.get(key);
   if (previous && previous.expires > Date.now()) return previous.result;
   for (const [oldKey, entry] of cache) if (entry.expires <= Date.now()) cache.delete(oldKey);

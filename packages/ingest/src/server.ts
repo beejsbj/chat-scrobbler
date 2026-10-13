@@ -1,3 +1,7 @@
+import { persistEmbeddingStatus } from "../../../src/indexer/embedding-status";
+import { monitorStatePath, recordCaptureReceipt } from "../../../src/monitor/state";
+import { cachedMonitorReport } from "../../../src/monitor/report";
+import type { MonitorConfig } from "../../../src/monitor/config";
 import { cachedIngestHealth } from "./health";
 import { Database } from "bun:sqlite";
 import { mkdirSync } from "node:fs";
@@ -22,7 +26,7 @@ import { deleteSessionArchive } from "../../../src/store/delete";
 import { isSessionDeleted } from "../../../src/store/tombstones";
 import type { EmbeddingProvider } from "../../../src/indexer/sqlite";
 
-export interface IngestServerOptions {
+export interface IngestServerOptions extends MonitorConfig {
   /**
    * Optional shared secret. When set, every mutating/status request
    * must carry `Authorization: Bearer <token>`. Omit (or leave empty) for local
@@ -93,6 +97,7 @@ function fatMode(opts: IngestServerOptions): { canonicalDir: string; indexPath: 
 
 export async function handleIngestRequest(req: Request, opts: IngestServerOptions): Promise<Response> {
   const url = new URL(req.url);
+  if (opts.indexPath && opts.embeddingProvider) persistEmbeddingStatus(opts.embeddingProvider, monitorStatePath(opts.indexPath, opts.monitorStatePath));
 
   if (req.method === "OPTIONS") return json(null, 204);
 
@@ -105,6 +110,12 @@ export async function handleIngestRequest(req: Request, opts: IngestServerOption
     if (!opts.ingestToken || req.headers.get("authorization") !== `Bearer ${opts.ingestToken}`) return json({ ok: false, error: "Unauthorized" }, 401);
     const health = await cachedIngestHealth(opts);
     return json(health, health.ok ? 200 : 503);
+  }
+
+  if (req.method === "GET" && url.pathname === `${STATUS_PATH}/report`) {
+    if (!opts.ingestToken || req.headers.get("authorization") !== `Bearer ${opts.ingestToken}`) return json({ ok: false, error: "Unauthorized" }, 401);
+    try { return json(await cachedMonitorReport(opts)); }
+    catch { return json({ ok: false, failures: ["FAILED monitor report_unavailable"] }); }
   }
 
   const isCapture = req.method === "POST" && url.pathname === CAPTURE_INGEST_PATH;
@@ -188,7 +199,7 @@ export async function handleIngestRequest(req: Request, opts: IngestServerOption
         return json({ ok: false, error: "status requires { source, conversations[] }" }, 400);
       }
       const source = readSource(body.source);
-      const count = recordAssetFailures(fat.indexPath, source, body.asset_failures);
+      const count = recordAssetFailures(fat.indexPath, source, body.asset_failures, opts.monitorStatePath);
       const statuses = conversationStatuses(indexFor(fat.indexPath), source, body.conversations);
       return json({ ok: true, statuses, ...(body.asset_failures === undefined ? {} : { asset_failures: count }) });
     } catch (error) {
@@ -217,6 +228,11 @@ export async function handleIngestRequest(req: Request, opts: IngestServerOption
     catch {
       console.error(JSON.stringify({ event: "raw_capture_store_failed", reason: "raw_store_write_failed" }));
       return json({ ok: false, error: "raw_store_write_failed" }, 503);
+    }
+    if (opts.indexPath) {
+      try {
+        for (const source of new Set(captures.map(capture => capture.source))) recordCaptureReceipt(monitorStatePath(opts.indexPath, opts.monitorStatePath), source);
+      } catch { return json({ ok: false, error: "monitor_state_write_failed" }, 503); }
     }
     const spine: SpineResult[] = [];
     if (fat && captures.length) {
