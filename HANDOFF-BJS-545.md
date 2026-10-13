@@ -13,7 +13,8 @@ Branch: `feat/bjs-545-typed-parts`. One PR slice; no push or deployment.
   Ingest and reparse pass the actual archived version into the parser.
 - Tool calls retain name and family only. Tool replies keep classification labels
   plus media, citations and opaque parts. Ordinary tool prose, legacy tool_result
-  payloads and unknown JSON are excluded from recall text.
+  payloads and unknown JSON are excluded from recall text. User-facing Canvas
+  documents, code, edit replacements and comments are searchable artifacts.
 - ChatGPT preserves recipient families, opaque references and disconnected mapping
   nodes. Claude preserves artifact edits and message models. Gemini keeps opaque
   positional fields and candidates with no prose, alongside verified text parsing.
@@ -57,11 +58,30 @@ canonical-relative `local_path`. Uploaded asset sidecars supply both when presen
 {"type":"artifact","artifact_id":"art1","kind":"text/markdown","title":"Report","version":"v2","content":"","operation":"update","previous_version":"v1","edits":[{"old_str":"Old paragraph","new_str":"New paragraph"}]}
 ```
 
-Artifact create bodies remain searchable. Edit strings are retained as structured
-edits; the parser does not apply them or reconstruct a whole artifact. The renderer
-continues to include the artifact title and full `content`, not the edit machinery.
-A known earlier artifact with the same ID can supply omitted kind/title. If no kind
-is known, the original empty kind remains rather than inventing one.
+Claude artifact create bodies remain searchable. Claude literal edits remain in
+`edits`; the renderer includes title and `content`. A known earlier Claude artifact
+with the same ID can supply omitted kind/title. If no kind is known, it stays empty.
+
+Canvas artifact examples:
+
+```json
+{"type":"artifact","artifact_id":"create-message-id","kind":"code","language":"python","title":"Notebook","version":null,"content":"print('hello')","operation":"create"}
+{"type":"artifact","artifact_id":"create-message-id","kind":"code","language":"python","title":"Notebook","version":null,"content":"print('welcome')","operation":"update","updates":[{"pattern":"print\\(.*\\)","replacement":"print('welcome')","multiple":false}]}
+{"type":"artifact","artifact_id":"create-message-id","kind":"code","language":"python","title":"Notebook","version":null,"content":"Explain the greeting","operation":"comment","comments":[{"pattern":"print","comment":"Explain the greeting"}]}
+```
+
+Canvas `type: document` maps to `kind: document`, `language: null`; `code/<language>`
+maps to `kind: code` plus `language`. Updates retain regex `pattern`, `replacement`
+and optional `multiple` in `updates`; comments retain `pattern` and `comment` in
+`comments`. Their `content` is the replacements or comments joined with single
+newlines, making that prose searchable without indexing patterns or serialized JSON.
+The parser does not apply edits or reconstruct the resulting whole document.
+
+Canvas identity is local: the create message ID supplies `artifact_id`. Updates
+and comments inherit it, title, kind and language from the nearest known ancestor
+artifact on their branch. Without that context they use their own message ID,
+null title/language and empty kind. Provider versions are not invented: `version`
+remains null. These optional schema fields are additive within version 2.
 
 ```json
 {"type":"tool_call","name":"canmore.update_textdoc","tool_type":"canvas"}
@@ -136,8 +156,9 @@ retention, not undocumented provider schemas.
 | Audio | Parsed: supported audio pointers and transcription; no real audio fixture | Parsed: MIME-classified files; not seen in fixture | Parsed: MIME-classified sidecars; music RPC structure not seen/unknown |
 | Video | Not seen; opaque content unknown | Parsed: MIME-classified files; not seen in fixture | Parsed: MIME-classified sidecars; Video Overview RPC structure not seen/unknown |
 | File/attachment | Metadata attachments unknown, preserving provider fragment | Parsed: files[] and legacy attachments[] | Parsed: sidecars; opaque user parts unknown |
-| Artifact create | Not seen outside tool traffic; canvas label retained, input stays raw | Parsed: artifacts input id/type/title/content/version | Not seen; opaque Canvas/report fields unknown |
-| Artifact edits | Not seen; canvas tool input stays raw | Parsed: old_str/new_str, command, version and parent version | Not seen; opaque fields unknown |
+| Artifact create | Parsed: canmore.create_textdoc name/type/content; document or code + language | Parsed: artifacts input id/type/title/content/version | Not seen; opaque Canvas/report fields unknown |
+| Artifact edits | Parsed: canmore.update_textdoc patterns/replacements/multiple; replacements searchable | Parsed: old_str/new_str, command, version and parent version | Not seen; opaque fields unknown |
+| Artifact comments | Parsed: canmore.comment_textdoc patterns/comments; comments searchable | No verified comment shape; unknown artifact shapes retained | Not seen; opaque fields unknown |
 | Tool traffic | Parsed: recipient/tool-author families, code/execution labels | Parsed: tool-use/result labels, artifact exception above | No verified tool shape; opaque fields unknown |
 | Citation/reference | Unknown: metadata citations and content_references | Parsed: documented web_search_result_location; other shapes unknown | No verified shape; opaque fields unknown |
 | UI widget / chart / form / map | Not seen; unrecognized content unknown | Not seen; inline-visual/doc/slide/design content unknown | Not seen; interactive-visual content unknown |
@@ -151,6 +172,11 @@ fixtures. Gemini's positional fallback names such as `gemini.candidate.12` ident
 an opaque slot where there is no provider type string. The review fixes below leave known metadata in raw and use stable content
 categories. Reparse removes the original metadata-only blocks; the report groups
 legacy positional names while older projections await reparse.
+
+Canvas coverage uses regression probes for the requested tool argument shapes,
+in code/JSON and text-part envelopes. No representative production Canvas capture
+was added or accessed. Unfamiliar Canvas types, methods and malformed arguments
+remain unknown rather than being guessed.
 
 ## Reparse semantics
 
@@ -202,7 +228,8 @@ chat-scrobbler unknown-types --source chatgpt --json
   Independent parts are retained as raw pointers when either budget is exceeded.
   Block and pointer metadata is outside the inline JSON budget.
 - Ordinary tool machinery stays raw. Artifact bodies and structured edits are the
-  explicit semantic exception. New tool replies keep labels and non-prose content, not copied tool prose.
+  explicit semantic exception. Canvas replacement/comment prose enters recall;
+  edit patterns stay structured. New tool replies keep labels and non-prose content.
 - Known parts are projections, not full provider objects; additional metadata stays
   in raw. Unknown parts retain their JSON below the cap and raw pointers above it.
 - No guessed structures for late-2026 visual features. Schema capacity and raw
@@ -318,3 +345,23 @@ archive was accessed by this implementation session.
   they do not depend on scheduler timing or sleeps.
 - All test data and temporary output stayed inside the worktree via `TMPDIR`.
   No push, deployment, production archive reads or production data changes.
+
+### Round 2: Claude fallback and searchable Canvas
+
+- Claude falls back to `m.text` unless a text, reasoning or artifact block exists.
+  Unknown flags, citations, media and tool labels no longer suppress that fallback.
+  The regression probe retains `{type: "flag"}` alongside `hello from text field`.
+- Canvas create, update and comment recipient calls now retain their tool label
+  and emit artifacts as described above. Public parser and FTS tests verify
+  searchable document/code content, replacements and comments, pattern exclusion,
+  branch-local context, context-free edits and opaque malformed/future payloads.
+- The known tool-family audit found Claude `artifacts` already emits artifacts,
+  and `image_gen`/DALL-E outputs already retain media pointers, hashes and paths.
+  Python/code-interpreter and browsing/search prose stays label-only. No other
+  verified user-facing artifact tool shape was found in this worktree.
+- The independent re-review supplied by Burooj reports zero unexplained differences
+  across 5,572 production sessions before these two fixes. This session used only
+  worktree tests and synthetic payloads.
+- Round 2 gates: `bun test` **407 pass, 0 fail**, 1,325 expectations across 43 files,
+  9.66 seconds; `bun x tsc --noEmit` **exit 0**, no diagnostics. Tests used worktree
+  `TMPDIR` and the default timeout settings. Both fixes began with failing tests.

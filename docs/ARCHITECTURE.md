@@ -181,8 +181,10 @@ interface Message {
 
 **Block** (schema version 2 union): `text`, `reasoning`, `tool_call`, `artifact`,
 `image`, `audio`, `video`, `file`, `citation`, `ui_widget`, and `unknown`, plus legacy
-`tool_result` and `attachment`. New tool calls keep name/family only; tool payloads
-and unknown JSON are excluded from rendered recall text. Unknown parts retain up
+`tool_result` and `attachment`. New tool labels keep name/family only. Ordinary tool
+payloads and unknown JSON are excluded from rendered recall text. User-facing
+Claude and ChatGPT Canvas content is retained as artifacts. Canvas edit replacements
+and comments are searchable; edit patterns stay structured. Unknown parts retain up
 to 16 KiB of JSON per part and 64 KiB inline JSON per session, plus raw references
 and JSON pointers. Known Gemini metadata stays in raw only. Version 1 files
 remain loadable. See [BJS-545 handoff](../HANDOFF-BJS-545.md) for the contract.
