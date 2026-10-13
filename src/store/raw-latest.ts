@@ -10,15 +10,22 @@ function stableJson(value: unknown): string {
   return JSON.stringify(value) ?? "null";
 }
 export function rawContentHash(capture: RawCapture): string {
-  return createHash("sha256").update(stableJson({ endpoint: capture.endpoint, payload: capture.payload })).digest("hex");
+  return createHash("sha256").update(stableJson({ endpoint: capture.endpoint, payload: capture.payload, assets: capture.assets ?? [] })).digest("hex");
 }
-interface Latest { file: string; content_hash: string; }
+interface Latest { file: string; content_hash: string; hash_version?: number; }
 
 /** One tiny read per capture. Existing archives need only one discovery scan. */
 export function latestRaw(dir: string): Latest | null {
   try {
     const latest = JSON.parse(readFileSync(join(dir, "latest.json"), "utf8")) as Latest;
-    if (/^.+-[a-f0-9]{64}\.json\.gz$/.test(latest.file) && !/[\/\\]/.test(latest.file) && existsSync(join(dir, latest.file))) return latest;
+    if (/^.+-[a-f0-9]{64}\.json\.gz$/.test(latest.file) && !/[\/\\]/.test(latest.file) && existsSync(join(dir, latest.file))) {
+      if (latest.hash_version === 2) return latest;
+      // Upgrade only the pointed-to version, without scanning history or duplicating it.
+      const capture = JSON.parse(Buffer.from(Bun.gunzipSync(readFileSync(join(dir, latest.file)))).toString()) as RawCapture;
+      const upgraded = { ...latest, content_hash: rawContentHash(capture), hash_version: 2 };
+      writeLatestRaw(dir, upgraded);
+      return upgraded;
+    }
   } catch (error) {
     if (!existsSync(dir)) return null;
     if ((error as NodeJS.ErrnoException).code && (error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
@@ -36,5 +43,5 @@ export function latestRaw(dir: string): Latest | null {
   return latest;
 }
 export function writeLatestRaw(dir: string, latest: Latest): void {
-  writeAtomicFile(join(dir, "latest.json"), JSON.stringify(latest));
+  writeAtomicFile(join(dir, "latest.json"), JSON.stringify({ ...latest, hash_version: 2 }));
 }

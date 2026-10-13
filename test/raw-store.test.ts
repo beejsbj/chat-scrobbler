@@ -99,3 +99,33 @@ test("oversized raw IDs and parseable timestamps are rejected as client errors",
     expect(listRawCaptures(root, "chatgpt", "conv-1")).toEqual([]);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
+
+test("raw dedupe preserves newly uploaded asset linkage and changes to hash or local path", () => {
+  const root = mkdtempSync(join(tmpdir(), "raw-assets-"));
+  try {
+    const capture = buildRawCapture({ source: "gemini", sourceId: "linked", endpoint: "/rpc", payload: {} });
+    const before = storeRawCapture(root, capture);
+    const linked = { ...capture, assets: [{ pointer: "p", local_path: "assets/a.png", sha256: "a".repeat(64) }] };
+    const after = storeRawCapture(root, linked);
+    expect(after).not.toBe(before);
+    expect(readRawCapture(root, after).assets).toEqual(linked.assets);
+    expect(storeRawCapture(root, { ...linked, fetched_at: "2027-01-01T00:00:00Z", cursor: "noise" })).toBe(after);
+    const changedHash = { ...linked, assets: [{ ...linked.assets[0], sha256: "b".repeat(64) }] };
+    expect(storeRawCapture(root, changedHash)).not.toBe(after);
+    storeRawCapture(root, { ...changedHash, assets: [{ ...changedHash.assets[0], local_path: "assets/b.png" }] });
+    expect(listRawCaptures(root, "gemini", "linked")).toHaveLength(4);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("raw latest lookup upgrades old content hashes without adding an unchanged version", () => {
+  const { writeFileSync } = require("node:fs");
+  const { createHash } = require("node:crypto");
+  const root = mkdtempSync(join(tmpdir(), "raw-lookup-upgrade-"));
+  try {
+    const capture = buildRawCapture({ source: "gemini", sourceId: "legacy", endpoint: "/rpc", payload: {}, assets: [{ pointer: "p", local_path: "assets/a.png", sha256: "a".repeat(64) }] });
+    const ref = storeRawCapture(root, capture);
+    writeFileSync(join(root, "gemini", "legacy", "latest.json"), JSON.stringify({ file: ref.split("/").pop(), content_hash: createHash("sha256").update(JSON.stringify({ endpoint: capture.endpoint, payload: capture.payload })).digest("hex") }));
+    expect(storeRawCapture(root, { ...capture, fetched_at: "2027-01-01T00:00:00Z" })).toBe(ref);
+    expect(listRawCaptures(root, "gemini", "legacy")).toHaveLength(1);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
