@@ -353,3 +353,19 @@ test("file indexes enable WAL and a busy timeout on every open", () => {
     }
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
+
+test("concurrent queries keep their own semantic status when another query recovers", async () => {
+  const { searchMessagesReport } = await import("../src/indexer/sqlite");
+  const db = openIndex(":memory:");
+  let fail!: (reason: unknown) => void;
+  let succeed!: (vector: number[]) => void;
+  const provider: EmbeddingProvider = { kind: "concurrent-query", embed(text) { return new Promise<number[]>((resolve, reject) => { if (text === "failed") fail = reject; else succeed = resolve; }); } };
+  try {
+    const failed = searchMessagesReport(db, "failed", { embeddingProvider: provider });
+    const recovered = searchMessagesReport(db, "recovered", { embeddingProvider: provider });
+    fail(new Error("offline"));
+    succeed([1, 0]);
+    expect(await failed).toMatchObject({ semantic: "unavailable", reason: "embedding_query_failed" });
+    expect(await recovered).toMatchObject({ semantic: "available" });
+  } finally { db.close(); }
+});

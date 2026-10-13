@@ -117,15 +117,17 @@ export function searchMessages(db: Database, query: string, opts: SearchMessages
   const merged = literalHits(db, query, opts.source, limit);
 
   const semanticProvider = opts.embeddingProvider ?? null;
+  let status = embeddingStatus(semanticProvider);
   if (semanticProvider) {
-    const queryEmbedding = safeSyncEmbedding(semanticProvider, query, { kind: "query" });
+    const attempt = safeSyncEmbedding(semanticProvider, query, { kind: "query" });
+    const queryEmbedding = attempt.vector;
+    status = attempt.status;
     if (queryEmbedding) {
       mergeSemanticHits(merged, semanticCandidates(db, queryEmbedding, embeddingMetadata(semanticProvider, queryEmbedding), opts.source, Math.max(limit * 3, 20)), query);
     }
   }
 
   const hits = finalizeHits(merged, limit);
-  const status = embeddingStatus(semanticProvider);
   if (status.semantic === "unavailable") for (const hit of hits) Object.assign(hit, status);
   return hits;
 }
@@ -141,13 +143,15 @@ export async function searchMessagesReport(db: Database, query: string, opts: Se
   const limit = opts.limit ?? 20;
   const merged = literalHits(db, query, opts.source, limit);
   const semanticProvider = opts.embeddingProvider ?? null;
+  let status = embeddingStatus(semanticProvider);
   if (semanticProvider) {
-    const queryEmbedding = await safeAsyncEmbedding(semanticProvider, query, { kind: "query" });
+    const attempt = await safeAsyncEmbedding(semanticProvider, query, { kind: "query" });
+    const queryEmbedding = attempt.vector;
+    status = attempt.status;
     if (queryEmbedding) {
       mergeSemanticHits(merged, semanticCandidates(db, queryEmbedding, embeddingMetadata(semanticProvider, queryEmbedding), opts.source, Math.max(limit * 3, 20)), query);
     }
   }
-  const status = embeddingStatus(semanticProvider);
   const hits = finalizeHits(merged, limit);
   if (status.semantic === "unavailable") for (const hit of hits) Object.assign(hit, status);
   return { hits, ...status };
@@ -530,24 +534,26 @@ function syncEmbedding(provider: EmbeddingProvider, text: string, context: Embed
   return validateEmbedding(result);
 }
 
-function safeSyncEmbedding(provider: EmbeddingProvider, text: string, context: EmbeddingContext): number[] | null {
+type EmbeddingAttempt = { vector: number[] | null; status: SemanticStatus };
+
+function safeSyncEmbedding(provider: EmbeddingProvider, text: string, context: EmbeddingContext): EmbeddingAttempt {
   try {
     const vector = syncEmbedding(provider, text, context);
     embeddingSucceeded(provider);
-    return vector;
+    return { vector, status: embeddingStatus(provider) };
   } catch {
     embeddingFailed(provider, "embedding_query_failed");
-    return null;
+    return { vector: null, status: embeddingStatus(provider) };
   }
 }
 
-async function safeAsyncEmbedding(provider: EmbeddingProvider, text: string, context: EmbeddingContext): Promise<number[] | null> {
+async function safeAsyncEmbedding(provider: EmbeddingProvider, text: string, context: EmbeddingContext): Promise<EmbeddingAttempt> {
   try {
     const vector = validateEmbedding(await provider.embed(text, context));
     embeddingSucceeded(provider);
-    return vector;
+    return { vector, status: embeddingStatus(provider) };
   } catch {
     embeddingFailed(provider, "embedding_query_failed");
-    return null;
+    return { vector: null, status: embeddingStatus(provider) };
   }
 }
