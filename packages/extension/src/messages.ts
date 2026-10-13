@@ -37,6 +37,7 @@ export interface AssetFailureMessage {
 export interface AssetFetchMessage {
   type: "SCROBBLER_ASSET_FETCH";
   url: string;
+  maxBytes?: number;
 }
 
 export interface AssetFetchResponse {
