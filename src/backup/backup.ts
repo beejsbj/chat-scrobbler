@@ -7,6 +7,8 @@ import { existsSync, statSync, readFileSync, mkdtempSync, writeFileSync as fsWri
 import { join, relative, basename, sep } from "node:path";
 import { tmpdir } from "node:os";
 import { listSessionFiles } from "../store/sessions";
+import { backupRaw, rawFiles, restoreRaw } from "./raw";
+import { rawDirForCanonicalDir } from "../store/raw";
 import { assetsDirForCanonicalDir } from "../store/assets";
 import type { BackupTarget } from "./target";
 
@@ -25,6 +27,8 @@ export interface BackupManifest {
   asset_file_count?: number;
   /** Total bytes of all asset files. */
   asset_total_bytes?: number;
+  raw_file_count?: number;
+  raw_total_bytes?: number;
   /** Absolute path to the canonical dir at backup time. */
   canonical_dir: string;
   /** Schema version for forward-compat. Always 1. */
@@ -38,6 +42,7 @@ export interface BackupManifest {
 export interface CreateBackupOptions {
   /** Absolute path to canonical/sessions (the source of truth). */
   canonicalDir: string;
+  rawDir?: string;
   /** Resolved backup target. */
   target: BackupTarget;
   /**
@@ -91,6 +96,8 @@ export async function createBackup(opts: CreateBackupOptions): Promise<CreateBac
     await target.putFile(snapshot, relInSnapshot, absPath);
   }
 
+  const rawStats = await backupRaw(opts.rawDir ?? rawDirForCanonicalDir(canonicalDir), target, snapshot);
+
   // Optionally include the config file
   if (configPath && existsSync(configPath)) {
     const configFilename = basename(configPath);
@@ -104,6 +111,7 @@ export async function createBackup(opts: CreateBackupOptions): Promise<CreateBac
     total_bytes: totalBytes,
     asset_file_count: assetFiles.length,
     asset_total_bytes: assetTotalBytes,
+    ...rawStats,
     canonical_dir: canonicalDir,
     schema: 1,
   };
@@ -170,6 +178,7 @@ export interface RestoreBackupOptions {
   snapshot: string;
   /** Absolute path to the canonical dir to restore into. */
   canonicalDir: string;
+  rawDir?: string;
   /**
    * When false (default) the restore refuses if canonicalDir already contains
    * session files to prevent accidental overwrites.
@@ -182,6 +191,7 @@ export interface RestoreBackupResult {
   restored_count: number;
   /** Number of asset files restored. */
   restored_asset_count?: number;
+  restored_raw_count?: number;
 }
 
 export async function restoreBackup(opts: RestoreBackupOptions): Promise<RestoreBackupResult> {
@@ -191,7 +201,8 @@ export async function restoreBackup(opts: RestoreBackupOptions): Promise<Restore
   if (!force) {
     const existing = listSessionFiles(canonicalDir);
     const existingAssets = listFilesRecursive(assetsDirForCanonicalDir(canonicalDir));
-    if (existing.length > 0 || existingAssets.length > 0) {
+    const existingRaw = rawFiles(opts.rawDir ?? rawDirForCanonicalDir(canonicalDir));
+    if (existing.length > 0 || existingAssets.length > 0 || existingRaw.length > 0) {
       throw new Error(
         `canonicalDir "${canonicalDir}" is not empty (${existing.length} session file(s), ${existingAssets.length} asset file(s) found). ` +
           `Pass force: true to overwrite.`,
@@ -222,7 +233,8 @@ export async function restoreBackup(opts: RestoreBackupOptions): Promise<Restore
     await target.getFile(snapshot, relPath, destAbs);
   }
 
-  return { restored_count: sessionRelPaths.filter(f => !f.startsWith("canonical/assets/")).length, restored_asset_count: assetRelPaths.length };
+  const restored_raw_count = await restoreRaw(opts.rawDir ?? rawDirForCanonicalDir(canonicalDir), target, snapshot);
+  return { restored_count: sessionRelPaths.filter(f => !f.startsWith("canonical/assets/")).length, restored_asset_count: assetRelPaths.length, restored_raw_count };
 }
 
 // ---------------------------------------------------------------------------
