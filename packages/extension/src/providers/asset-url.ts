@@ -1,13 +1,15 @@
 import type { ProviderSource } from "../../../shared/src";
 
 const PROVIDER_HOSTS = new Set(["chatgpt.com", "chat.openai.com", "claude.ai", "gemini.google.com"]);
+// Legacy DALL-E URLs are signed downloads on this specific Azure storage account.
+const SIGNED_MEDIA_HOSTS = new Set(["oaidalleapiprodscus.blob.core.windows.net", "oaiusercontent.com", "claudeusercontent.com"]);
 const CDN_SUFFIXES = [".googleusercontent.com", ".googlevideo.com", ".oaiusercontent.com", ".claudeusercontent.com"];
 
 export function allowedAssetUrl(value: string): boolean {
   if (/^\/(?!\/)/.test(value) || /^(blob:|data:)/.test(value)) return true;
   try {
     const url = new URL(value);
-    return url.protocol === "https:" && !url.username && !url.password && (PROVIDER_HOSTS.has(url.hostname)
+    return url.protocol === "https:" && !url.username && !url.password && (PROVIDER_HOSTS.has(url.hostname) || SIGNED_MEDIA_HOSTS.has(url.hostname)
       || CDN_SUFFIXES.some(suffix => url.hostname.endsWith(suffix)) || url.hostname === "googleusercontent.com");
   } catch { return false; }
 }

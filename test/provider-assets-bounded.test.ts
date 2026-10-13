@@ -1,5 +1,13 @@
 import { expect, test } from "bun:test";
 import { uploadProviderAssets } from "../packages/extension/src/providers/assets";
+import { allowedAssetUrl, assetCredentials } from "../packages/extension/src/providers/asset-url";
+
+test("legacy DALL-E signed Azure media is allowed without provider cookies", () => {
+  const url = "https://oaidalleapiprodscus.blob.core.windows.net/private/image.png?sig=signed";
+  expect(allowedAssetUrl(url)).toBe(true);
+  expect(assetCredentials(url, "chatgpt")).toBe("omit");
+  expect(allowedAssetUrl("https://unrelated.blob.core.windows.net/image.png")).toBe(false);
+});
 
 test("binary response MIME wins over a provider image format hint", async () => {
   const assets = await uploadProviderAssets(async () => new Response(new Uint8Array([1]), { headers: { "content-type": "image/jpeg" } }),

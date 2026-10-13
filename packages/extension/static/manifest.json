@@ -23,7 +23,8 @@
     "https://*.googleusercontent.com/*",
     "https://*.googlevideo.com/*",
     "https://*.oaiusercontent.com/*",
-    "https://*.claudeusercontent.com/*"
+    "https://*.claudeusercontent.com/*",
+    "https://oaidalleapiprodscus.blob.core.windows.net/*"
   ],
   "background": {
     "service_worker": "dist/background.js",
