@@ -18,8 +18,9 @@ export async function handleSearch(db: Database, args: { query: string; source?:
   const report = args.regex
     ? { hits: grepMessages(db, args.query, { source: args.source, limit: args.limit }), semantic: "disabled", reason: "regex_search", embedding_failures: 0 }
     : await searchMessagesReport(db, args.query, { source: args.source, limit: args.limit, embeddingProvider });
-  const { hits, ...status } = report;
-  return { content: [{ type: "text", text: JSON.stringify(hits, null, 2) }], structuredContent: status };
+  // Clients such as Claude.ai prefer structuredContent over content when both are
+  // present, so the hits must live there too or those clients see no results.
+  return { content: [{ type: "text", text: JSON.stringify(report.hits, null, 2) }], structuredContent: { ...report } };
 }
 
 export function handleGetSession(canonicalDir: string, args: { id: string; format?: "json" | "markdown" }): ToolResult {

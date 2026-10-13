@@ -384,3 +384,22 @@ test("semantic search validates only its ranked candidate window against current
     expect(searchMessages(db, "unmatched", { embeddingProvider: provider, limit: 1 })[0]?.message_id).toBe("stale-0-m1");
   } finally { db.close(); }
 });
+
+test("re-indexing an unchanged session reuses stored vectors instead of re-embedding", async () => {
+  const { indexSessionWithEmbeddings } = await import("../src/indexer/sqlite");
+  const db = openIndex(":memory:");
+  let calls = 0;
+  const provider = { kind: "counting", model: "m1", async embed(): Promise<number[]> { calls++; return [1, 0, 0]; } };
+  const msg = (id: string, text: string) => ({ id, role: "user" as const, created_at: null, parent_id: null, model: null, blocks: [], text });
+  const session = (updated_at: string, texts: string[]) => ({ id: "gemini:reuse", source: "gemini" as const, source_id: "reuse", capture_method: "api" as const, title: "t", created_at: "2026-01-01T00:00:00Z", updated_at, default_model: null, account: null, raw_ref: "ref", schema_version: 1, messages: texts.map((t, i) => msg(`m${i}`, t)) });
+  await indexSessionWithEmbeddings(db, session("2026-01-01T00:00:00Z", ["a", "b"]), { embeddingProvider: provider });
+  expect(calls).toBe(2);
+  await indexSessionWithEmbeddings(db, session("2026-01-01T00:30:00Z", ["a", "b"]), { embeddingProvider: provider });
+  expect(calls).toBe(2);
+  await indexSessionWithEmbeddings(db, session("2026-01-01T01:00:00Z", ["a", "b changed", "c"]), { embeddingProvider: provider });
+  expect(calls).toBe(4);
+  const other = { ...provider, model: "m2" };
+  await indexSessionWithEmbeddings(db, session("2026-01-01T01:30:00Z", ["a", "b changed", "c"]), { embeddingProvider: other });
+  expect(calls).toBe(7);
+  expect((db.query("SELECT COUNT(*) AS n FROM message_embeddings").get() as { n: number }).n).toBe(3);
+});

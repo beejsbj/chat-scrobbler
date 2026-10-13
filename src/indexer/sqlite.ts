@@ -73,7 +73,7 @@ export async function indexSessionWithEmbeddings(db: Database, s: Session, opts:
   if (!embeddingProvider) return "disabled";
 
   try {
-    const rows = await collectAsyncEmbeddingRows(s, embeddingProvider);
+    const rows = await collectAsyncEmbeddingRows(db, s, embeddingProvider);
     const replaced = db.transaction(() => replaceEmbeddingRows(db, s, rows, opts))();
     embeddingSucceeded(embeddingProvider, "ingest");
     return replaced ? "indexed" : "stale";
@@ -295,11 +295,28 @@ function collectSyncEmbeddingRows(s: Session, provider: EmbeddingProvider): Embe
   return rows;
 }
 
-async function collectAsyncEmbeddingRows(s: Session, provider: EmbeddingProvider): Promise<EmbeddingRow[]> {
+// Providers re-send whole conversations on every sync (Gemini re-captures every
+// visible chat each poll), so reuse a stored vector whenever the embedded inputs
+// (text, title, provider identity) are unchanged instead of re-embedding them.
+function reusableEmbedding(db: Database, s: Session, messageId: string, text: string, provider: EmbeddingProvider): number[] | null {
+  const row = db.query(
+    `SELECT embedding, text, title, provider_kind, provider_model FROM message_embeddings WHERE session_id = ? AND message_id = ?`,
+  ).get(s.id, messageId) as { embedding: string; text: string; title: string | null; provider_kind: string | null; provider_model: string | null } | null;
+  if (!row || row.text !== text || (row.title ?? null) !== (s.title ?? null)) return null;
+  if (row.provider_kind !== (provider.kind?.trim() || "unknown") || row.provider_model !== (provider.model?.trim() || null)) return null;
+  try {
+    return validateEmbedding(JSON.parse(row.embedding));
+  } catch {
+    return null;
+  }
+}
+
+async function collectAsyncEmbeddingRows(db: Database, s: Session, provider: EmbeddingProvider): Promise<EmbeddingRow[]> {
   const rows: EmbeddingRow[] = [];
   for (const m of s.messages) {
     if (!m.text) continue;
-    const embedding = validateEmbedding(await provider.embed(m.text, { kind: "document", title: s.title }));
+    const embedding = reusableEmbedding(db, s, m.id, m.text, provider)
+      ?? validateEmbedding(await provider.embed(m.text, { kind: "document", title: s.title }));
     rows.push({
       session_id: s.id,
       message_id: m.id,
