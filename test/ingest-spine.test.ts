@@ -81,6 +81,58 @@ test("POST /captures keeps canonical and literal index reliable when embeddings 
   }
 });
 
+test("POST /captures acknowledges every capture in a batch without starting hanging inference", async () => {
+  const { root, canonicalDir, indexPath } = ctx();
+  let inferenceCalls = 0;
+  const provider: EmbeddingProvider = {
+    kind: "test-hanging-document",
+    model: "pending",
+    dimensions: 2,
+    embed() {
+      inferenceCalls++;
+      return new Promise<number[]>(() => {});
+    },
+  };
+  let deadline: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const response = await Promise.race([
+      handleIngestRequest(
+        new Request("http://local/captures", {
+          method: "POST",
+          body: JSON.stringify([chatgptApi, claudeApi]),
+        }),
+        { canonicalDir, indexPath, embeddingProvider: provider },
+      ),
+      new Promise<never>((_, reject) => {
+        deadline = setTimeout(() => reject(new Error("capture ACK waited for inference")), 500);
+      }),
+    ]);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      ok: true,
+      count: 2,
+      spine: [
+        { session_id: "chatgpt:conv-1", indexed: true },
+        { session_id: "claude:cl-1", indexed: true },
+      ],
+    });
+    expect(inferenceCalls).toBe(0);
+    const db = openIndex(indexPath);
+    try {
+      for (const [source, id, query] of [["chatgpt", "conv-1", "protective"], ["claude", "cl-1", "wholeness"]]) {
+        const session = readSession(canonicalDir, source, id);
+        expect(session.raw_ref).toBeTruthy();
+        expect(searchMessages(db, query)).toHaveLength(1);
+      }
+    } finally {
+      db.close();
+    }
+  } finally {
+    clearTimeout(deadline);
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("POST /status reports synced / stale / missing from the index", async () => {
   const { root, canonicalDir, indexPath } = ctx();
   try {

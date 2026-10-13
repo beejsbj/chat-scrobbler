@@ -8,7 +8,7 @@ import { cachedIngestHealth } from "./health";
 import { Database } from "bun:sqlite";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
-import { foldCaptureIntoSpineWithEmbeddings, type SpineResult } from "./pipeline";
+import { foldCaptureIntoSpine, type SpineResult } from "./pipeline";
 import { recordAssetFailures } from "./asset-failures";
 import { conversationStatuses } from "./status";
 import {
@@ -45,6 +45,7 @@ export interface IngestServerOptions extends MonitorConfig {
   canonicalDir?: string;
   indexPath?: string;
   rawDir?: string;
+  /** Used by deep health checks. Captures defer vector inference to backfill. */
   embeddingProvider?: EmbeddingProvider | null;
 }
 
@@ -243,7 +244,9 @@ export async function handleIngestRequest(req: Request, opts: IngestServerOption
       for (const [i, capture] of captures.entries()) {
         let parsed = false;
         try {
-          spine.push(...await foldCaptureIntoSpineWithEmbeddings(capture, {
+          // ACK waits for raw + canonical + FTS only. There is no async DB work
+          // or inference job to outlive this request or block the next capture.
+          spine.push(...foldCaptureIntoSpine(capture, {
             canonicalDir: fat.canonicalDir,
             rawRef: rawRefs[i],
             onParse: success => {
@@ -252,7 +255,6 @@ export async function handleIngestRequest(req: Request, opts: IngestServerOption
               monitorWrite(path, () => recordParseOutcome(path, capture.source, capture.source_id, success));
             },
             db,
-            embeddingProvider: opts.embeddingProvider ?? null,
           }));
         } catch (error) {
           if (!parsed) logCaptureParseFailure(capture, error);
