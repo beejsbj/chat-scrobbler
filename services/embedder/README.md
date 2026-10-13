@@ -107,10 +107,14 @@ Queue wait and inference time are additive. The adapter's 120-second timeout is 
 client deadline, not a guarantee that large media or queued work finishes within
 it. Long docs should use the adapter's sequential chunks. Native inference is
 not forcibly cancelled inside a living process. Each native load/inference has a
-120-second watchdog (`EMBEDDER_INFERENCE_TIMEOUT`, at most 300 seconds).
-Overdue work makes `/health` return 503 with `status: hung`. The server watchdog
+120-second watchdog (`EMBEDDER_INFERENCE_TIMEOUT`, at most 300 seconds), also
+covering native idle and shutdown close.
+Overdue work makes `/health` return 503 with `status: hung`. An independent daemon watchdog
 exits the whole process with status 70, allowing Compose's restart policy to
-recover without unsafe concurrent native close. An idle close exception is
+recover without unsafe concurrent native close. This watchdog does not use the
+engine lock or HTTP polling thread, so it also detects idle close freezing that
+polling thread. It stays armed while server shutdown drains requests and closes
+the engine, then stops and joins. An idle close exception is
 contained, reported as `last_close_error: engine_close_failed`, and the next
 request loads a fresh engine. Disconnects drain safely, and
 may consume remaining compute. Header sockets have a 15-second inactivity timeout;

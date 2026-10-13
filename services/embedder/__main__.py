@@ -16,9 +16,8 @@ def main():
         try:
             server.serve_forever(poll_interval=.5)
         finally:
-            # server_close drains handlers, then close native state under its lock.
+            # Drain handlers and close native state while the watchdog remains armed.
             server.server_close()
-            service.close()
 
 
 if __name__ == '__main__':

@@ -125,17 +125,43 @@ class HttpTests(unittest.TestCase):
     def test_hung_health_is_503_and_watchdog_exits_for_container_restart(self):
         now = [10.]
         self.service.clock = lambda: now[0]
-        with patch('services.embedder.http_server.os._exit') as terminate:
+        exited = threading.Event()
+        with patch('services.embedder.http_server.os._exit', side_effect=lambda code: exited.set()) as terminate:
             try:
                 self.service.work_started = 10.
                 now[0] = 131.
                 status, health = self.request('GET', '/health')
                 self.assertEqual(status, 503)
                 self.assertEqual(health['status'], 'hung')
-                self.server.service_actions()
-                terminate.assert_any_call(70)
+                self.assertTrue(exited.wait(2))
+                terminate.assert_called_once_with(70)
             finally:
                 self.service.work_started = None
+
+    def test_watchdog_detects_idle_close_hang_while_poll_thread_is_blocked(self):
+        entered, release, exited = threading.Event(), threading.Event(), threading.Event()
+        now = [10.]
+        self.service.clock = lambda: now[0]
+        self.service.config = replace(self.service.config, idle_seconds=1)
+        self.request('POST', '/v1/embeddings', {'input': 'load'})
+        def blocked_close():
+            entered.set()
+            release.wait(4)
+        self.engine.close = blocked_close
+        with patch('services.embedder.http_server.os._exit', side_effect=lambda code: exited.set()) as terminate:
+            try:
+                now[0] = 12.
+                self.assertTrue(entered.wait(2))
+                now[0] = 133.
+                self.assertTrue(exited.wait(1.5))
+                terminate.assert_called_once_with(70)
+            finally:
+                release.set()
+
+    def test_server_close_stops_and_joins_watchdog(self):
+        self.server.shutdown()
+        self.server.server_close()
+        self.assertFalse(self.server.watchdog_thread.is_alive())
 
     def test_connection_slots_bounded_before_body_reads(self):
         sockets = [socket.create_connection(('127.0.0.1', self.port), timeout=3)

@@ -41,6 +41,10 @@ class Embedder:
                 'queued': self.queue.queued, 'threads': 2, 'vision_tokens': 140, 'idle_seconds': self.config.idle_seconds,
                 'rss_kib': current_rss_kib()}
 
+    def watchdog_expired(self):
+        started = self.work_started
+        return started is not None and self.clock() - started > self.config.inference_timeout
+
     def model_available(self):
         try:
             return (self.config.model_path.is_file() and self.config.cache_dir.is_dir()

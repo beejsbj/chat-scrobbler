@@ -134,7 +134,10 @@ class Server(ThreadingHTTPServer):
         self.connections = threading.BoundedSemaphore(self.max_connections)
         self.connection_count = 0
         self.count_lock = threading.Lock()
+        self.watchdog_stop = threading.Event()
+        self.watchdog_thread = threading.Thread(target=self._watchdog, daemon=True, name='embedder-watchdog')
         super().__init__((embedder.config.bind_host, embedder.config.port), Handler)
+        self.watchdog_thread.start()
 
     def process_request(self, request, client_address):
         if not self.connections.acquire(blocking=False):
@@ -168,10 +171,22 @@ class Server(ThreadingHTTPServer):
         finally:
             self._release_connection()
 
+    def _watchdog(self):
+        # Independent of both the engine mutex and the HTTP polling thread:
+        # idle native close may block that polling thread as well as inference.
+        while not self.watchdog_stop.wait(.5):
+            if self.embedder.watchdog_expired():
+                os._exit(70)
+                return
+
+    def server_close(self):
+        try:
+            super().server_close()  # Drain handlers with watchdog still armed.
+            self.embedder.close()  # Shutdown close is protected too.
+        finally:
+            self.watchdog_stop.set()
+            if self.watchdog_thread.is_alive():
+                self.watchdog_thread.join(timeout=1)
+
     def service_actions(self):
-        if self.embedder.health()['status'] == 'hung':
-            # Native cancellation/close is unsafe while C inference holds the mutex.
-            # Exit the whole process; Compose restart policy creates a fresh engine.
-            os._exit(70)
-            return
         self.embedder.unload_if_idle()
