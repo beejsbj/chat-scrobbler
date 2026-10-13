@@ -40,7 +40,7 @@ function writableIndex(path: string | undefined): StoreHealth {
 }
 
 /** Bounded real embedding call verifies that the configured model is usable. */
-async function probeEmbedding(provider: EmbeddingProvider | null) {
+export async function probeEmbedding(provider: EmbeddingProvider | null) {
   if (!provider) return embeddingStatus(null);
   const controller = new AbortController();
   let timer: ReturnType<typeof setTimeout> | undefined;

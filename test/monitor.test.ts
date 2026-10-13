@@ -1,8 +1,8 @@
 import { Database } from "bun:sqlite";
 import { monitorReport } from "../src/monitor/report";
-import { readMonitorState } from "../src/monitor/state";
+import { recordCaptureReceipt, readMonitorState } from "../src/monitor/state";
 import { expect, spyOn, test } from "bun:test";
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { handleIngestRequest } from "../packages/ingest/src/server";
 import { getParser } from "../src/parsers/registry";
@@ -110,7 +110,7 @@ test("embedding failures remain counted after changing provider instances withou
     expect(response.status).toBe(200);
     const report = await (await handleIngestRequest(request(), { ...opts, embeddingProvider: new HashEmbeddingProvider() })).json();
     expect(report.counters.embedding_ingest_failures).toBe(1);
-    expect(report.health.embedding_failures).toBe(1);
+    expect(report.counters.embedding_ingest_failures).toBe(1);
     expect(JSON.stringify(report)).not.toContain("secret");
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
@@ -229,7 +229,7 @@ test("store failures remain categorical and a configured state path is shared by
     rmSync(join(root, "raw"), { recursive: true });
     writeFileSync(join(root, "raw"), "chat-secret");
     const report = await (await handleIngestRequest(request(), { ...opts, monitorStatePath: statePath })).json();
-    expect(report.failures).toContain("FAILED store.raw store_write_failed");
+    expect(report.failures).toContain("FAILED store.raw store_access_failed");
     expect(JSON.stringify(report)).not.toContain("chat-secret");
     const brokenIndex = join(root, "broken.db");
     writeFileSync(brokenIndex, "chat-secret");
@@ -288,7 +288,7 @@ test("a broken monitor database cannot stop parsing, canonical writes or indexin
 test("a locked state writer does not stall ingest and its failure is visible offline", async () => {
   const { root, opts } = setup();
   const path = `${opts.indexPath}.monitor.sqlite`;
-  readMonitorState(path);
+  recordCaptureReceipt(path, "chatgpt");
   const lock = new Database(path);
   try {
     lock.run("BEGIN IMMEDIATE");
@@ -319,5 +319,27 @@ test("asset telemetry failure does not break conversation status responses", asy
     const response = await handleIngestRequest(new Request("http://local/status", { method: "POST", body: JSON.stringify({ source: "claude", conversations: [{ id: "cl-1" }], asset_failures: [{ source_id: "cl-1", reason: "asset_upload_failed" }] }) }), { ...opts, ingestToken: null, monitorStatePath: path });
     expect(response.status).toBe(200);
     expect((await response.json()).asset_failures).toBe(1);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("ordinary monitoring creates no state and remains readable during an index rebuild", async () => {
+  const { root, opts } = setup();
+  const db = openIndex(opts.indexPath);
+  try {
+    db.run("BEGIN IMMEDIATE");
+    const start = performance.now();
+    const report = await monitorReport(opts);
+    expect(performance.now() - start).toBeLessThan(1000);
+    expect(report.failures).toEqual([]);
+    expect(existsSync(`${opts.indexPath}.monitor.sqlite`)).toBe(false);
+    expect(readdirSync(opts.canonicalDir).some(file => file.startsWith(".health-"))).toBe(false);
+  } finally { db.run("ROLLBACK"); db.close(); rmSync(root, { recursive: true, force: true }); }
+}, 15000);
+
+test("monitor does not create missing stores while checking their permissions", async () => {
+  const root = mkdtempSync(join(import.meta.dir, ".monitor-"));
+  try {
+    await monitorReport({ canonicalDir: join(root, "canonical", "sessions"), indexPath: join(root, "index", "missing.db"), embeddingProvider: new HashEmbeddingProvider() });
+    expect(readdirSync(root)).toEqual([]);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });

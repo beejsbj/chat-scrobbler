@@ -131,3 +131,7 @@ No production data was read, no deployment was performed, and no branch was push
 - Exec must run as the container user, never `-u root`. Creation rejects a UID
   different from the data directory owner and rejects foreign-owned state files
   and SQLite sidecars.
+- Ordinary monitoring now opens index and state read-only and checks directory
+  permissions without probe writes, new directories or writer transactions.
+  Regression tests hold an index rebuild transaction while monitoring succeeds.
+  `--ack` remains an explicit state write.

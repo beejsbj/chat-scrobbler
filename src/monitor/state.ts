@@ -47,13 +47,17 @@ export function acknowledgeTypes(path: string, typeIds: string[], dataDir?: stri
 }
 
 export function readMonitorState(path: string, since = Date.now() - 48 * 3_600_000, dataDir?: string) {
-  return withState(path, db => {
+  assertStateOwner(path, dataDir);
+  if (!existsSync(path)) return { counters: {} as Record<string, number>, captures: {} as Partial<Record<Source, string>>, acknowledged: new Set<string>(), recentAssets: 0 };
+  const db = new Database(path, { readonly: true });
+  try {
+    db.run("PRAGMA busy_timeout = 0");
     const counters = Object.fromEntries((db.query("SELECT key, value FROM counters").all() as Array<{ key: string; value: number }>).map(row => [row.key, row.value]));
     const captures = Object.fromEntries((db.query("SELECT source, received_at FROM captures").all() as Array<{ source: Source; received_at: string }>).map(row => [row.source, row.received_at])) as Partial<Record<Source, string>>;
     const acknowledged = new Set((db.query("SELECT type_id FROM acknowledged_types").all() as Array<{ type_id: string }>).map(row => row.type_id));
     const recentAssets = (db.query("SELECT coalesce(sum(count), 0) AS count FROM asset_buckets WHERE hour >= ?").get(Math.floor(since / 3_600_000)) as { count: number }).count;
     return { counters, captures, acknowledged, recentAssets };
-  }, dataDir);
+  } finally { db.close(); }
 }
 
 /** No creation or schema writes while reporting an existing provider counter. */

@@ -3,7 +3,7 @@ import { monitorWriteFailed } from "./state-fault";
 import { acknowledgeTypes, monitorStatePath, readMonitorState } from "./state";
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
-import { ingestHealth } from "../../packages/ingest/src/health";
+import { monitorHealth } from "./health";
 import type { IngestServerOptions } from "../../packages/ingest/src/server";
 import { unknownTypes } from "../core/unknown-types";
 import { rawDirForCanonicalDir } from "../store/raw";
@@ -29,9 +29,9 @@ export async function monitorReport(opts: IngestServerOptions, ack = false) {
   catch (error) { fail("state", error instanceof MonitorStateError ? error.reason : "unavailable"); }
   if (statePath && monitorWriteFailed(statePath)) fail("state", "write_failed");
   const indexExists = opts.indexPath && existsSync(opts.indexPath);
-  const health = await ingestHealth(opts, true);
+  const health = await monitorHealth(opts);
   for (const store of ["index", "canonical", "raw", "assets"] as const) {
-    if (!health[store].writable) fail(`store.${store}`, health[store].reason ?? "unavailable");
+    if (!health[store].ok) fail(`store.${store}`, health[store].reason ?? "unavailable");
   }
   if (health.semantic !== "available") fail("semantic", health.semantic === "disabled" ? "disabled" : "unavailable");
   const canonicalDir = opts.canonicalDir ?? "";

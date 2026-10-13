@@ -448,8 +448,10 @@ docker compose -f docker-compose.bjslab.yml exec -T scrobbler /usr/local/bin/cha
 The CLI exits 0, prints nothing when healthy, and otherwise prints sorted,
 timestamp-free `FAILED <check> <detail>` lines. It reads local raw, canonical and
 index stores without contacting the ingest server, so it works while that server
-is down. It uses the same write probes as deep health, a read-only index check,
-and a real embedding probe with a two-second deadline. It leaves a missing index
+is down. It checks directory permissions with access checks, opens the index and
+existing monitoring state read-only, and uses a real embedding probe with a
+two-second deadline. Ordinary monitoring creates no state or store directories;
+`--ack` intentionally writes acknowledgement state. It leaves a missing index
 missing. Paid embedding providers incur a diagnostic request per CLI invocation.
 Cockpit delivery and the Hermes schedule are supplied separately.
 
