@@ -1,5 +1,6 @@
 // src/store/sessions.ts
-import { mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync, rmSync } from "node:fs";
+import { writeAtomicFile } from "./atomic-file";
+import { mkdirSync, readFileSync, existsSync, readdirSync, rmSync } from "node:fs";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import type { Session, Message } from "../schema/types";
 import { assetsDirForSession } from "./assets";
@@ -15,7 +16,7 @@ export function writeSession(baseDir: string, session: Session): string {
   const dir = join(baseDir, session.source);
   mkdirSync(dir, { recursive: true });
   const file = join(dir, `${session.source_id}.json`);
-  writeFileSync(file, JSON.stringify(session, null, 2));
+  writeAtomicFile(file, JSON.stringify(session, null, 2));
   return file;
 }
 

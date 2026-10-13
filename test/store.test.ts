@@ -61,3 +61,17 @@ test("deleteSession removes canonical JSON and captured assets for one session",
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("replacing canonical JSON publishes a new file without changing an existing reader's inode", () => {
+  const { linkSync, readFileSync, readdirSync } = require("node:fs");
+  const root = mkdtempSync(join(tmpdir(), "session-atomic-"));
+  try {
+    const file = writeSession(root, session);
+    const oldReader = join(root, "old-reader.json");
+    linkSync(file, oldReader);
+    writeSession(root, { ...session, title: "Updated" });
+    expect(JSON.parse(readFileSync(oldReader, "utf8")).title).toBe("Healing");
+    expect(readSession(root, "claude", "cl-1").title).toBe("Updated");
+    expect(readdirSync(join(root, "claude"))).toEqual(["cl-1.json"]);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});

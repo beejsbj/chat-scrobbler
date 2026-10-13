@@ -1,3 +1,4 @@
+import { syncDirectory } from "./atomic-file";
 import { randomUUID } from "node:crypto";
 import { closeSync, fsyncSync, linkSync, mkdirSync, openSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
@@ -12,5 +13,5 @@ export function writeImmutableFile(path: string, bytes: string | Uint8Array): vo
     fsyncSync(fd);
     try { linkSync(temp, path); }
     catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; }
-  } finally { closeSync(fd); unlinkSync(temp); }
+  } finally { closeSync(fd); unlinkSync(temp); syncDirectory(dirname(path)); }
 }
