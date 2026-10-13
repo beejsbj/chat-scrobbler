@@ -9,6 +9,8 @@ import { EmbeddingGemmaProvider, embeddingGemmaDocumentWorkEstimate, type Embedd
 import { decodeVector, putTextVector, reusableBinaryTextVector, reusableTextVector, textVectorHash, vectorScope } from "./vector-store";
 
 export interface BackfillReport {
+  /** Background scan progress, without an archive-wide coverage probe. */
+  scan?: { cursor: number; asset_cursor: string; scanned: number; exhausted: boolean };
   event: "progress" | "load_pause" | "complete";
   embedded: number; converted: number; skipped: number; failed: number; stale: number; attempted: number;
   coverage_at_attempt: number | null;
@@ -52,11 +54,17 @@ export async function embedBackfill(db: Database, opts: {
   provider: EmbeddingProvider; canonicalDir?: string; limit?: number; rate?: number; loadThreshold?: number;
   signal?: AbortSignal; load?: () => number; sleep?: (ms:number)=>Promise<void>; now?: () => number;
   progress?: (report: BackfillReport)=>void;
+  background?: { cursor: number; assetCursor?: string; scanLimit: number };
+  /** Yields between scan pages and before each provider request/chunk. */
+  yieldToQueries?: () => Promise<void>;
 }): Promise<BackfillReport> {
   const {provider,signal} = opts, rate = opts.rate ?? 10, threshold = opts.loadThreshold;
   if (!Number.isFinite(rate) || rate <= 0 || threshold !== undefined && (!Number.isFinite(threshold) || threshold <= 0) ||
     opts.limit !== undefined && (!Number.isInteger(opts.limit) || opts.limit < 1)) throw new Error("invalid backfill controls");
   if (!provider.kind || !provider.model) throw new Error("backfill requires an explicit provider and model");
+  if (opts.background && (!Number.isSafeInteger(opts.background.scanLimit) || opts.background.scanLimit < 1 ||
+    !Number.isSafeInteger(opts.background.cursor) || opts.background.cursor < 0 || !Number.isFinite(opts.limit)))
+    throw new Error("background backfill requires bounded scan and attempt limits");
   signal?.throwIfAborted();
   const now = opts.now ?? (() => performance.now()), startedAt = now();
   const limit = opts.limit ?? Infinity;
@@ -80,8 +88,11 @@ export async function embedBackfill(db: Database, opts: {
     requestStartedAt=null;
   };
   let coverage: Pick<BackfillReport,"text"|"assets"|"coverage_at_attempt"> = {text:null,assets:null,coverage_at_attempt:null};
+  const background=opts.background;
+  let cursor=background?.cursor ?? 0, shaCursor=background?.assetCursor ?? "", scanned=0, textExhausted=false, assetsExhausted=!provider.embedAsset || !opts.canonicalDir;
+  const yieldToQueries=opts.yieldToQueries ?? (()=>Bun.sleep(0));
   const report = (event: BackfillReport["event"]): BackfillReport => {
-    if(event!=="load_pause") coverage={text:textCoverage(db,provider),assets:provider.embedAsset ? assetCoverage(db,provider) : null,coverage_at_attempt:attempted};
+    if(!background && event!=="load_pause") coverage={text:textCoverage(db,provider),assets:provider.embedAsset ? assetCoverage(db,provider) : null,coverage_at_attempt:attempted};
     const elapsedSeconds = Math.max(0,now()-startedAt)/1000;
     const remainingRequests = estimatedRequests === null ? null : Math.max(0,estimatedRequests-completedRequests);
     const remainingComputeChunks = estimatedComputeChunks === null ? null : Math.max(0,estimatedComputeChunks-completedComputeChunks);
@@ -89,6 +100,7 @@ export async function embedBackfill(db: Database, opts: {
     const eta = remainingRequests === null ? null : meanRequestSeconds === null
       ? remainingComputeChunks!*2+remainingRequests/rate : remainingRequests*(meanRequestSeconds+1/rate);
     return {event,embedded,converted,skipped,failed,stale,attempted,...coverage,
+      ...(background ? {scan:{cursor,asset_cursor:shaCursor,scanned,exhausted:textExhausted && assetsExhausted}} : {}),
       requests,estimated_requests:estimatedRequests,remaining_requests:remainingRequests,elapsed_seconds:elapsedSeconds,
       estimated_compute_chunks:estimatedComputeChunks,remaining_compute_chunks:remainingComputeChunks,
       mean_request_seconds:meanRequestSeconds,eta_seconds:eta,
@@ -106,7 +118,7 @@ export async function embedBackfill(db: Database, opts: {
   const startRequest = () => { needsPacing=true; requests++; requestStartedAt=now(); };
   const infer = async (call: (context: EmbeddingGemmaContext) => number[] | Promise<number[]>, checkCurrent: () => void, title?: string | null) => {
     const usesDispatchHooks=provider instanceof EmbeddingGemmaProvider;
-    const beforeRequest=async()=> { await throttle(); checkCurrent(); };
+    const beforeRequest=async()=> { if(background) await yieldToQueries(); await throttle(); checkCurrent(); };
     const context: EmbeddingGemmaContext = {
       kind:"document", title, signal,
       beforeRequest,
@@ -128,6 +140,7 @@ export async function embedBackfill(db: Database, opts: {
     } finally { requestStartedAt=null; }
   };
   await wait();
+  if (!background) {
   ensureMessageLookup(db);
   estimatedRequests=0; estimatedComputeChunks=0;
   for (const row of db.query("SELECT session_id,message_id,text,title FROM messages_fts").iterate() as Iterable<MessageRow>) {
@@ -140,31 +153,40 @@ export async function embedBackfill(db: Database, opts: {
     const assets=assetCoverage(db,provider), pending=assets.total-assets.embedded;
     estimatedRequests+=pending; estimatedComputeChunks+=pending;
   }
+  }
   opts.progress?.(report("progress"));
-  let cursor = 0;
-  while (attempted < limit) {
-    const rows = db.query("SELECT rowid,* FROM messages_fts WHERE rowid>? ORDER BY rowid LIMIT 100").all(cursor) as MessageRow[];
-    if (!rows.length) break;
+  const currentRow=(row: MessageRow) => db.query("SELECT text,title FROM messages_fts WHERE rowid=? AND session_id=? AND message_id=?")
+    .get(row.rowid,row.session_id,row.message_id) as MessageRow|null;
+  while (attempted < limit && (!background || scanned<background.scanLimit)) {
+    const rows = db.query("SELECT rowid,* FROM messages_fts WHERE rowid>? ORDER BY rowid LIMIT ?")
+      .all(cursor,background ? Math.min(100,background.scanLimit-scanned) : 100) as MessageRow[];
+    if (!rows.length) {textExhausted=true;break;}
     for (const row of rows) {
-      cursor=row.rowid; signal?.throwIfAborted();
+      if (background && attempted >= limit) break;
+      cursor=row.rowid; scanned++; signal?.throwIfAborted();
       if (!row.text.trim()) { skipped++; continue; }
+      if (background && db.query(`SELECT 1 FROM message_vectors WHERE session_id=? AND message_id=?
+        AND provider_kind=? AND provider_model=? AND (? IS NULL OR dimension=?) AND dimension>0
+        AND length(embedding)=dimension*4 AND (text_hash=? OR (text_hash IS NULL AND text=?)) AND title IS ? LIMIT 1`)
+        .get(row.session_id,row.message_id,provider.kind.trim(),provider.model.trim(),provider.dimensions ?? null,
+          provider.dimensions ?? null,textVectorHash(row.text),row.text,row.title ?? null)) {skipped++;continue;}
       if (reusableBinaryTextVector(db,row.session_id,row.message_id,row.text,row.title ?? null,provider)) { skipped++; continue; }
       const cached=reusableTextVector(db,row.session_id,row.message_id,row.text,row.title ?? null,provider);
       if (attempted >= limit) break;
       if (cached) await wait();
-      const current=db.query("SELECT f.text,f.title FROM message_lookup k JOIN messages_fts f ON f.rowid=k.fts_rowid AND f.session_id=k.session_id AND f.message_id=k.message_id WHERE k.session_id=? AND k.message_id=?").get(row.session_id,row.message_id) as MessageRow|null;
+      const current=currentRow(row);
       if (!current || current.text!==row.text || (current.title ?? null)!==(row.title ?? null)) { stale++; continue; }
       attempted++;
       const requestsBefore=requests;
       try {
         const checkCurrent=()=> {
-          const live=db.query("SELECT f.text,f.title FROM message_lookup k JOIN messages_fts f ON f.rowid=k.fts_rowid AND f.session_id=k.session_id AND f.message_id=k.message_id WHERE k.session_id=? AND k.message_id=?").get(row.session_id,row.message_id) as MessageRow|null;
+          const live=currentRow(row);
           if(!live || live.text!==row.text || (live.title ?? null)!==(row.title ?? null)) throw new StaleEmbeddingInput();
         };
         const embedding=cached ?? await infer(context=>provider.embed(row.text,context),checkCurrent,row.title);
         signal?.throwIfAborted();
         const written=db.transaction(()=> {
-          const live=db.query("SELECT f.text,f.title FROM message_lookup k JOIN messages_fts f ON f.rowid=k.fts_rowid AND f.session_id=k.session_id AND f.message_id=k.message_id WHERE k.session_id=? AND k.message_id=?").get(row.session_id,row.message_id) as MessageRow|null;
+          const live=currentRow(row);
           if (!live || live.text!==row.text || (live.title ?? null)!==(row.title ?? null)) return false;
           putTextVector(db,{...row,...vectorScope(provider,embedding.length),embedding}); return true;
         })();
@@ -175,17 +197,21 @@ export async function embedBackfill(db: Database, opts: {
       } catch (error) { signal?.throwIfAborted(); if(error instanceof StaleEmbeddingInput) stale++;else failed++; }
       // Coverage scans are once per 25 attempted items, plus start/end.
       if (attempted % 25===0) opts.progress?.(report("progress"));
+      if (background && failed) break;
     }
+    if (background) {await yieldToQueries(); if(failed) break;}
   }
-  if (provider.embedAsset && opts.canonicalDir && attempted < limit) {
+  if (provider.embedAsset && opts.canonicalDir && attempted < limit && (!background || !failed)) {
     const scope=vectorScope(provider);
-    let shaCursor="";
-    while (attempted < limit) {
-      const rows=db.query("SELECT DISTINCT sha256 FROM asset_embedding_links WHERE sha256>? ORDER BY sha256 LIMIT 100").all(shaCursor) as Array<{sha256:string}>;
-      if (!rows.length) break;
+    while (attempted < limit && (!background || scanned<background.scanLimit)) {
+      const rows=db.query("SELECT DISTINCT sha256 FROM asset_embedding_links WHERE sha256>? ORDER BY sha256 LIMIT ?")
+        .all(shaCursor,background ? Math.min(100,background.scanLimit-scanned) : 100) as Array<{sha256:string}>;
+      if (!rows.length) {assetsExhausted=true;break;}
       for (const {sha256} of rows) {
         if (attempted>=limit) break;
-        shaCursor=sha256;
+        shaCursor=sha256; scanned++;
+        if(background && db.query("SELECT 1 FROM asset_vectors WHERE sha256=? AND provider_kind=? AND provider_model=? AND dimension=? AND length(embedding)=dimension*4")
+          .get(sha256,scope.provider_kind,scope.provider_model,scope.dimension)) {skipped++;continue;}
         const exists=db.query("SELECT embedding FROM asset_vectors WHERE sha256=? AND provider_kind=? AND provider_model=? AND dimension=? AND length(embedding)=dimension*4")
           .get(sha256,scope.provider_kind,scope.provider_model,scope.dimension) as {embedding:Uint8Array}|null;
         if (exists) { try {decodeVector(exists.embedding,scope.dimension);skipped++;continue;} catch { /* Rebuild corruption. */ } }
@@ -201,7 +227,9 @@ export async function embedBackfill(db: Database, opts: {
           if(result==="indexed") { embedded++; completedRequests++; completedComputeChunks++; } else if(result==="skipped") skipped++; else stale++;
         } catch (error) { signal?.throwIfAborted(); if(error instanceof StaleEmbeddingInput) stale++;else failed++; }
         if(attempted%25===0) opts.progress?.(report("progress"));
+        if(background && failed) break;
       }
+      if(background) {await yieldToQueries(); if(failed) break;}
     }
   }
   const complete=report("complete"); opts.progress?.(complete); return complete;

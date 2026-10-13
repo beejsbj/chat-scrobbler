@@ -422,3 +422,31 @@ test("deleting an asset during its pacing yield does not count or sample a media
     expect(report).toMatchObject({embedded:1,stale:1,failed:0,requests:1,mean_request_seconds:2,assets:{total:0,embedded:0}});
   } finally {globalThis.fetch=originalFetch;db.close();}
 });
+
+test("background skips covered blobs, bounds scanning, yields, and resumes past a covered prefix", async () => {
+  const db = openIndex(":memory:");
+  try {
+    const s = fixture();
+    s.messages = Array.from({ length: 305 }, (_, i) => ({ ...s.messages[0], id: `m${i}`, text: `words ${i}` }));
+    indexSession(db, s);
+    const { putTextVector } = await import("../src/indexer/vector-store");
+    for (const message of s.messages.slice(0, 300)) putTextVector(db, {
+      session_id: s.id, message_id: message.id, text: message.text, title: s.title,
+      role: message.role, created_at: message.created_at, source: s.source,
+      provider_kind: "test", provider_model: "m", dimension: 2, embedding: [1, 0],
+    });
+    // A covered blob with bad coordinates proves background never decodes it.
+    db.run("UPDATE message_vectors SET embedding=?", [new Uint8Array([0, 0, 192, 127, 0, 0, 0, 0])]);
+    let yields = 0, calls = 0;
+    const options = { provider: { ...p, embed: async () => { calls++; return [1, 0]; } }, limit: 2,
+      background: { cursor: 0, scanLimit: 200 }, yieldToQueries: async () => { yields++; }, sleep: async () => {} };
+    const first = await embedBackfill(db, options);
+    expect(first).toMatchObject({ attempted: 0, skipped: 200, text: null, assets: null,
+      scan: { cursor: 200, scanned: 200, exhausted: false } });
+    expect(yields).toBeGreaterThanOrEqual(2);
+    const second = await embedBackfill(db, { ...options, background: { cursor: 200, scanLimit: 200 } });
+    expect(second).toMatchObject({ embedded: 2, attempted: 2, text: null,
+      scan: { cursor: 302, scanned: 102, exhausted: false } });
+    expect(calls).toBe(2);
+  } finally { db.close(); }
+});
