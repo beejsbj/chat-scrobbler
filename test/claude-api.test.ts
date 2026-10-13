@@ -76,13 +76,13 @@ test("hydrates Claude files and legacy attachments from uploaded asset sidecar",
   });
 
   expect(s.messages[0].blocks).toContainEqual(expect.objectContaining({
-    type: "attachment",
+    type: "file",
     filename: "one.pdf",
     pointer: "file-1",
     local_path: "assets/claude/cl-assets/file.pdf",
   }));
   expect(s.messages[0].blocks).toContainEqual(expect.objectContaining({
-    type: "attachment",
+    type: "file",
     filename: "legacy.txt",
     pointer: "legacy-1",
     local_path: "assets/claude/cl-assets/legacy.txt",
@@ -93,4 +93,38 @@ test("returns [] for empty or malformed input", () => {
   expect(parseClaude(null)).toEqual([]);
   expect(parseClaude({})).toEqual([]);
   expect(parseClaude({ payload: {} })).toEqual([]);
+});
+
+test("preserves artifact edits, per-message model, citations and unfamiliar visuals", () => {
+  const capture = structuredClone(sample) as any;
+  const message = capture.payload.chat_messages[1];
+  message.model = "claude-message-model";
+  message.content.push({ type: "tool_use", name: "artifacts", input: { id: "art1", command: "update", old_str: "# Healing", new_str: "# Restoring", version_uuid: "v2", parent_version_uuid: "v1" } });
+  message.content[1].citations = [{ type: "web_search_result_location", url: "https://example.org", title: "Study", cited_text: "Restoration", encrypted_index: "opaque" }];
+  message.content.push({ type: "inline_visual", data: { layout: "new" } });
+  const [s] = parseClaude(capture, { raw_ref: "claude/cl-1/version.json.gz" });
+  expect(s.schema_version).toBe(2);
+  expect(s.messages[1].model).toBe("claude-message-model");
+  expect(s.messages[1].blocks).toContainEqual(expect.objectContaining({ type: "artifact", kind: "text/markdown", version: "v2", previous_version: "v1", operation: "update", edits: [{ old_str: "# Healing", new_str: "# Restoring" }] }));
+  expect(s.messages[1].blocks).toContainEqual({ type: "citation", provider_type: "web_search_result_location", url: "https://example.org", title: "Study", text: "Restoration" });
+  expect(s.messages[1].blocks).toContainEqual(expect.objectContaining({ type: "unknown", provider_type: "inline_visual", raw_json: message.content[4], raw_ref: "claude/cl-1/version.json.gz", raw_path: "/payload/chat_messages/1/content/4" }));
+});
+
+test("Claude falls back to message text when content has only empty text blocks", () => {
+  const capture = structuredClone(sample) as any;
+  capture.payload.chat_messages[1].content = [{ type: "text", text: "" }, { type: "text", text: "  " }];
+  capture.payload.chat_messages[1].text = "fallback prose";
+  const message = parseClaude(capture)[0].messages[1];
+  expect(message.text).toBe("fallback prose");
+  expect(message.blocks).toEqual([{ type: "text", text: "fallback prose" }]);
+});
+
+test("Claude retains unfamiliar content alongside message text fallback", () => {
+  const capture = structuredClone(sample) as any;
+  capture.payload.chat_messages[1].content = [{ type: "flag" }];
+  capture.payload.chat_messages[1].text = "hello from text field";
+  const message = parseClaude(capture)[0].messages[1];
+  expect(message.text).toBe("hello from text field");
+  expect(message.blocks).toContainEqual(expect.objectContaining({ type: "unknown", provider_type: "flag" }));
+  expect(message.blocks).toContainEqual({ type: "text", text: "hello from text field" });
 });

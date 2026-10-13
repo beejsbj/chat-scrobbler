@@ -25,8 +25,8 @@ sessions are projections, with `raw_ref` relative to the raw store. Legacy
 canonical sessions without raw history remain usable and must be retained.
 
 `chat-scrobbler unify` refreshes FTS and semantic rows in place from canonical
-session files. Embedding failure keeps previous vectors. Raw-to-canonical reparse
-is reserved for BJS-545.
+session files. Embedding failure keeps previous vectors. Raw-to-canonical `reparse` refreshes sessions from their latest archived capture,
+skipping deleted sessions and retaining legacy sessions without raw.
 
 `src/store/raw.ts` provides `storeRawCapture`, `listRawCaptures`, and
 `readRawCapture`. Defaults place raw at `<data>/raw` when canonical is
@@ -179,8 +179,16 @@ interface Message {
 }
 ```
 
-**Block** (union): `text`, `reasoning`, `tool_call`, `tool_result`, `artifact`,
-`attachment`. Attachment blocks preserve the provider `pointer`; `local_path` is a
+**Block** (schema version 2 union): `text`, `reasoning`, `tool_call`, `artifact`,
+`image`, `audio`, `video`, `file`, `citation`, `ui_widget`, and `unknown`, plus legacy
+`tool_result` and `attachment`. New tool labels keep name/family only. Ordinary tool
+payloads and unknown JSON are excluded from rendered recall text. User-facing
+Claude and ChatGPT Canvas content is retained as artifacts. Canvas edit replacements
+and comments are searchable; edit patterns stay structured. Unknown parts retain up
+to 16 KiB of JSON per part and 64 KiB inline JSON per session, plus raw references
+and JSON pointers. Known Gemini metadata stays in raw only. Version 1 files
+remain loadable. See [BJS-545 handoff](../HANDOFF-BJS-545.md) for the contract.
+Media blocks preserve the provider `pointer`; `local_path` is a
 canonical-relative asset path when bytes were captured successfully, otherwise null.
 
 ### Fork/branch trees
@@ -194,8 +202,9 @@ root and reverses the result -- that is the active conversation path. Legacy ses
 without `active_leaf_id` fall back to `messages[]` as-is.
 
 The FTS5 index indexes **every message** across all branches (so search can reach
-edited-away text). `message_count` in the sessions table and markdown rendering use the
-active path only.
+edited-away text). `message_count` in the sessions table counts messages on the
+active path with nonempty rendered text. Markdown rendering also uses the active path. Opaque-only
+messages remain archived but do not inflate the count.
 
 ---
 
@@ -391,6 +400,8 @@ The CLI is a thin frontend over the same core functions the MCP uses. Commands:
 | `get <id>` | Fetch session by id (`source:source_id`); `--format json|markdown` |
 | `list` | List sessions; `--source`, `--title`, `--limit`, `--json` |
 | `unify` | Rebuild SQLite index from canonical store |
+| `reparse` | Rebuild from latest raw; `--source`, `--session`, `--dry-run`, `--json` |
+| `unknown-types` | Count opaque content by provider/type; `--source`, `--json` |
 | `init` | Scaffold data dirs + starter config file |
 | `serve` | Start ingest receiver + MCP HTTP connector together |
 | `backup` | Snapshot raw, canonical/assets, sessions, and config to all configured targets |

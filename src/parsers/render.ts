@@ -15,11 +15,22 @@ export function renderText(blocks: Block[]): string {
         parts.push(`[tool: ${b.name}]`);
         break;
       case "tool_result":
-        if (b.output == null) break;
-        parts.push(typeof b.output === "string" ? b.output : JSON.stringify(b.output));
+        // Tool inputs and outputs are archived in raw, excluded from recall.
         break;
+      case "unknown":
+        break;
+      case "citation":
+        parts.push([b.title, b.text, b.url].filter(Boolean).join("\n"));
+        break;
+      case "ui_widget":
+        parts.push(`[ui: ${b.kind}]`);
+        break;
+      case "image":
+      case "audio":
+      case "video":
+      case "file":
       case "attachment":
-        parts.push(`[${b.kind}${b.filename ? ": " + b.filename : ""}${b.local_path ? " -> " + b.local_path : ""}]`);
+        parts.push(`[${b.type === "attachment" ? b.kind : b.type}${b.filename ? ": " + b.filename : ""}${b.local_path ? " -> " + b.local_path : ""}]`);
         break;
       default: {
         const _exhaustive: never = b;

@@ -17,7 +17,7 @@ test("renders text, reasoning, artifact, attachment, tool blocks", () => {
   expect(out).toContain("thinking step");
   expect(out).toContain("My Art");
   expect(out).toContain("console.log(1)");
-  expect(out).toContain("found it");
+  expect(out).not.toContain("found it");
   expect(out).toContain("[image: pic.png]");
 });
 

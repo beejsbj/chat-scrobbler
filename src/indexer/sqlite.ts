@@ -2,6 +2,7 @@
 import { embeddingFailed, embeddingStatus, embeddingSucceeded, validateEmbedding, type SemanticStatus } from "./embedding-status";
 import { Database } from "bun:sqlite";
 import type { Session } from "../schema/types";
+import { isSessionDeleted } from "../store/tombstones";
 import { activePath } from "../store/sessions";
 
 export interface EmbeddingContext {
@@ -27,7 +28,7 @@ export interface EmbeddingProvider {
   embed(text: string, context?: EmbeddingContext): number[] | Promise<number[]>;
 }
 
-export interface IndexSessionOptions { embeddingProvider?: EmbeddingProvider | null; shouldReplaceEmbeddings?: () => boolean; }
+export interface IndexSessionOptions { canonicalDir?: string; embeddingProvider?: EmbeddingProvider | null; shouldReplaceEmbeddings?: () => boolean; }
 export type EmbeddingWriteResult = "indexed" | "failed" | "disabled" | "stale";
 export interface SearchMessagesOptions { source?: string; limit?: number; embeddingProvider?: EmbeddingProvider | null; }
 export interface GrepMessagesOptions { source?: string; limit?: number; caseSensitive?: boolean; }
@@ -54,7 +55,7 @@ export function openIndex(path: string): Database {
 
 export function indexSession(db: Database, s: Session, opts: IndexSessionOptions = {}): void {
   const embeddingProvider = opts.embeddingProvider ?? null;
-  db.transaction(() => indexLiteralSession(db, s))();
+  if (!db.transaction(() => indexLiteralSession(db, s, opts))()) return;
   if (!embeddingProvider) return;
 
   try {
@@ -69,7 +70,7 @@ export function indexSession(db: Database, s: Session, opts: IndexSessionOptions
 export async function indexSessionWithEmbeddings(db: Database, s: Session, opts: IndexSessionOptions = {}): Promise<EmbeddingWriteResult> {
   const embeddingProvider = opts.embeddingProvider ?? null;
   if (opts.shouldReplaceEmbeddings && !opts.shouldReplaceEmbeddings()) return "stale";
-  db.transaction(() => indexLiteralSession(db, s))();
+  if (!db.transaction(() => indexLiteralSession(db, s, opts))()) return "stale";
   if (!embeddingProvider) return "disabled";
 
   try {
@@ -258,10 +259,11 @@ function migrateMessageEmbeddings(db: Database): void {
   }
 }
 
-function indexLiteralSession(db: Database, s: Session): void {
-  // message_count reflects the active branch only; FTS indexes every message so
+function indexLiteralSession(db: Database, s: Session, opts: IndexSessionOptions): boolean {
+  if (opts.canonicalDir && isSessionDeleted(opts.canonicalDir, s.source, s.source_id)) return false;
+  // message_count counts rendered active messages; FTS indexes every branch so
   // search can reach text on inactive (edited-away) branches too.
-  const activeCount = activePath(s).length;
+  const activeCount = activePath(s).filter(message => message.text.trim()).length;
   db.run(`INSERT OR REPLACE INTO sessions (id, source, source_id, title, created_at, updated_at, message_count)
           VALUES (?,?,?,?,?,?,?)`,
     [s.id, s.source, s.source_id, s.title, s.created_at, s.updated_at, activeCount]);
@@ -273,6 +275,7 @@ function indexLiteralSession(db: Database, s: Session): void {
     if (!m.text) continue;
     stmt.run(m.text, m.id, s.id, m.role, m.created_at, s.source, s.title);
   }
+  return true;
 }
 
 function collectSyncEmbeddingRows(s: Session, provider: EmbeddingProvider): EmbeddingRow[] {
@@ -334,7 +337,7 @@ async function collectAsyncEmbeddingRows(db: Database, s: Session, provider: Emb
 
 function replaceEmbeddingRows(db: Database, session: Session, rows: EmbeddingRow[], opts: IndexSessionOptions): boolean {
   const current = db.query("SELECT updated_at FROM sessions WHERE id = ?").get(session.id) as { updated_at: string } | null;
-  if (current?.updated_at !== session.updated_at || (opts.shouldReplaceEmbeddings && !opts.shouldReplaceEmbeddings())) return false;
+  if ((opts.canonicalDir && isSessionDeleted(opts.canonicalDir, session.source, session.source_id)) || current?.updated_at !== session.updated_at || (opts.shouldReplaceEmbeddings && !opts.shouldReplaceEmbeddings())) return false;
   const sessionId = session.id;
   db.run(`DELETE FROM message_embeddings WHERE session_id = ?`, [sessionId]);
   const stmt = db.prepare(

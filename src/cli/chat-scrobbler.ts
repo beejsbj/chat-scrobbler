@@ -3,6 +3,8 @@
 // Subcommands: search, get, list, unify, serve, doctor, backup, backups, restore
 // Arg parsing: manual / node:util parseArgs (no extra packages).
 
+import { runUnknownTypesCmd } from "./unknown-types";
+import { runReparseCmd } from "./reparse";
 import { parseArgs } from "node:util";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -27,7 +29,8 @@ const USAGE = `
 chat-scrobbler -- your AI chat history, captured and queryable.
 
 It scrobbles every conversation you have with ChatGPT, Claude, and Gemini into a
-local store you own: one canonical JSON file per session (the source of truth),
+local archive you own: raw captures and asset blobs are the source of truth;
+canonical JSON is rebuilt from raw,
 indexed in SQLite FTS5 plus optional embeddings (a rebuildable view). The exact
 same search/get/list surface is exposed over a read-only MCP server, so agents
 and MCP clients query precisely what this CLI returns.
@@ -81,6 +84,16 @@ Operate
   connect                Print the MCP endpoint + how to wire it into clients
 
   doctor                 Verify config, local services, index, embeddings, and public MCP
+
+  reparse                Rebuild canonical sessions from latest archived raw
+    --source <s>           Filter by chatgpt|claude|gemini
+    --session <id>         Reparse one source:source_id
+    --dry-run              Report planned changes without writing
+    --json                 Output a machine-readable summary
+
+  unknown-types          Count unknown content types in canonical sessions
+    --source <s>           Filter by provider
+    --json                 Output counts for automation
 
   unify [--force]        Refresh index; --force permits pruning more than 10%
                            Enable semantic recall with:
@@ -191,6 +204,26 @@ async function main(argv: string[]): Promise<void> {
           json: values.json as boolean | undefined,
           write,
         });
+        break;
+      }
+
+      case "unknown-types": {
+        const { values } = parseArgs({ args: rest, options: {
+          source: { type: "string" }, json: { type: "boolean", default: false },
+        } });
+        const report = runUnknownTypesCmd({ cfg, write, source: values.source, json: values.json });
+        if (report.unreadable_sessions) process.exitCode = 1;
+        break;
+      }
+
+      case "reparse": {
+        const { values } = parseArgs({ args: rest, options: {
+          source: { type: "string" }, session: { type: "string" },
+          "dry-run": { type: "boolean", default: false }, json: { type: "boolean", default: false },
+        } });
+        const report = await runReparseCmd({ cfg, write, source: values.source, session: values.session,
+          dryRun: values["dry-run"], json: values.json });
+        if (report.failed || report.embedding_failures) process.exitCode = 1;
         break;
       }
 

@@ -3,8 +3,9 @@ import type { Session, Source, CaptureMethod } from "../schema/types";
 import { parseChatgpt } from "./chatgpt";
 import { parseClaude } from "./claude";
 import { parseGemini } from "./gemini";
+import type { ParserContext } from "./parts";
 
-export type Parser = (raw: unknown) => Session[];
+export type Parser = (raw: unknown, context?: ParserContext) => Session[];
 
 const registry: Record<string, Parser> = {
   "chatgpt:api": parseChatgpt,

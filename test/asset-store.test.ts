@@ -27,5 +27,5 @@ test("assets deduplicate across sessions and retain first-seen metadata after lo
 test("canonical attachments carry the uploaded hash without requiring it in legacy captures", () => {
   const capture = { ...chatgptApi, payload: { ...chatgptApi.payload, mapping: { image: { id: "image", parent: null, children: [], message: { id: "image", author: { role: "user" }, content: { content_type: "multimodal_text", parts: [{ content_type: "image_asset_pointer", asset_pointer: "file-service://a" }] } } } } }, assets: [{ pointer: "file-service://a", local_path: "assets/a.png", sha256: "a".repeat(64) }] };
   const [session] = parseChatgpt(capture);
-  expect(session.messages[0].blocks[0]).toMatchObject({ type: "attachment", sha256: "a".repeat(64) });
+  expect(session.messages[0].blocks[0]).toMatchObject({ type: "image", sha256: "a".repeat(64) });
 });

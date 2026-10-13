@@ -403,3 +403,21 @@ test("re-indexing an unchanged session reuses stored vectors instead of re-embed
   expect(calls).toBe(7);
   expect((db.query("SELECT COUNT(*) AS n FROM message_embeddings").get() as { n: number }).n).toBe(3);
 });
+
+test("message_count includes renderable active messages but excludes opaque-only and empty messages", () => {
+  const db = openIndex(":memory:");
+  const session = mk("counts", "chatgpt", "Counts", "visible prose");
+  const template = session.messages[0];
+  session.messages.push(
+    { ...template, id: "opaque", parent_id: template.id, blocks: [{ type: "unknown", provider_type: "future", raw_json: { opaque: true }, raw_ref: "raw", raw_path: "/payload", size_bytes: 15, truncated: false }], text: "" },
+    { ...template, id: "empty", parent_id: "opaque", blocks: [], text: "" },
+    { ...template, id: "media", parent_id: "empty", blocks: [{ type: "image", pointer: "provider", filename: null, local_path: null }], text: "[image]" },
+    { ...template, id: "inactive", parent_id: template.id, text: "inactive prose" },
+  );
+  session.active_leaf_id = "media";
+  try {
+    indexSession(db, session);
+    expect(listSessions(db)[0].message_count).toBe(2);
+    expect(searchMessages(db, "inactive")).toHaveLength(1);
+  } finally { db.close(); }
+});

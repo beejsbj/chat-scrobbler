@@ -33,6 +33,7 @@ export async function runUnify(opts: UnifyOptions): Promise<number> {
       catch { unreadable = true; continue; }
       retained.add(session.id);
       const result = await indexSessionWithEmbeddings(db, session, {
+        canonicalDir: opts.canonicalDir,
         embeddingProvider: circuitOpen ? null : opts.embeddingProvider ?? null,
         shouldReplaceEmbeddings: () => {
           try { const current = statSync(f); return current.mtimeMs === snapshot.mtimeMs && current.ino === snapshot.ino && current.size === snapshot.size; }

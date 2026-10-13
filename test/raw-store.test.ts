@@ -129,3 +129,22 @@ test("raw latest lookup upgrades old content hashes without adding an unchanged 
     expect(listRawCaptures(root, "gemini", "legacy")).toHaveLength(1);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
+
+test("unknown blocks from ingest point into the actual archived raw version", async () => {
+  const { readSession } = await import("../src/store/sessions");
+  const root = mkdtempSync(join(tmpdir(), "raw-unknown-"));
+  try {
+    const capture = structuredClone(chatgptApi) as any;
+    capture.payload.mapping.n3.message.content = { content_type: "future_ui", data: "x".repeat(20000) };
+    const canonicalDir = join(root, "canonical", "sessions");
+    const res = await handleIngestRequest(new Request("http://local/captures", { method: "POST", body: JSON.stringify(capture) }), { canonicalDir, indexPath: join(root, "index.db") });
+    expect(res.status).toBe(200);
+    const session = readSession(canonicalDir, "chatgpt", "conv-1");
+    const block = session.messages[2].blocks[0];
+    expect(block).toMatchObject({ type: "unknown", truncated: true, raw_ref: session.raw_ref });
+    if (block.type !== "unknown") throw new Error("expected unknown");
+    const raw: any = readRawCapture(join(root, "raw"), block.raw_ref);
+    const fragment = block.raw_path.split("/").slice(1).reduce((value: any, key: string) => value[key.replace(/~1/g, "/").replace(/~0/g, "~")], raw);
+    expect(fragment).toEqual(capture.payload.mapping.n3.message.content);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});

@@ -573,3 +573,19 @@ test("CLI spawn: search --grep rejects a positional query", () => {
   expect(result.exitCode).toBe(1);
   expect(result.stderr.toString()).toContain("cannot be used with a positional query");
 });
+
+test("get --text-only excludes unknown JSON and regenerates prose without reasoning or tools", async () => {
+  const root = mkdtempSync(join(tmpdir(), "cli-text-only-"));
+  try {
+    const session = structuredClone(SESSION_A);
+    session.messages[1].blocks.push({ type: "unknown", provider_type: "future", raw_json: { secret: "opaque fragment" }, raw_ref: "version", raw_path: "/payload", truncated: false, size_bytes: 28 });
+    session.messages[1].text = "Let me think about this deeply\n\nHi there uniquetokenDEF\n\n[tool: search]";
+    writeSession(root, session);
+    const lines: string[] = [];
+    await runGet({ cfg: { ...cfg, canonicalDir: root }, id: session.id, textOnly: true, write: line => lines.push(line) });
+    const message = JSON.parse(lines.join("")).messages[1];
+    expect(message.blocks).toEqual([{ type: "text", text: "Hi there uniquetokenDEF" }]);
+    expect(message.text).toBe("Hi there uniquetokenDEF");
+    expect(lines.join("")).not.toContain("opaque fragment");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+}, 30000);
