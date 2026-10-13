@@ -307,6 +307,13 @@ function indexLiteralSession(db: Database, s: Session, opts: IndexSessionOptions
     const result = stmt.run(m.text, m.id, s.id, m.role, m.created_at, s.source, s.title);
     db.run("INSERT OR REPLACE INTO message_lookup(session_id,message_id,fts_rowid) VALUES (?,?,?)", [s.id,m.id,result.lastInsertRowid]);
   }
+  // Reconciliation belongs to capture indexing, even when inference is deferred.
+  const ids = new Set(s.messages.map(message => message.id));
+  for (const table of ["message_vectors", "message_embeddings"]) {
+    const rows = db.query(`SELECT DISTINCT message_id FROM ${table} WHERE session_id=?`).all(s.id) as Array<{message_id:string}>;
+    for (const row of rows) if (!ids.has(row.message_id))
+      db.run(`DELETE FROM ${table} WHERE session_id=? AND message_id=?`, [s.id,row.message_id]);
+  }
   db.run("DELETE FROM message_lookup_dirty WHERE session_id=?",[s.id]);
   return true;
 }
@@ -334,12 +341,6 @@ function reusableEmbedding(db: Database, s: Session, messageId: string, text: st
 function replaceEmbeddingRows(db: Database, session: Session, rows: EmbeddingRow[], opts: IndexSessionOptions): boolean {
   const current = db.query("SELECT updated_at FROM sessions WHERE id = ?").get(session.id) as { updated_at: string } | null;
   if ((opts.canonicalDir && isSessionDeleted(opts.canonicalDir, session.source, session.source_id)) || current?.updated_at !== session.updated_at || (opts.shouldReplaceEmbeddings && !opts.shouldReplaceEmbeddings())) return false;
-  const sessionId = session.id;
-  // Retain other model sets. Remove disappeared messages across every derived set.
-  const ids = new Set(session.messages.map(message => message.id));
-  for (const row of db.query("SELECT DISTINCT message_id FROM message_vectors WHERE session_id=?").all(sessionId) as Array<{message_id: string}>) {
-    if (!ids.has(row.message_id)) db.run("DELETE FROM message_vectors WHERE session_id=? AND message_id=?", [sessionId, row.message_id]);
-  }
   for (const row of rows) putTextVector(db, { ...row, provider_model: row.provider_model ?? "" });
   return true;
 }
