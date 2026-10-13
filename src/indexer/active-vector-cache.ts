@@ -1,23 +1,25 @@
 import type {WarmupOptions} from "./search-warmup";
 import type { Database } from "bun:sqlite";
 import { ensureMessageLookup } from "./message-lookup";
-import { searchRevision, changedSearchSessions } from "./search-revision";
+import { searchRevision, changedSearchSessions, changedSearchVectors } from "./search-revision";
 import { decodeVector, textVectorHash, type VectorScope } from "./vector-store";
 
 interface Entry { session_id:string; message_id:string; rowid:number; source:string; hash:string;title:string|null; }
 interface Cache {
-  scope:string; revision:number; changes:number; dataVersion:number; dimension:number;
-  session_refreshes:number; matrix:Float32Array; entries:Array<Entry|null>; identities:Map<string,number>; free:number[];
+  builds:number; scope:string; revision:number; changes:number; dataVersion:number; dimension:number;
+  session_refreshes:number; message_refreshes:number; matrix:Float32Array; entries:Array<Entry|null>; identities:Map<string,number>; free:number[];
 }
 const active=new WeakMap<Database,Cache>();
+const builds=new WeakMap<Database,number>();
 const identity=(s:string,m:string)=>`${s}\0${m}`;
 const counters=(db:Database)=>({changes:(db.query("SELECT total_changes() AS n").get() as {n:number}).n,
   dataVersion:(db.query("PRAGMA data_version").get() as {data_version:number}).data_version});
 
-function vectorRows(db:Database,scope:VectorScope,table:string,session?:string,after?:number,limit?:number) {
+function vectorRows(db:Database,scope:VectorScope,table:string,session?:string,after?:number,limit?:number,message?:string) {
   const binary=table==="message_vectors";
   const params:any[]=[scope.provider_kind,scope.provider_model,scope.dimension];
   if(session!==undefined)params.push(session);
+  if(message!==undefined)params.push(message);
   if(after!==undefined)params.push(after,limit);
   // Startup uses indexed rowid batches; refresh uses the session index rather
   // than rescanning every legacy row in this model for each affected session.
@@ -27,7 +29,7 @@ function vectorRows(db:Database,scope:VectorScope,table:string,session?:string,a
     // text for those duplicates adds I/O to every dirty-session refresh.
     const statement=db.query(`SELECT v.rowid AS vector_rowid,v.session_id,v.message_id FROM ${table} v ${index}
       WHERE v.provider_kind=? AND COALESCE(v.provider_model,'')=? AND v.dimension=?
-      ${session!==undefined ? "AND v.session_id=?" : ""}
+      ${session!==undefined ? "AND v.session_id=?" : ""} ${message!==undefined ? "AND v.message_id=?" : ""}
       ${after!==undefined ? "AND v.rowid>? ORDER BY v.rowid LIMIT ?" : ""}`);
     return after===undefined ? statement.iterate(...params) : statement.all(...params);
   }
@@ -36,7 +38,7 @@ function vectorRows(db:Database,scope:VectorScope,table:string,session?:string,a
     FROM ${table} v ${index} JOIN message_lookup k ON k.session_id=v.session_id AND k.message_id=v.message_id
     JOIN messages_fts f ON f.rowid=k.fts_rowid AND f.session_id=v.session_id AND f.message_id=v.message_id
     WHERE v.provider_kind=? AND ${binary ? "v.provider_model" : "COALESCE(v.provider_model,'')"}=? AND v.dimension=?
-    ${session!==undefined ? "AND v.session_id=?" : ""} AND v.title IS f.title
+    ${session!==undefined ? "AND v.session_id=?" : ""} ${message!==undefined ? "AND v.message_id=?" : ""} AND v.title IS f.title
     AND ${binary ? "(v.text_hash IS NOT NULL OR v.text=f.text)" : "v.text=f.text"}
     ${after!==undefined ? "AND v.rowid>? ORDER BY v.rowid LIMIT ?" : ""}`);
   return after===undefined ? statement.iterate(...params) : statement.all(...params);
@@ -75,9 +77,9 @@ function appendVectors(db:Database,cache:Cache,scope:VectorScope,table:string,ro
       cache.identities.set(key,index);
   }
 }
-function fill(db:Database,cache:Cache,scope:VectorScope,session?:string):void {
+function fill(db:Database,cache:Cache,scope:VectorScope,session?:string,message?:string):void {
   for(const table of ["message_vectors","message_embeddings"])
-    appendVectors(db,cache,scope,table,vectorRows(db,scope,table,session));
+    appendVectors(db,cache,scope,table,vectorRows(db,scope,table,session,undefined,undefined,message));
 }
 function emptyCache(db:Database,scope:VectorScope):Cache {
   // The larger table is a cheap allocation estimate. Distinct UNION counting
@@ -85,7 +87,8 @@ function emptyCache(db:Database,scope:VectorScope):Cache {
   const params=[scope.provider_kind,scope.provider_model,scope.dimension];
   const binary=(db.query("SELECT COUNT(*) AS n FROM message_vectors WHERE provider_kind=? AND provider_model=? AND dimension=?").get(...params) as {n:number}).n;
   const legacy=(db.query("SELECT COUNT(*) AS n FROM message_embeddings WHERE provider_kind=? AND COALESCE(provider_model,'')=? AND dimension=?").get(...params) as {n:number}).n;
-  return {scope:JSON.stringify(scope),revision:searchRevision(db),session_refreshes:0,dimension:scope.dimension,...counters(db),
+  const built=(builds.get(db) ?? 0)+1;builds.set(db,built);
+  return {builds:built,scope:JSON.stringify(scope),revision:searchRevision(db),session_refreshes:0,message_refreshes:0,dimension:scope.dimension,...counters(db),
     matrix:new Float32Array(Math.max(1,Math.ceil(Math.max(binary,legacy)/1024))*1024*scope.dimension),entries:[],identities:new Map(),free:[]};
 }
 function invalidateSessions(cache:Cache,dirty:Set<string>) {
@@ -104,7 +107,7 @@ export async function warmActiveVectorCache(db:Database,scope:VectorScope,opts:W
       let cursor=0;
       while(true) {
         opts.signal?.throwIfAborted();
-        const rows=Array.from(vectorRows(db,scope,table,session,cursor,batch));
+        const rows=Array.from(vectorRows(db,scope,table,session,cursor,batch)) as any[];
         appendVectors(db,cache,scope,table,rows);onProgress(cache.identities.size);
         if(rows.length<batch)break;
         cursor=rows.at(-1).vector_rowid;
@@ -132,9 +135,17 @@ function load(db:Database,scope:VectorScope):Cache {
     cache=emptyCache(db,scope);
     fill(db,cache,scope);active.set(db,cache);
   } else if(revision!==cache.revision) {
-    const dirty=changedSearchSessions(db,cache.revision,scope);
+    const dirty=changedSearchSessions(db,cache.revision);
+    const messages=changedSearchVectors(db,cache.revision,scope).filter(row=>!dirty.has(row.session_id));
     invalidateSessions(cache,dirty);
-    for(const session of dirty) fill(db,cache,scope,session);
+    cache.session_refreshes+=new Set(messages.map(row=>row.session_id)).size;
+    cache.message_refreshes+=messages.length;
+    for(const row of messages) {
+      const key=identity(row.session_id,row.message_id),index=cache.identities.get(key);
+      if(index!==undefined) {cache.identities.delete(key);cache.entries[index]=null;cache.free.push(index);}
+    }
+    for(const session of dirty)fill(db,cache,scope,session);
+    for(const row of messages)fill(db,cache,scope,row.session_id,row.message_id);
   }
   Object.assign(cache,{revision,...counters(db)});
   return cache;
@@ -172,5 +183,5 @@ function candidatesSnapshot(db:Database,query:number[],scope:VectorScope,source:
 /** Lightweight diagnostics for refresh profiling and service health. */
 export function activeVectorCacheStatus(db:Database) {
   const cache=active.get(db);
-  return cache ? {scope:JSON.parse(cache.scope) as VectorScope,rows:cache.identities.size,session_refreshes:cache.session_refreshes} : null;
+  return cache ? {builds:cache.builds,scope:JSON.parse(cache.scope) as VectorScope,rows:cache.identities.size,session_refreshes:cache.session_refreshes,message_refreshes:cache.message_refreshes} : null;
 }
