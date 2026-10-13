@@ -97,6 +97,72 @@ test("OllamaEmbeddingProvider uses local /api/embed", async () => {
   });
 });
 
+for (const [name, createProvider] of [
+  ["Gemini", () => new GeminiEmbeddingProvider({ apiKey: "test-only", model: "gemini-embedding-2" })],
+  ["Ollama", () => new OllamaEmbeddingProvider({ baseUrl: "http://unused.example", model: "test-only" })],
+] as const) {
+  test(`${name} enforces its 10-second deadline on hung HTTP with a caller signal`, async () => {
+    let received!: () => void;
+    const entered = new Promise<void>(resolve => { received = resolve; });
+    let release!: () => void;
+    const blocked = new Promise<void>(resolve => { release = resolve; });
+    const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch() {
+      received();
+      await blocked;
+      return Response.json({ embeddings: [[1, 2, 3]] });
+    } });
+    const caller = new AbortController();
+    const expiry = new AbortController();
+    const failure = new DOMException("embedding deadline exceeded", "TimeoutError");
+    const timeout = spyOn(AbortSignal, "timeout").mockImplementation(() => expiry.signal);
+    globalThis.fetch = ((_url, init) => originalFetch(server.url, init)) as typeof fetch;
+    const checks = Promise.allSettled([createProvider().embed("notes", {
+      kind: "document", signal: caller.signal,
+    })]);
+    try {
+      await entered;
+      expect(timeout).toHaveBeenCalledWith(10000);
+      expiry.abort(failure);
+      expect(await checks).toEqual([{ status: "rejected", reason: failure }]);
+      expect(caller.signal.aborted).toBe(false);
+    } finally {
+      caller.abort();
+      release();
+      await checks;
+      timeout.mockRestore();
+      server.stop(true);
+    }
+  });
+
+  test(`${name} preserves parent cancellation during an HTTP request`, async () => {
+    let received!: () => void;
+    const entered = new Promise<void>(resolve => { received = resolve; });
+    let release!: () => void;
+    const blocked = new Promise<void>(resolve => { release = resolve; });
+    const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch() {
+      received();
+      await blocked;
+      return Response.json({ embeddings: [[1, 2, 3]] });
+    } });
+    const caller = new AbortController();
+    const failure = new Error("caller canceled");
+    globalThis.fetch = ((_url, init) => originalFetch(server.url, init)) as typeof fetch;
+    const checks = Promise.allSettled([createProvider().embed("find notes", {
+      kind: "query", signal: caller.signal,
+    })]);
+    try {
+      await entered;
+      caller.abort(failure);
+      expect(await checks).toEqual([{ status: "rejected", reason: failure }]);
+    } finally {
+      caller.abort();
+      release();
+      await checks;
+      server.stop(true);
+    }
+  });
+}
+
 test("EmbeddingGemma sends prefixed text with role and model to /v1/embeddings", async () => {
   const vector = Array.from({ length: 768 }, (_, i) => (i - 384) / 768);
   const calls = mockEmbeddingGemmaFetch({ data: [{ embedding: vector }, { embedding: [999] }] });
