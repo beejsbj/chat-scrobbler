@@ -1,8 +1,8 @@
 // src/cli/unify.ts
 // Rebuilds the SQLite index from canonical session files.
 // Two tiers: canonical/ (source of truth) -> index/ (rebuildable view).
-import { mkdirSync, readFileSync } from "node:fs";
-import { dirname } from "node:path";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import type { Session } from "../schema/types";
 import { listSessionFiles } from "../store/sessions";
 import { deleteIndexedSession, openIndex, indexSessionWithEmbeddings, type EmbeddingProvider } from "../indexer/sqlite";
@@ -12,10 +12,12 @@ import { embeddingProviderFromConfig } from "../indexer/embedding-providers";
 export interface UnifyOptions { canonicalDir: string; indexPath: string; embeddingProvider?: EmbeddingProvider | null; }
 
 export async function runUnify(opts: UnifyOptions): Promise<number> {
+  const canPrune = existsSync(opts.canonicalDir);
   const files = listSessionFiles(opts.canonicalDir);
 
   mkdirSync(dirname(opts.indexPath), { recursive: true });
   const db = openIndex(opts.indexPath);
+  const pruneCandidates = db.query("SELECT id, source, source_id FROM sessions").all() as Array<{ id: string; source: string; source_id: string }>;
   let count = 0;
   const retained = new Set<string>();
   let unreadable = false;
@@ -30,9 +32,10 @@ export async function runUnify(opts: UnifyOptions): Promise<number> {
     }
     // Refresh in place so failed embedding calls and concurrent readers keep
     // their existing vectors. Prune absent sessions only after a complete read.
-    if (!unreadable) db.transaction(() => {
-      const rows = db.query("SELECT id, source, source_id FROM sessions").all() as Array<{ id: string; source: string; source_id: string }>;
-      for (const row of rows) if (!retained.has(row.id)) deleteIndexedSession(db, row.source, row.source_id);
+    if (canPrune && !unreadable) db.transaction(() => {
+      for (const row of pruneCandidates) {
+        if (!retained.has(row.id) && !existsSync(join(opts.canonicalDir, row.source, `${row.source_id}.json`))) deleteIndexedSession(db, row.source, row.source_id);
+      }
     })();
   } finally { db.close(); }
   return count;

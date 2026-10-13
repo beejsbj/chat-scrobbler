@@ -174,3 +174,26 @@ test("unify preserves vectors when rebuilding with a failed embedder", async () 
     db.close();
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
+
+test("unify preserves sessions captured while an embedding rebuild is in flight", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "reindex-concurrent-"));
+  const opts = { canonicalDir: join(dir, "canonical", "sessions"), indexPath: join(dir, "index.db") };
+  let captured = false;
+  try {
+    writeSession(opts.canonicalDir, sessionA);
+    const provider = { kind: "concurrent-test", async embed(): Promise<number[]> {
+      if (!captured) {
+        captured = true;
+        writeSession(opts.canonicalDir, sessionB);
+        const writer = openIndex(opts.indexPath);
+        (await import("../src/indexer/sqlite")).indexSession(writer, sessionB);
+        writer.close();
+      }
+      return [1, 0];
+    } };
+    await runUnify({ ...opts, embeddingProvider: provider });
+    const db = openIndex(opts.indexPath);
+    try { expect(searchMessages(db, "mitochondria")).toHaveLength(2); }
+    finally { db.close(); }
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
