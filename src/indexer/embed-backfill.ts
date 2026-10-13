@@ -4,6 +4,7 @@ import { assetBlobPath } from "../store/assets";
 import type { EmbeddingProvider } from "./sqlite";
 import { assetCoverage, embedAsset } from "./asset-embeddings";
 import { ensureMessageLookup } from "./message-lookup";
+import { EmbeddingGemmaProvider, embeddingGemmaDocumentWorkEstimate } from "./embedding-providers";
 import { decodeVector, putTextVector, reusableBinaryTextVector, reusableTextVector, textVectorHash, vectorScope } from "./vector-store";
 
 export interface BackfillReport {
@@ -11,6 +12,10 @@ export interface BackfillReport {
   embedded: number; converted: number; skipped: number; failed: number; stale: number; attempted: number;
   coverage_at_attempt: number | null;
   text: { total: number; embedded: number } | null; assets: { total: number; embedded: number } | null;
+  requests: number; estimated_requests: number | null; remaining_requests: number | null;
+  estimated_compute_chunks: number | null; remaining_compute_chunks: number | null;
+  elapsed_seconds: number; mean_request_seconds: number | null;
+  eta_seconds: number | null; eta_basis: "assumed_2s_per_compute_chunk" | "observed";
 }
 interface MessageRow { rowid: number; session_id: string; message_id: string; text: string; title: string|null; role: string; created_at: string|null; source: string; }
 export function textCoverage(db: Database, provider: EmbeddingProvider) {
@@ -44,14 +49,15 @@ export function textCoverage(db: Database, provider: EmbeddingProvider) {
 class StaleEmbeddingInput extends Error {}
 export async function embedBackfill(db: Database, opts: {
   provider: EmbeddingProvider; canonicalDir?: string; limit?: number; rate?: number; loadThreshold?: number;
-  signal?: AbortSignal; load?: () => number; sleep?: (ms:number)=>Promise<void>;
+  signal?: AbortSignal; load?: () => number; sleep?: (ms:number)=>Promise<void>; now?: () => number;
   progress?: (report: BackfillReport)=>void;
 }): Promise<BackfillReport> {
   const {provider,signal} = opts, rate = opts.rate ?? 10, threshold = opts.loadThreshold;
   if (!Number.isFinite(rate) || rate <= 0 || threshold !== undefined && (!Number.isFinite(threshold) || threshold <= 0) ||
     opts.limit !== undefined && (!Number.isInteger(opts.limit) || opts.limit < 1)) throw new Error("invalid backfill controls");
   if (!provider.kind || !provider.model) throw new Error("backfill requires an explicit provider and model");
-  ensureMessageLookup(db);
+  signal?.throwIfAborted();
+  const now = opts.now ?? (() => performance.now()), startedAt = now();
   const limit = opts.limit ?? Infinity;
   const sleep = opts.sleep ?? (ms=>new Promise<void>((resolve,reject)=> {
     signal?.throwIfAborted();
@@ -61,10 +67,31 @@ export async function embedBackfill(db: Database, opts: {
   }));
   const load = opts.load ?? (()=>loadavg()[0]);
   let embedded=0, converted=0, skipped=0, failed=0, stale=0, attempted=0;
+  let requests=0, completedRequests=0, completedComputeChunks=0;
+  let estimatedRequests: number | null = null, estimatedComputeChunks: number | null = null;
+  const workEstimate = (row: Pick<MessageRow,"text"|"title">) => provider instanceof EmbeddingGemmaProvider
+    ? embeddingGemmaDocumentWorkEstimate(row.text,row.title) : {requests:1,computeChunks:1};
+  let requestStartedAt: number | null = null, requestMs=0, measuredRequests=0;
+  const finishRequest = () => {
+    if (requestStartedAt === null) return;
+    requestMs += Math.max(0,now()-requestStartedAt);
+    measuredRequests++;
+    requestStartedAt=null;
+  };
   let coverage: Pick<BackfillReport,"text"|"assets"|"coverage_at_attempt"> = {text:null,assets:null,coverage_at_attempt:null};
   const report = (event: BackfillReport["event"]): BackfillReport => {
     if(event!=="load_pause") coverage={text:textCoverage(db,provider),assets:provider.embedAsset ? assetCoverage(db,provider) : null,coverage_at_attempt:attempted};
-    return {event,embedded,converted,skipped,failed,stale,attempted,...coverage};
+    const elapsedSeconds = Math.max(0,now()-startedAt)/1000;
+    const remainingRequests = estimatedRequests === null ? null : Math.max(0,estimatedRequests-completedRequests);
+    const remainingComputeChunks = estimatedComputeChunks === null ? null : Math.max(0,estimatedComputeChunks-completedComputeChunks);
+    const meanRequestSeconds = measuredRequests ? requestMs/measuredRequests/1000 : null;
+    const eta = remainingRequests === null ? null : meanRequestSeconds === null
+      ? remainingComputeChunks!*2+remainingRequests/rate : remainingRequests*(meanRequestSeconds+1/rate);
+    return {event,embedded,converted,skipped,failed,stale,attempted,...coverage,
+      requests,estimated_requests:estimatedRequests,remaining_requests:remainingRequests,elapsed_seconds:elapsedSeconds,
+      estimated_compute_chunks:estimatedComputeChunks,remaining_compute_chunks:remainingComputeChunks,
+      mean_request_seconds:meanRequestSeconds,eta_seconds:eta,
+      eta_basis:meanRequestSeconds === null ? "assumed_2s_per_compute_chunk" : "observed"};
   };
   const wait = async () => {
     signal?.throwIfAborted();
@@ -76,6 +103,18 @@ export async function embedBackfill(db: Database, opts: {
     await wait();
   };
   await wait();
+  ensureMessageLookup(db);
+  estimatedRequests=0; estimatedComputeChunks=0;
+  for (const row of db.query("SELECT session_id,message_id,text,title FROM messages_fts").iterate() as Iterable<MessageRow>) {
+    signal?.throwIfAborted();
+    if (!row.text.trim() || reusableTextVector(db,row.session_id,row.message_id,row.text,row.title ?? null,provider)) continue;
+    const estimate=workEstimate(row);
+    estimatedRequests+=estimate.requests; estimatedComputeChunks+=estimate.computeChunks;
+  }
+  if (provider.embedAsset && opts.canonicalDir) {
+    const assets=assetCoverage(db,provider), pending=assets.total-assets.embedded;
+    estimatedRequests+=pending; estimatedComputeChunks+=pending;
+  }
   opts.progress?.(report("progress"));
   let cursor = 0;
   while (attempted < limit) {
@@ -91,27 +130,39 @@ export async function embedBackfill(db: Database, opts: {
       const current=db.query("SELECT f.text,f.title FROM message_lookup k JOIN messages_fts f ON f.rowid=k.fts_rowid WHERE k.session_id=? AND k.message_id=?").get(row.session_id,row.message_id) as MessageRow|null;
       if (!current || current.text!==row.text || (current.title ?? null)!==(row.title ?? null)) { stale++; continue; }
       attempted++;
+      const requestsBefore=requests;
       try {
         const checkCurrent=()=> {
           const live=db.query("SELECT f.text,f.title FROM message_lookup k JOIN messages_fts f ON f.rowid=k.fts_rowid WHERE k.session_id=? AND k.message_id=?").get(row.session_id,row.message_id) as MessageRow|null;
           if(!live || live.text!==row.text || (live.title ?? null)!==(row.title ?? null)) throw new StaleEmbeddingInput();
         };
-        const beforeRequest=async()=> { await throttle(); checkCurrent(); needsPacing=true; };
+        const beforeRequest=async()=> {
+          finishRequest(); await throttle(); checkCurrent();
+          needsPacing=true; requests++; requestStartedAt=now();
+        };
         let firstHook=true;
-        if (!cached) await beforeRequest();
-        const embedding=cached ?? await provider.embed(row.text,{kind:"document",title:row.title,signal,beforeRequest:async()=> {
-          if (firstHook) { firstHook=false; await wait(); checkCurrent(); }
-          else await beforeRequest();
-        }});
+        let embedding=cached;
+        if (!embedding) {
+          await beforeRequest();
+          try {
+            embedding=await provider.embed(row.text,{kind:"document",title:row.title,signal,beforeRequest:async()=> {
+              if (firstHook) { firstHook=false; await wait(); checkCurrent(); requestStartedAt=now(); }
+              else await beforeRequest();
+            }});
+          } finally { finishRequest(); }
+        }
         signal?.throwIfAborted();
         const written=db.transaction(()=> {
           const live=db.query("SELECT f.text,f.title FROM message_lookup k JOIN messages_fts f ON f.rowid=k.fts_rowid WHERE k.session_id=? AND k.message_id=?").get(row.session_id,row.message_id) as MessageRow|null;
           if (!live || live.text!==row.text || (live.title ?? null)!==(row.title ?? null)) return false;
           putTextVector(db,{...row,...vectorScope(provider,embedding.length),embedding}); return true;
         })();
-        if (written) {if(cached) converted++;else embedded++;} else stale++;
+        if (written) {
+          if(cached) converted++;
+          else { embedded++; completedRequests+=requests-requestsBefore; completedComputeChunks+=workEstimate(row).computeChunks; }
+        } else stale++;
       } catch (error) { signal?.throwIfAborted(); if(error instanceof StaleEmbeddingInput) stale++;else failed++; }
-      // Coverage scans are once per 25 requests, plus start/end and load pauses.
+      // Coverage scans are once per 25 attempted items, plus start/end.
       if (attempted % 25===0) opts.progress?.(report("progress"));
     }
   }
@@ -127,10 +178,10 @@ export async function embedBackfill(db: Database, opts: {
         const exists=db.query("SELECT embedding FROM asset_vectors WHERE sha256=? AND provider_kind=? AND provider_model=? AND dimension=? AND length(embedding)=dimension*4")
           .get(sha256,scope.provider_kind,scope.provider_model,scope.dimension) as {embedding:Uint8Array}|null;
         if (exists) { try {decodeVector(exists.embedding,scope.dimension);skipped++;continue;} catch { /* Rebuild corruption. */ } }
-        await throttle(); attempted++; needsPacing=true;
+        await throttle(); attempted++; needsPacing=true; requests++; requestStartedAt=now();
         try { const result=await embedAsset(db,sha256,assetBlobPath(opts.canonicalDir,sha256),provider,signal);
-          if(result==="indexed") embedded++; else if(result==="skipped") skipped++; else stale++;
-        } catch { signal?.throwIfAborted(); failed++; }
+          if(result==="indexed") { embedded++; completedRequests++; completedComputeChunks++; } else if(result==="skipped") skipped++; else stale++;
+        } catch { signal?.throwIfAborted(); failed++; } finally { finishRequest(); }
         if(attempted%25===0) opts.progress?.(report("progress"));
       }
     }

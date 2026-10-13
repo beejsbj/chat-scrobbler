@@ -199,6 +199,19 @@ function embeddingGemmaTitle(title: string | null | undefined): string {
   return capped;
 }
 
+/** Count the same body chunks used for inference so backfill ETA includes long documents. */
+export function embeddingGemmaDocumentRequestCount(text: string): number {
+  return splitEmbeddingGemmaDocument(text).length;
+}
+
+/** Approximate the service's 1800-byte native chunks, including its repeated title prefix.
+ * Paragraph/word boundaries and service configuration can change the actual count. */
+export function embeddingGemmaDocumentWorkEstimate(text: string, title?: string | null) {
+  const chunks = splitEmbeddingGemmaDocument(text);
+  const room = 1800 - Buffer.byteLength(`title: ${embeddingGemmaTitle(title)} | text: `);
+  return { requests: chunks.length, computeChunks: chunks.reduce((count, chunk) => count + Math.ceil(Buffer.byteLength(chunk)/room), 0) };
+}
+
 function splitEmbeddingGemmaDocument(text: string): string[] {
   if (Buffer.byteLength(text) <= EMBEDDINGGEMMA_DOCUMENT_BYTES) return [text];
   const chunks: string[] = [];

@@ -59,6 +59,9 @@ Derived embeddings
     --load-threshold <n>    Optional emergency host-load brake (e.g. 32); no default
     --migrate-only         Convert legacy JSON to float32 without inference
                            Exempt from the host-load brake
+    JSON progress separates HTTP requests from estimated 1800-byte native chunks
+    Initial ETA assumes 2 s/native chunk: 53k take ~29.4 h, plus HTTP pacing
+    Then ETA uses measured HTTP latency; native chunk counts are approximate
 
 Recall
   search <query>         Hybrid search when embeddings are enabled; otherwise FTS

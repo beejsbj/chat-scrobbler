@@ -2,6 +2,7 @@ import { test, expect } from "bun:test";
 import { openIndex, indexSession } from "../src/indexer/sqlite";
 import { embedBackfill, textCoverage } from "../src/indexer/embed-backfill";
 import { fixture } from "./support/embedding-fixture";
+import { EmbeddingGemmaProvider } from "../src/indexer/embedding-providers";
 const p = { kind: "test", model: "m", dimensions: 2, embed: async () => [1,0] };
 test("backfill limit, resume, throttle, load pause, and title invalidation", async () => {
   const db = openIndex(":memory:");
@@ -163,5 +164,126 @@ test("coverage and backfill populate the deferred legacy message lookup", async 
     });
     expect(sent).toEqual(["archived words"]);
     expect(report).toMatchObject({ embedded: 1, text: { total: 1, embedded: 1 } });
+  } finally { db.close(); }
+});
+
+test("backfill reports chunk work and ETA while yielding between every serial chunk", async () => {
+  const db = openIndex(":memory:");
+  const originalFetch = globalThis.fetch;
+  try {
+    const session = fixture("x".repeat(9000));
+    session.messages.push({ ...session.messages[0], id: "second", text: "short notes" });
+    indexSession(db, session);
+    let clock = 0, active = 0, maxActive = 0;
+    const dispatched: number[] = [], sleeps: number[] = [], progress: any[] = [];
+    globalThis.fetch = (async (_url: string | URL | Request, _init?: RequestInit) => {
+      dispatched.push(clock);
+      active++;
+      maxActive = Math.max(maxActive, active);
+      clock += 2000;
+      active--;
+      return new Response(JSON.stringify({ data: [{ embedding: new Array(768).fill(0.25) }] }));
+    }) as typeof fetch;
+    const provider = new EmbeddingGemmaProvider({ baseUrl: "http://fixture.invalid", model: "test" });
+    const report = await embedBackfill(db, {
+      provider, now: () => clock, sleep: async ms => { sleeps.push(ms); clock += ms; },
+      progress: report => progress.push(report),
+    });
+    expect(progress[0]).toMatchObject({ estimated_requests: 3, remaining_requests: 3, estimated_compute_chunks: 7, remaining_compute_chunks: 7, requests: 0, eta_basis: "assumed_2s_per_compute_chunk" });
+    expect(progress[0].eta_seconds).toBeCloseTo(14.3, 8);
+    expect(report).toMatchObject({ embedded: 2, requests: 3, remaining_requests: 0, elapsed_seconds: 6.2, mean_request_seconds: 2, eta_seconds: 0, eta_basis: "observed" });
+    expect(dispatched).toEqual([0, 2100, 4200]);
+    expect(sleeps).toEqual([100, 100]);
+    expect(maxActive).toBe(1);
+  } finally { globalThis.fetch = originalFetch; db.close(); }
+});
+
+test("ETA excludes cached vectors, legacy conversions, and blank messages from inference work", async () => {
+  const db = openIndex(":memory:");
+  try {
+    indexSession(db, fixture());
+    await embedBackfill(db, { provider: p, sleep: async () => {} });
+    const session = fixture();
+    session.messages.push({ ...session.messages[0], id: "legacy", text: "legacy notes" });
+    session.messages.push({ ...session.messages[0], id: "blank", text: " \n\t" });
+    indexSession(db, session);
+    db.run(`INSERT INTO message_embeddings(session_id,message_id,embedding,text,title,provider_kind,provider_model,dimension)
+      VALUES ('chatgpt:test','legacy','[1,0]','legacy notes','T','test','m',2)`);
+    const report = await embedBackfill(db, {
+      provider: { ...p, embed: async () => { throw new Error("no inference expected"); } }, sleep: async () => {},
+    });
+    expect(report).toMatchObject({ converted: 1, skipped: 2, estimated_requests: 0, remaining_requests: 0, requests: 0, eta_seconds: 0 });
+  } finally { db.close(); }
+});
+
+test("failed document chunks remain in the ETA for a whole-document retry", async () => {
+  const db = openIndex(":memory:");
+  const originalFetch = globalThis.fetch;
+  try {
+    indexSession(db, fixture("x".repeat(9000)));
+    let calls = 0;
+    globalThis.fetch = (async (_url: string | URL | Request, _init?: RequestInit) => ++calls === 1
+      ? new Response(JSON.stringify({ data: [{ embedding: new Array(768).fill(0.25) }] }))
+      : new Response("fixture unavailable", { status: 503 })) as typeof fetch;
+    const provider = new EmbeddingGemmaProvider({ baseUrl: "http://fixture.invalid", model: "test" });
+    const report = await embedBackfill(db, { provider, sleep: async () => {} });
+    expect(report).toMatchObject({ failed: 1, embedded: 0, requests: 2, estimated_requests: 2, remaining_requests: 2, text: { total: 1, embedded: 0 } });
+  } finally { globalThis.fetch = originalFetch; db.close(); }
+});
+
+test("deleting a document during a chunk pacing yield stops remaining dispatches", async () => {
+  const { deleteIndexedSession } = await import("../src/indexer/sqlite");
+  const db = openIndex(":memory:");
+  const originalFetch = globalThis.fetch;
+  try {
+    indexSession(db, fixture("x".repeat(9000)));
+    let calls = 0;
+    globalThis.fetch = (async (_url: string | URL | Request, _init?: RequestInit) => {
+      calls++;
+      return new Response(JSON.stringify({ data: [{ embedding: new Array(768).fill(0.25) }] }));
+    }) as typeof fetch;
+    const provider = new EmbeddingGemmaProvider({ baseUrl: "http://fixture.invalid", model: "test" });
+    const report = await embedBackfill(db, { provider, sleep: async () => { deleteIndexedSession(db, "chatgpt", "test"); } });
+    expect(calls).toBe(1);
+    expect(report).toMatchObject({ stale: 1, embedded: 0, failed: 0, requests: 1 });
+    expect(textCoverage(db, provider)).toEqual({ total: 0, embedded: 0 });
+  } finally { globalThis.fetch = originalFetch; db.close(); }
+});
+
+test("ETA measures request latency without counting emergency host load pauses", async () => {
+  const db = openIndex(":memory:");
+  try {
+    const session = fixture();
+    session.messages.push({ ...session.messages[0], id: "second", text: "second" });
+    indexSession(db, session);
+    let clock = 0, checks = 0;
+    const report = await embedBackfill(db, {
+      provider: { ...p, embed: async () => { clock += 2000; return [1, 0]; } },
+      now: () => clock, loadThreshold: 32, load: () => checks++ === 0 ? 33 : 0,
+      sleep: async ms => { clock += ms; }, limit: 1,
+    });
+    expect(report).toMatchObject({ estimated_requests: 2, remaining_requests: 1, requests: 1, elapsed_seconds: 7, mean_request_seconds: 2, eta_basis: "observed" });
+    expect(report.eta_seconds).toBeCloseTo(2.1, 8);
+  } finally { db.close(); }
+});
+
+test("an explicit emergency load brake runs before lookup and coverage preparation", async () => {
+  const db = openIndex(":memory:");
+  try {
+    indexSession(db, fixture());
+    db.run("DELETE FROM message_lookup");
+    db.run("UPDATE message_lookup_state SET cursor=0,ready=0 WHERE id=1");
+    let checks = 0;
+    const pauses: any[] = [];
+    const report = await embedBackfill(db, {
+      provider: p, loadThreshold: 32, load: () => checks++ === 0 ? 33 : 0,
+      sleep: async () => {
+        expect(db.query("SELECT ready FROM message_lookup_state").get()).toEqual({ ready: 0 });
+        expect(db.query("SELECT * FROM message_lookup").all()).toHaveLength(0);
+      },
+      progress: report => { if (report.event === "load_pause") pauses.push(report); },
+    });
+    expect(pauses[0]).toMatchObject({ text: null, assets: null, estimated_requests: null, eta_seconds: null });
+    expect(report.embedded).toBe(1);
   } finally { db.close(); }
 });
