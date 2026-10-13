@@ -200,3 +200,36 @@ test("background treats server deletion skips as uncaptured without incrementing
   expect(response).toMatchObject({ ok: true, captured: false, ingest });
   expect((storageData["scrobbler.status"] as { capturesPosted?: number } | undefined)?.capturesPosted ?? 0).toBe(0);
 });
+
+test("background checks SHA-256 and references existing blobs without uploading bytes", async () => {
+  const calls: Array<{ method: string; url: string; body?: BodyInit | null }> = [];
+  globalThis.fetch = (async (input, init) => {
+    calls.push({ method: init?.method ?? "GET", url: String(input), body: init?.body });
+    if (String(input).includes("/reference?")) {
+      expect(init?.body).toBeUndefined();
+      return Response.json({ ok: true, pointer: "p", local_path: "assets/claude/c/hash.png", sha256: "hash" });
+    }
+    return Response.json({ ok: true, exists: true });
+  }) as typeof fetch;
+  expect(await sendRuntimeMessage({ type: "SCROBBLER_ASSET_UPLOAD", asset: { source: "claude", sourceId: "c", pointer: "p", bytes: [1, 2, 3], contentType: "image/png" } })).toMatchObject({ ok: true });
+  expect(calls).toHaveLength(2);
+  expect(new URL(calls[0].url).searchParams.get("sha256")).toBe("039058c6f2c0cb492c533b0a4d14ef77cc0f78abccced5287d84a1a2011cfb81");
+  expect(calls[1].url).toContain("/assets/reference?");
+});
+
+test("background falls back to uploading bytes when an old server has no hash lookup", async () => {
+  const calls: string[] = [];
+  globalThis.fetch = (async (input, init) => {
+    calls.push(init?.method ?? "GET");
+    if (!init?.method) return new Response("", { status: 404 });
+    expect(Array.from(init.body as Uint8Array)).toEqual([1, 2]);
+    return Response.json({ ok: true, pointer: "p", local_path: "assets/claude/c/hash" });
+  }) as typeof fetch;
+  expect(await sendRuntimeMessage({ type: "SCROBBLER_ASSET_UPLOAD", asset: { source: "claude", sourceId: "c", pointer: "p", bytes: [1, 2] } })).toMatchObject({ ok: true });
+  expect(calls).toEqual(["GET", "POST"]);
+});
+
+test("background persists the configurable asset size limit", async () => {
+  expect(await sendRuntimeMessage({ type: "SCROBBLER_SAVE_SETTINGS", ingestBaseUrl: "http://local", maxAssetBytes: 7 })).toMatchObject({ settings: { maxAssetBytes: 7 } });
+  expect(await sendRuntimeMessage({ type: "SCROBBLER_ASSET_UPLOAD", asset: { source: "claude", sourceId: "c", pointer: "p", bytes: [1, 2, 3, 4, 5, 6, 7, 8] } })).toMatchObject({ ok: false, error: "asset_too_large" });
+});

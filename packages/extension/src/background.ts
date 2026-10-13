@@ -3,7 +3,9 @@ import { assetsUrl, capturesUrl, deleteCaptureUrl, statusUrl, DEFAULT_INGEST_BAS
 import { collectCredentialSnapshot } from "./credentials";
 import { toolbarProgressView, aggregateTabProgress, type ToolbarProgressInput } from "./toolbar-progress";
 import { appendRecentCapture, RECENT_CAPTURES_KEY, type RecentCapture } from "./recent-captures";
-import { filenameFromHeaders, isOversizedContentLength, MAX_PROVIDER_ASSET_BYTES } from "./providers/assets";
+import { filenameFromHeaders, MAX_PROVIDER_ASSET_BYTES } from "./providers/assets";
+import { boundedAssetBytes } from "./providers/asset-bytes";
+import { uploadAssetToIngest } from "./asset-upload";
 import type {
   AssetFetchMessage,
   AssetFailureMessage,
@@ -21,6 +23,7 @@ import type {
 interface Settings {
   ingestBaseUrl: string;
   syncPeriodMinutes: number;
+  maxAssetBytes: number;
   /** When true, opening a provider tab auto-captures not-yet-synced conversations. */
   autoSync: boolean;
   /**
@@ -109,6 +112,10 @@ async function handleRuntimeMessage(message: RuntimeMessage, sender: any): Promi
     const patch: Partial<Settings> = { ingestBaseUrl: message.ingestBaseUrl };
     if ("ingestToken" in message) patch.ingestToken = (message as SaveSettingsMessage).ingestToken ?? null;
     if ("autoSync" in message) patch.autoSync = (message as SaveSettingsMessage).autoSync ?? true;
+    if ("maxAssetBytes" in message) {
+      if (!Number.isSafeInteger(message.maxAssetBytes) || message.maxAssetBytes! <= 0) throw new Error("maxAssetBytes must be a positive integer");
+      patch.maxAssetBytes = message.maxAssetBytes;
+    }
     const settings = await setSettings({ ...(await getSettings()), ...patch });
     return { ok: true, settings };
   }
@@ -135,24 +142,8 @@ async function postAssetFailure(message: AssetFailureMessage): Promise<unknown> 
 
 async function postAsset(asset: AssetUploadRequest): Promise<unknown> {
   const settings = await getSettings();
-  const headers: Record<string, string> = {};
-  if (asset.contentType) headers["content-type"] = asset.contentType;
-  if (settings.ingestToken) headers["authorization"] = `Bearer ${settings.ingestToken}`;
-  const url = new URL(assetsUrl(settings.ingestBaseUrl));
-  url.searchParams.set("source", asset.source);
-  url.searchParams.set("source_id", asset.sourceId);
-  url.searchParams.set("pointer", asset.pointer);
-  if (asset.messageId) url.searchParams.set("message_id", asset.messageId);
-  if (asset.originalUrl) url.searchParams.set("original_url", asset.originalUrl);
-  if (asset.filename) url.searchParams.set("filename", asset.filename);
-  if (asset.contentType) url.searchParams.set("content_type", asset.contentType);
-  const res = await fetch(url.toString(), {
-    method: "POST",
-    headers,
-    body: new Uint8Array(asset.bytes),
-  });
-  if (!res.ok) throw new Error(`Ingest rejected asset with HTTP ${res.status}: ${await res.text()}`);
-  return { ok: true, asset: await res.json() };
+  const uploaded = await uploadAssetToIngest(fetch, settings, asset);
+  return { ok: true, asset: uploaded };
 }
 
 async function fetchAssetBytes(message: AssetFetchMessage): Promise<unknown> {
@@ -160,21 +151,11 @@ async function fetchAssetBytes(message: AssetFetchMessage): Promise<unknown> {
   if (url.protocol !== "https:" && url.protocol !== "http:") {
     throw new Error("Asset URL must be http or https");
   }
-  const res = await fetch(url.toString(), { credentials: "include" });
-  if (!res.ok) throw new Error(`Provider rejected asset fetch with HTTP ${res.status}`);
-  if (isOversizedContentLength(res.headers.get("content-length"), MAX_PROVIDER_ASSET_BYTES)) {
-    throw new Error("Provider asset exceeds the 50 MiB upload limit");
-  }
-  const buffer = await res.arrayBuffer();
-  if (buffer.byteLength > MAX_PROVIDER_ASSET_BYTES) {
-    throw new Error("Provider asset exceeds the 50 MiB upload limit");
-  }
-  return {
-    ok: true,
-    bytes: Array.from(new Uint8Array(buffer)),
-    filename: filenameFromHeaders(res),
-    contentType: res.headers.get("content-type"),
-  };
+  const settings = await getSettings();
+  const maxBytes = Math.min(message.maxBytes ?? settings.maxAssetBytes, settings.maxAssetBytes);
+  const res = await fetch(url.toString(), { credentials: "include", signal: AbortSignal.timeout(60_000) });
+  if (!res.ok) throw new Error(res.status === 404 || res.status === 410 ? "asset_expired" : "asset_download_failed");
+  return { ok: true, bytes: await boundedAssetBytes(res, maxBytes), filename: filenameFromHeaders(res), contentType: res.headers.get("content-type") };
 }
 
 function updateToolbarProgress(message: CaptureProgressMessage, sender: any): unknown {
@@ -408,12 +389,14 @@ async function getSettings(): Promise<Settings> {
   const settings = (stored[SETTINGS_KEY] as Settings | undefined) ?? {
     ingestBaseUrl: DEFAULT_INGEST_BASE_URL,
     syncPeriodMinutes: DEFAULT_SYNC_PERIOD_MINUTES,
+    maxAssetBytes: MAX_PROVIDER_ASSET_BYTES,
     autoSync: true,
   };
   if (STALE_INGEST_URLS.has(settings.ingestBaseUrl.replace(/\/+$/, ""))) {
     settings.ingestBaseUrl = DEFAULT_INGEST_BASE_URL;
   }
   if (settings.autoSync === undefined) settings.autoSync = true;
+  if (!Number.isSafeInteger(settings.maxAssetBytes) || settings.maxAssetBytes <= 0) settings.maxAssetBytes = MAX_PROVIDER_ASSET_BYTES;
   return settings;
 }
 

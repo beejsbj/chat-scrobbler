@@ -70,6 +70,7 @@ export interface SaveSettingsMessage {
   ingestToken?: string | null;
   /** When true, opening a provider tab auto-captures not-yet-synced conversations. */
   autoSync?: boolean;
+  maxAssetBytes?: number;
 }
 
 /** Content -> background: resolve spine state for the sidebar's visible chats.
