@@ -410,7 +410,8 @@ async function syncTab(tab: any, provider: ProviderSource, reason: "manual" | "p
       lastError: null,
     };
   });
-  await reportSyncFailures(provider, response.captureFailures ?? []);
+  try { await reportSyncFailures(provider, response.captureFailures ?? []); }
+  catch { console.error(JSON.stringify({ event: "capture_failure_report_failed", source: provider })); }
   return { ok: true, result: response };
 }
 

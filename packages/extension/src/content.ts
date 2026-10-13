@@ -5,7 +5,7 @@ import type { ConversationState } from "./sidebar/reconcile";
 import { ASSET_CHUNK_BYTES } from "./asset-transfers";
 import { backfillProviderAssets } from "./asset-backfill";
 import { backgroundAssetError } from "./providers/asset-cache-client";
-import { SyncFailureTracker } from "./providers/sync-failures";
+import { retryCapturedFailures } from "./retry-captures";
 import { DeterministicCaptureError, TransientSyncError } from "./providers/sync-errors";
 import type { RuntimeMessage, SyncRequest, SyncResponse } from "./messages";
 import type { RawCapture, UploadedAsset } from "../../shared/src";
@@ -127,20 +127,7 @@ async function refreshIgnoredIds(): Promise<void> {
 }
 
 async function retryFailedCaptures(message: SyncRequest): Promise<SyncResponse> {
-  const failures = new SyncFailureTracker();
-  let captured = 0, failed = 0, skipped = 0;
-  for (const previous of message.captureFailures ?? []) {
-    if (ignoredIds.has(previous.source_id)) { skipped++; continue; }
-    await new Promise(resolve => setTimeout(resolve, 1000));
-    try {
-      if (!provider!.captureOne) throw new Error("Single capture unavailable");
-      await provider!.captureOne(previous.source_id, previous.updated_at, { emitCapture, uploadAsset });
-      captured++;
-    } catch {
-      failed++;
-      failures.failed(previous.source_id, previous.updated_at);
-    }
-  }
-  return { ok: true, source: provider!.source, scanned: (message.captureFailures ?? []).length, captured, failed, skipped,
-    captureFailures: failures.list(), maxConversationUpdatedAt: message.lastSync ?? null, account: null };
+  const result = await retryCapturedFailures(provider!, { lastSync: message.lastSync, captureFailures: message.captureFailures,
+    emitCapture, uploadAsset, shouldIgnore: (_source, id) => ignoredIds.has(id) });
+  return { ok: true, ...result };
 }

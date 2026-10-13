@@ -297,6 +297,18 @@ test("persistent pointer cache checks the receiver hash and reuses bytes across 
   expect(new URL(calls[3].url).searchParams.get("source_id")).toBe("other");
 });
 
+for (const mode of ["network", "server"] as const) test(`failure report ${mode} outage does not undo saved sync success`, async () => {
+  const tabs = chrome.tabs as any;
+  const oldQuery = tabs.query, oldSend = tabs.sendMessage;
+  tabs.query = (_query: any, done: any) => done([{ id: 1, url: "https://chatgpt.com/" }]);
+  tabs.sendMessage = (_id: any, _message: any, done: any) => done({ ok: true, source: "chatgpt", maxConversationUpdatedAt: "2026-06-05T12:00:00Z", captureFailures: [], captured: 1, skipped: 0, scanned: 1, account: null });
+  globalThis.fetch = (async () => { if (mode === "network") throw new TypeError("offline"); return new Response("", { status: 500 }); }) as unknown as typeof fetch;
+  try {
+    expect(await sendRuntimeMessage({ type: "SCROBBLER_SYNC_ACTIVE_TAB" })).toMatchObject({ ok: true });
+    expect((storageData["scrobbler.status"] as any).providers.chatgpt.lastSync).toBe("2026-06-05T12:00:00Z");
+  } finally { tabs.query = oldQuery; tabs.sendMessage = oldSend; }
+});
+
 test("sync reports carry a stable per-install id, and a different installation gets another id", async () => {
   const tabs = chrome.tabs as any;
   const oldQuery = tabs.query, oldSend = tabs.sendMessage;

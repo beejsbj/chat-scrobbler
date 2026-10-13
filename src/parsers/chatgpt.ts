@@ -222,7 +222,8 @@ function metadataMediaBlocks(metadata: any, existing: Block[], assets: AssetLook
     refs.push({ pointer: a.id, filename: a.name ?? null, mime: a.mime_type ?? null });
   }
   if (Array.isArray(metadata?.aggregate_result?.messages)) {
-    for (const r of metadata.aggregate_result.messages) if (typeof r?.image_url === "string") refs.push({ pointer: r.image_url, filename: null, mime: "image/png" });
+    for (const r of metadata.aggregate_result.messages) if (typeof r?.image_url === "string"
+      && assets.references().some(ref => ref.pointer === r.image_url)) refs.push({ pointer: r.image_url, filename: null, mime: "image/png" });
   }
   const seen = linkedPointers(existing);
   return refs.flatMap(ref => {
