@@ -1,3 +1,4 @@
+import { monitorWrite } from "../../../src/monitor/state-fault";
 import { ASSET_FAILURE_REASONS } from "../../shared/src";
 import { incrementMonitorCounter, monitorStatePath, readMonitorCounter } from "../../../src/monitor/state";
 export function assetFailureCount(indexPath: string, statePath?: string | null): number {
@@ -13,6 +14,7 @@ export function recordAssetFailures(indexPath: string, source: string, value: un
     return { source_id: item.source_id, message_id: item.message_id ?? null, reason: item.reason };
   });
   for (const failure of failures) console.error(JSON.stringify({ event: "asset_capture_failed", source, ...failure }));
-  incrementMonitorCounter(monitorStatePath(indexPath, statePath), "asset_failures", failures.length);
+  const path = monitorStatePath(indexPath, statePath);
+  monitorWrite(path, () => incrementMonitorCounter(path, "asset_failures", failures.length));
   return failures.length;
 }

@@ -1,3 +1,4 @@
+import { monitorWrite } from "../../../src/monitor/state-fault";
 import { persistEmbeddingStatus } from "../../../src/indexer/embedding-status";
 import { monitorStatePath, recordCaptureReceipt } from "../../../src/monitor/state";
 import { cachedMonitorReport } from "../../../src/monitor/report";
@@ -230,9 +231,10 @@ export async function handleIngestRequest(req: Request, opts: IngestServerOption
       return json({ ok: false, error: "raw_store_write_failed" }, 503);
     }
     if (opts.indexPath) {
-      try {
-        for (const source of new Set(captures.map(capture => capture.source))) recordCaptureReceipt(monitorStatePath(opts.indexPath, opts.monitorStatePath), source);
-      } catch { return json({ ok: false, error: "monitor_state_write_failed" }, 503); }
+      const path = monitorStatePath(opts.indexPath, opts.monitorStatePath);
+      monitorWrite(path, () => {
+        for (const source of new Set(captures.map(capture => capture.source))) recordCaptureReceipt(path, source);
+      });
     }
     const spine: SpineResult[] = [];
     if (fat && captures.length) {

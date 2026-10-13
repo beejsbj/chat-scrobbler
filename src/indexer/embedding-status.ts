@@ -1,3 +1,4 @@
+import { monitorWrite } from "../monitor/state-fault";
 import { incrementMonitorCounter, readMonitorCounter } from "../monitor/state";
 import type { EmbeddingProvider } from "./sqlite";
 
@@ -29,8 +30,7 @@ export function embeddingFailed(provider: EmbeddingProvider, reason: string, sco
   states.set(provider, { ...states.get(provider), [scope]: state });
   const path = persistence.get(provider);
   if (path) {
-    try { incrementMonitorCounter(path, `embedding_${scope}_failures`); }
-    catch { console.error(JSON.stringify({ event: "monitor_state_write_failed" })); }
+    monitorWrite(path, () => incrementMonitorCounter(path, `embedding_${scope}_failures`));
   }
   // Provider errors can contain keys, URLs, response bodies, and chat text.
   console.error(JSON.stringify({ event: "embedding_failed", scope, reason, failures: state.embedding_failures }));

@@ -1,3 +1,5 @@
+import { MonitorStateError, monitorDataDir } from "./state-owner";
+import { monitorWriteFailed } from "./state-fault";
 import { acknowledgeTypes, monitorStatePath, readMonitorState } from "./state";
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
@@ -21,9 +23,11 @@ export async function monitorReport(opts: IngestServerOptions, ack = false) {
   const settings = monitorSettings(opts);
   const since = Date.now() - settings.monitorRecentHours * 3_600_000;
   const statePath = opts.indexPath ? monitorStatePath(opts.indexPath, settings.monitorStatePath) : null;
+  const dataDir = opts.canonicalDir ? monitorDataDir(opts.canonicalDir) : undefined;
   let state: ReturnType<typeof readMonitorState> | null = null;
-  try { if (statePath) state = readMonitorState(statePath, since); else fail("state", "not_configured"); }
-  catch { fail("state", "unavailable"); }
+  try { if (statePath) state = readMonitorState(statePath, since, dataDir); else fail("state", "not_configured"); }
+  catch (error) { fail("state", error instanceof MonitorStateError ? error.reason : "unavailable"); }
+  if (statePath && monitorWriteFailed(statePath)) fail("state", "write_failed");
   const indexExists = opts.indexPath && existsSync(opts.indexPath);
   const health = await ingestHealth(opts, true);
   for (const store of ["index", "canonical", "raw", "assets"] as const) {
@@ -38,7 +42,7 @@ export async function monitorReport(opts: IngestServerOptions, ack = false) {
   const providers = Object.fromEntries(SOURCES.map(source => {
     const days = settings.monitorStaleDays[source];
     const last = [raw.lastCapture[source], state?.captures[source]].filter((time): time is string => !!time).sort().at(-1) ?? null;
-    const stale = days !== null && (!last || Date.now() - Date.parse(last) > days * 86_400_000);
+    const stale = state !== null && days !== null && (!last || Date.now() - Date.parse(last) > days * 86_400_000);
     if (stale) fail(`freshness.${source}`, last ? `stale threshold_days=${days}` : "no_captures");
     return [source, { last_capture_at: last, threshold_days: days, stale }];
   }));
@@ -51,7 +55,7 @@ export async function monitorReport(opts: IngestServerOptions, ack = false) {
   const types = unknown.counts.map(row => ({ source: row.source, type_id: unknownTypeId(row.source, row.provider_type), count: row.count }));
   if (ack && statePath && state) {
     try {
-      acknowledgeTypes(statePath, types.map(type => type.type_id));
+      acknowledgeTypes(statePath, types.map(type => type.type_id), dataDir);
       types.forEach(type => state!.acknowledged.add(type.type_id));
     } catch { fail("state", "acknowledge_failed"); }
   }

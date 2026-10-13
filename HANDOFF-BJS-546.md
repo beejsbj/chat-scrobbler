@@ -118,3 +118,16 @@ or a provider override. Current backup/restore does not include monitoring state
 retain its database separately when replacing the index directory.
 
 No production data was read, no deployment was performed, and no branch was pushed.
+
+## Review fixes
+
+- Fetched `origin` and rebased onto current `origin/main` (already current).
+- Receipt and failure telemetry is best effort: corrupt, unwritable or locked
+  state cannot abort ingest or status responses. SQLite telemetry writers never
+  wait for a lock. A separate failure marker produces `FAILED state write_failed`
+  in offline monitoring; successful telemetry clears it.
+- Freshness is skipped when state cannot be read, avoiding misleading
+  `no_captures` alerts.
+- Exec must run as the container user, never `-u root`. Creation rejects a UID
+  different from the data directory owner and rejects foreign-owned state files
+  and SQLite sidecars.

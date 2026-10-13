@@ -1,11 +1,14 @@
-import { expect, test } from "bun:test";
+import { Database } from "bun:sqlite";
+import { monitorReport } from "../src/monitor/report";
+import { readMonitorState } from "../src/monitor/state";
+import { expect, spyOn, test } from "bun:test";
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { handleIngestRequest } from "../packages/ingest/src/server";
 import { getParser } from "../src/parsers/registry";
 import { deleteSessionArchive } from "../src/store/delete";
 import { storeCanonicalAsset } from "../src/store/assets";
-import { writeSession } from "../src/store/sessions";
+import { readSession, writeSession } from "../src/store/sessions";
 import { storeRawCapture } from "../src/store/raw";
 import { HashEmbeddingProvider } from "../src/indexer/embedding-providers";
 import { indexSession, openIndex } from "../src/indexer/sqlite";
@@ -262,5 +265,59 @@ test("recent media blocks missing a local_path field still alert", async () => {
     const report = await (await handleIngestRequest(request(), opts)).json();
     expect(report.assets.missing_recent_blocks).toBe(1);
     expect(report.failures).toContain("FAILED assets missing_recent_blocks=1");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("a broken monitor database cannot stop parsing, canonical writes or indexing", async () => {
+  const { root, opts } = setup();
+  const statePath = join(root, "broken-state.sqlite");
+  try {
+    writeFileSync(statePath, "not a database");
+    const capture = structuredClone(claude);
+    capture.payload.name = "Updated fixture";
+    const response = await handleIngestRequest(new Request("http://local/captures", { method: "POST", body: JSON.stringify(capture) }), { ...opts, monitorStatePath: statePath, ingestToken: null });
+    expect(response.status).toBe(200);
+    expect((await response.json()).spine[0].indexed).toBe(true);
+    expect(readSession(opts.canonicalDir, "claude", "cl-1").title).toBe("Updated fixture");
+    const report = await (await handleIngestRequest(request(), { ...opts, monitorStatePath: statePath })).json();
+    expect(report.failures.some((line: string) => line.startsWith("FAILED state "))).toBe(true);
+    expect(report.failures.some((line: string) => line.includes("freshness"))).toBe(false);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("a locked state writer does not stall ingest and its failure is visible offline", async () => {
+  const { root, opts } = setup();
+  const path = `${opts.indexPath}.monitor.sqlite`;
+  readMonitorState(path);
+  const lock = new Database(path);
+  try {
+    lock.run("BEGIN IMMEDIATE");
+    const start = performance.now();
+    const response = await handleIngestRequest(new Request("http://local/captures", { method: "POST", body: JSON.stringify(claude) }), { ...opts, ingestToken: null });
+    expect(response.status).toBe(200);
+    expect(performance.now() - start).toBeLessThan(1000);
+    expect(cli(opts).stdout.toString()).toContain("FAILED state write_failed");
+  } finally { lock.run("ROLLBACK"); lock.close(); rmSync(root, { recursive: true, force: true }); }
+}, 15000);
+
+test("monitor refuses to create state under a different effective owner", async () => {
+  const { root, opts } = setup();
+  const uid = process.getuid!();
+  const getuid = spyOn(process, "getuid").mockReturnValue(uid + 1);
+  try {
+    const report = await monitorReport(opts, true);
+    expect(report.failures).toContain("FAILED state owner_mismatch");
+    expect(existsSync(`${opts.indexPath}.monitor.sqlite`)).toBe(false);
+  } finally { getuid.mockRestore(); rmSync(root, { recursive: true, force: true }); }
+});
+
+test("asset telemetry failure does not break conversation status responses", async () => {
+  const { root, opts } = setup();
+  const path = join(root, "blocked.sqlite");
+  try {
+    writeFileSync(path, "not a database");
+    const response = await handleIngestRequest(new Request("http://local/status", { method: "POST", body: JSON.stringify({ source: "claude", conversations: [{ id: "cl-1" }], asset_failures: [{ source_id: "cl-1", reason: "asset_upload_failed" }] }) }), { ...opts, ingestToken: null, monitorStatePath: path });
+    expect(response.status).toBe(200);
+    expect((await response.json()).asset_failures).toBe(1);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });

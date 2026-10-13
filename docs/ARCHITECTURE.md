@@ -435,6 +435,10 @@ The Cockpit wrapper should run this exact command **inside the container**:
 /usr/local/bin/chat-scrobbler monitor
 ```
 
+Run exec as the container user (`scrobbler`), never with `-u root`. State creation
+refuses an effective UID that differs from the data directory owner. Existing
+state files and SQLite sidecars must have that same owner.
+
 For the checked-in Compose service, the host invocation is:
 
 ```sh
