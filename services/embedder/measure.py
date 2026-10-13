@@ -10,7 +10,7 @@ import sys
 import threading
 import time
 
-from .config import Config, SPIKE
+from .config import Config, SPIKE, MODEL_ID, MODEL_REVISION, MODEL_FILENAME
 from .errors import RequestError
 from .service import Embedder, current_rss_kib
 
@@ -82,7 +82,10 @@ def child():
                 os._exit(75)  # Kill native work as well; never leave a busy worker.
     watchdog = threading.Thread(target=guard, daemon=True)
     watchdog.start()
-    config = replace(Config.from_env(), idle_seconds=1, allowed_roots=(SPIKE / 'inputs',))
+    config = replace(Config.from_env(), idle_seconds=1, allowed_roots=(SPIKE / 'inputs',),
+                     model_path=SPIKE / 'hf/hub' / ('models--' + MODEL_ID.replace('/', '--'))
+                     / 'snapshots' / MODEL_REVISION / MODEL_FILENAME,
+                     cache_dir=SPIKE / 'litert-cache')
     service = Embedder(config)
     def sample(stage, **extra):
         print(json.dumps({'stage': stage, 'rss_kib': current_rss_kib(),

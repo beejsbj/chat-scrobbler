@@ -117,10 +117,13 @@ playlists, indirect file lists, network protocols, and URL inputs are excluded.
 
 ## Existing runtime and exact API verification
 
-The code uses the existing Python 3.12 venv, generic quantized model snapshot
-`24d962e906c7d332c6428e71c9676855024569e2`, and compilation cache under
-`/mnt/server-ssd/spikes/bjs-544`. There are no download calls. `requirements.txt`
-records the installed version, 0.18.0, and ffmpeg/ffprobe are separate executables.
+The production image installs `litert-lm==0.18.0` and fetches the immutable model
+revision `24d962e906c7d332c6428e71c9676855024569e2` during build. The generic model's
+SHA-256 is `e7a8a2204b91e0f96e92960e84a09a89212e1633dcb7575a9bf3378b4df77f4c`.
+The fetch verifies that hash, reuses a verified local file, and atomically installs
+it at `/opt/models/embeddinggemma-2-740m.litertlm`. Serving never downloads.
+Native host verification alone reuses the existing Python 3.12 venv, pinned model
+snapshot and compilation cache under `/mnt/server-ssd/spikes/bjs-544`.
 
 Run from the repo root:
 
@@ -152,26 +155,34 @@ checks, not retrieval quality measurements.
 
 ## Preferred deployment: private Docker sidecar
 
-`Dockerfile` uses Ubuntu 24.04, Python 3.12, ffmpeg, and native support libraries.
-It installs OS packages when built; it does not install Python dependencies or
-fetch weights. The existing venv is mounted read-only at the same absolute path,
-so its `/usr/bin/python3.12` symlink resolves in the image. HF weights are
-read-only; LiteRT compilation cache remains writable. Assets are read-only at
-`/data/canonical/assets`. All bind sources must already exist.
+`Dockerfile` uses Python 3.12 on Debian bookworm, installs ffmpeg and the pinned
+Python runtime, and fetches verified weights during build. It has no spike or
+host Python dependency. Model weights in the image are read-only. The named
+`embedder-cache` volume is writable by UID/GID `1001:1001`; assets use an existing
+read-only bind at `/data/canonical/assets`. Existing reused cache volumes must
+already be writable by that UID. The asset bind must exist and be readable by it.
 
-`compose.embedder.yml` is an overlay for the merged production checkout. Validate
-from that repo root with the production file first:
+The main `docker-compose.bjslab.yml` contains the sidecar under profile
+`embeddings`. Validate the opt-in plan from the repo root:
 
 ```sh
-docker compose -f docker-compose.bjslab.yml -f services/embedder/compose.embedder.yml config --quiet
+docker compose -f docker-compose.bjslab.yml --profile embeddings config --quiet
 ```
 
-It connects scrobbler to its existing `default` network plus `embeddings`
-(`internal: true`). The embedder has only `embeddings`, no published ports and no
-proxy network. Its healthcheck verifies status, canonical model ID and model
-availability without loading the engine. Scrobbler depends on that healthcheck;
-its current provider environment stays intact. A future deliberate provider
-switch would use `http://embedder:4320`.
+For Coolify, its Compose invocation must receive `COMPOSE_PROFILES=embeddings`.
+An environment variable passed only into the application container does not
+enable a Compose profile. Without that explicit opt-in, only scrobbler and Ollama
+start. If Coolify cannot forward Compose profiles, its deployment command/config
+must explicitly enable the profile before choosing the embedder provider.
+`compose.embedder.yml` remains an empty compatibility overlay; it is unnecessary.
+
+Scrobbler uses its existing `default` network plus `embeddings` (`internal: true`).
+The embedder has only `embeddings`, no published ports and no proxy network.
+Its healthcheck verifies status, canonical model ID and model availability without
+loading the engine. Scrobbler has no dependency on the embedder, so an absent or
+unhealthy opt-in sidecar does not block the existing Ollama service. The production
+provider/model/URL remain Ollama, `nomic-embed-text`, `http://ollama:11434`.
+A separate deliberate provider switch would use `http://embedder:4320`.
 
 Explicit `EMBEDDER_NETWORK_MODE=private-docker` binds `0.0.0.0` and accepts Host
 `embedder`, `localhost`, or `127.0.0.1`. The default `loopback` mode binds

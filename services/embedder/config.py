@@ -4,15 +4,16 @@ import os
 
 MODEL_ID = 'litert-community/embeddinggemma-2-740m-litert-lm'
 SPIKE = Path('/mnt/server-ssd/spikes/bjs-544')
-MODEL = SPIKE / ('hf/hub/models--litert-community--embeddinggemma-2-740m-litert-lm/'
-                 'snapshots/24d962e906c7d332c6428e71c9676855024569e2/'
-                 'embeddinggemma-2-740m.litertlm')
+MODEL_REVISION = '24d962e906c7d332c6428e71c9676855024569e2'
+MODEL_FILENAME = 'embeddinggemma-2-740m.litertlm'
+MODEL = Path('/opt/models') / MODEL_FILENAME
+CACHE = Path('/var/cache/embedder')
 
 
 @dataclass(frozen=True)
 class Config:
     model_path: Path = MODEL
-    cache_dir: Path = SPIKE / 'litert-cache'
+    cache_dir: Path = CACHE
     allowed_roots: tuple = ()  # Deny path inputs until explicitly configured.
     network_mode: str = 'loopback'
     port: int = 4320
@@ -39,7 +40,7 @@ class Config:
     def from_env(cls):
         return cls(
             model_path=Path(os.environ.get('EMBEDDER_MODEL_PATH', str(MODEL))),
-            cache_dir=Path(os.environ.get('EMBEDDER_CACHE_DIR', str(SPIKE / 'litert-cache'))),
+            cache_dir=Path(os.environ.get('EMBEDDER_CACHE_DIR', str(CACHE))),
             allowed_roots=tuple(Path(p).resolve(strict=True) for p in
                                 os.environ.get('EMBEDDER_ALLOWED_ROOTS', '').split(os.pathsep) if p),
             network_mode=os.environ.get('EMBEDDER_NETWORK_MODE', 'loopback'),
