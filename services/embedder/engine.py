@@ -23,6 +23,10 @@ class LiteRTEngine:
         if isinstance(content, list):
             content = [self.image_file(str(p.path)) if p.kind == 'image'
                        else self.audio_file(str(p.path)) for p in content]
+            # LiteRT treats a singleton list differently from a bare media input.
+            # Match the validated spike for image/audio; video keeps all frames.
+            if len(content) == 1:
+                content = content[0]
         return self.native.compute_embedding(content, self.options).embedding
 
     def close(self):
