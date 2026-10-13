@@ -130,7 +130,7 @@ test("unknown content in disconnected mapping nodes survives with an escaped raw
 test("unfamiliar tool names stay string labels without being confused with known families", () => {
   const capture = structuredClone(sample) as any;
   capture.payload.mapping.n3.message.recipient = "constructor.run";
-  expect(parseChatgpt(capture)[0].messages[2].blocks).toEqual([{ type: "tool_call", name: "constructor.run", tool_type: "constructor" }]);
+  expect(parseChatgpt(capture)[0].messages[2].blocks[0]).toEqual({ type: "tool_call", name: "constructor.run", tool_type: "constructor" });
 });
 
 test("preserves unfamiliar non-array reference containers instead of dropping them", () => {
@@ -138,4 +138,22 @@ test("preserves unfamiliar non-array reference containers instead of dropping th
   capture.payload.mapping.n3.message.metadata.content_references = { type: "future_reference_container", entries: [{ opaque: true }] };
   const [s] = parseChatgpt(capture);
   expect(s.messages[2].blocks).toContainEqual(expect.objectContaining({ type: "unknown", provider_type: "future_reference_container", raw_json: capture.payload.mapping.n3.message.metadata.content_references }));
+});
+
+test("tool-role and recipient messages retain hydrated media and opaque parts without tool prose", () => {
+  for (const toolRole of [true, false]) {
+    const capture = structuredClone(sample) as any;
+    const message = capture.payload.mapping.n3.message;
+    message.author = toolRole ? { role: "tool", name: "dalle.text2im" } : { role: "assistant" };
+    message.recipient = toolRole ? "all" : "dalle.text2im";
+    message.content.parts[0] = "tool prose noise";
+    message.content.parts.push({ content_type: "new_image_metadata", data: { opaque: true } });
+    capture.assets = [{ pointer: "file-service://file-IMG1", sha256: "a".repeat(64), local_path: "assets/chatgpt/conv-1/image.png" }];
+    const msg = parseChatgpt(capture)[0].messages[2];
+    expect(msg.blocks[0]).toEqual({ type: "tool_call", name: "dalle.text2im", tool_type: "image_gen" });
+    expect(msg.blocks).toContainEqual(expect.objectContaining({ type: "image", pointer: "file-service://file-IMG1", sha256: "a".repeat(64), local_path: "assets/chatgpt/conv-1/image.png" }));
+    expect(msg.blocks).toContainEqual(expect.objectContaining({ type: "unknown", provider_type: "new_image_metadata" }));
+    expect(msg.text).toContain("[image");
+    expect(msg.text).not.toContain("tool prose noise");
+  }
 });

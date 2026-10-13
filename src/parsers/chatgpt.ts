@@ -99,8 +99,10 @@ export function sessionFromChatgptConversation(conv: RawConversation, opts: Chat
     const location = childLocation({ raw_ref: opts.raw_ref, raw_path: opts.raw_path ?? "" }, "mapping", node.id, "message");
     const recipient = typeof m.recipient === "string" && m.recipient !== "all" ? m.recipient : null;
     const name = recipient ?? (role === "tool" ? m.author?.name : null) ?? "code";
+    const contentBlocks = blocksFromContent(m.content, assets, childLocation(location, "content"));
     const blocks = recipient || role === "tool"
-      ? [toolCall(name)] : blocksFromContent(m.content, assets, childLocation(location, "content"));
+      ? [toolCall(name), ...contentBlocks.filter(block => !["text", "reasoning", "tool_call", "tool_result"].includes(block.type))]
+      : contentBlocks;
     for (const key of ["citations", "content_references", "attachments"]) {
       const entries = m.metadata?.[key];
       if (Array.isArray(entries)) entries.forEach((entry: unknown, i: number) =>
