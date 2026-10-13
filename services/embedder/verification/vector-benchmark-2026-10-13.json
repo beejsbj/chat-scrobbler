@@ -1,1 +1,1 @@
-{"synthetic_messages":4096,"dimension":768,"binary_bytes":12582912,"json_bytes":65957888,"binary_search_median_ms":112.208101,"json_search_median_ms":212.122528}
+{"synthetic_messages":4096,"dimension":768,"binary_bytes":12582912,"json_bytes":65957888,"binary_search_median_ms":99.30395900000002,"json_search_median_ms":156.99151199999994}

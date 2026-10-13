@@ -1,0 +1,20 @@
+{
+  "date": "2026-10-13",
+  "environment": "disposable Daytona general sandbox",
+  "source_commit": "8d143db",
+  "bun_version": "1.3.14",
+  "bun_tests": {
+    "passed": 414,
+    "failed": 0,
+    "files": 41
+  },
+  "typescript_no_emit_exit_code": 0,
+  "python_unittest": {
+    "passed": 29,
+    "failed": 0,
+    "skipped": 0
+  },
+  "synthetic_ffmpeg_decode_exercised": true,
+  "native_model_loaded_in_test_suite": false,
+  "sandbox_deletion_verified": true
+}
