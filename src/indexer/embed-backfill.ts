@@ -3,25 +3,40 @@ import { loadavg } from "node:os";
 import { assetBlobPath } from "../store/assets";
 import type { EmbeddingProvider } from "./sqlite";
 import { assetCoverage, embedAsset } from "./asset-embeddings";
-import { decodeVector, putTextVector, reusableTextVector, vectorScope } from "./vector-store";
+import { decodeVector, putTextVector, reusableBinaryTextVector, reusableTextVector, vectorScope } from "./vector-store";
 
 export interface BackfillReport {
   event: "progress" | "load_pause" | "complete";
-  embedded: number; skipped: number; failed: number; stale: number; attempted: number;
-  text: { total: number; embedded: number }; assets: { total: number; embedded: number } | null;
+  embedded: number; converted: number; skipped: number; failed: number; stale: number; attempted: number;
+  coverage_at_attempt: number | null;
+  text: { total: number; embedded: number } | null; assets: { total: number; embedded: number } | null;
 }
 interface MessageRow { rowid: number; session_id: string; message_id: string; text: string; title: string|null; role: string; created_at: string|null; source: string; }
 export function textCoverage(db: Database, provider: EmbeddingProvider) {
-  return db.query(`SELECT COUNT(*) AS total, COALESCE(SUM(EXISTS(SELECT 1 FROM message_vectors v WHERE
-    v.session_id=f.session_id AND v.message_id=f.message_id AND v.provider_kind=? AND v.provider_model=? AND (? IS NULL OR v.dimension=?)
-    AND v.text=f.text AND v.title IS f.title AND length(v.embedding)=v.dimension*4)
-    OR EXISTS(SELECT 1 FROM message_embeddings l WHERE l.session_id=f.session_id AND l.message_id=f.message_id
-      AND l.provider_kind=? AND COALESCE(l.provider_model,'')=? AND (? IS NULL OR l.dimension=?)
-      AND l.text=f.text AND l.title IS f.title AND CASE WHEN json_valid(l.embedding) THEN json_type(l.embedding)='array' AND json_array_length(l.embedding)=l.dimension ELSE 0 END
-      AND NOT EXISTS(SELECT 1 FROM message_vectors v WHERE v.session_id=l.session_id AND v.message_id=l.message_id
-        AND v.provider_kind=l.provider_kind AND v.provider_model=COALESCE(l.provider_model,'') AND v.dimension=l.dimension))),0) AS embedded FROM messages_fts f WHERE text<>''`)
-    .get(...Array.from({length:2},()=>[provider.kind?.trim() || "unknown",provider.model?.trim() || "",provider.dimensions ?? null,provider.dimensions ?? null]).flat()) as {total:number;embedded:number};
+  const kind=provider.kind?.trim() || "unknown", model=provider.model?.trim() || "", dimension=provider.dimensions ?? null;
+  const total=(db.query("SELECT COUNT(*) AS total FROM messages_fts WHERE text<>''").get() as {total:number}).total;
+  const covered=new Set<string>();
+  for(const row of db.query(`SELECT v.session_id,v.message_id,v.embedding,v.dimension,f.text,f.title FROM message_vectors v
+    JOIN message_lookup k ON k.session_id=v.session_id AND k.message_id=v.message_id
+    JOIN messages_fts f ON f.rowid=k.fts_rowid WHERE v.provider_kind=? AND v.provider_model=?
+    AND (? IS NULL OR v.dimension=?) AND v.text=f.text AND v.title IS f.title`)
+    .iterate(kind,model,dimension,dimension) as Iterable<{session_id:string;message_id:string;embedding:Uint8Array;dimension:number;text:string;title:string|null}>) {
+    try {decodeVector(row.embedding,row.dimension);covered.add(`${row.session_id}\0${row.message_id}`);}
+    catch {if(reusableTextVector(db,row.session_id,row.message_id,row.text,row.title,provider)) covered.add(`${row.session_id}\0${row.message_id}`);}
+  }
+  for(const row of db.query(`SELECT v.session_id,v.message_id,v.embedding,v.dimension FROM message_embeddings v
+    JOIN message_lookup k ON k.session_id=v.session_id AND k.message_id=v.message_id
+    JOIN messages_fts f ON f.rowid=k.fts_rowid WHERE v.provider_kind=? AND v.provider_model IS ?
+    AND (? IS NULL OR v.dimension=?) AND v.text=f.text AND v.title IS f.title
+    AND NOT EXISTS(SELECT 1 FROM message_vectors b WHERE b.session_id=v.session_id AND b.message_id=v.message_id
+      AND b.provider_kind=v.provider_kind AND b.provider_model=COALESCE(v.provider_model,'') AND b.dimension=v.dimension
+      AND b.text=v.text AND b.title IS v.title)`)
+    .iterate(kind,model || null,dimension,dimension) as Iterable<{session_id:string;message_id:string;embedding:string;dimension:number}>) {
+    try {const vector=JSON.parse(row.embedding);if(Array.isArray(vector) && vector.length===row.dimension && vector.length>0 && vector.every(value=>typeof value==="number" && Number.isFinite(value))) covered.add(`${row.session_id}\0${row.message_id}`);} catch { /* Invalid legacy vectors do not count. */ }
+  }
+  return {total,embedded:covered.size};
 }
+class StaleEmbeddingInput extends Error {}
 export async function embedBackfill(db: Database, opts: {
   provider: EmbeddingProvider; canonicalDir?: string; limit?: number; rate?: number; loadThreshold?: number;
   signal?: AbortSignal; load?: () => number; sleep?: (ms:number)=>Promise<void>;
@@ -39,38 +54,47 @@ export async function embedBackfill(db: Database, opts: {
     signal?.addEventListener("abort",abort,{once:true});
   }));
   const load = opts.load ?? (()=>loadavg()[0]);
-  let embedded=0, skipped=0, failed=0, stale=0, attempted=0;
-  const report = (event: BackfillReport["event"]): BackfillReport => ({event,embedded,skipped,failed,stale,attempted,
-    text:textCoverage(db,provider),assets:provider.embedAsset ? assetCoverage(db,provider) : null});
+  let embedded=0, converted=0, skipped=0, failed=0, stale=0, attempted=0;
+  let coverage: Pick<BackfillReport,"text"|"assets"|"coverage_at_attempt"> = {text:null,assets:null,coverage_at_attempt:null};
+  const report = (event: BackfillReport["event"]): BackfillReport => {
+    if(event!=="load_pause") coverage={text:textCoverage(db,provider),assets:provider.embedAsset ? assetCoverage(db,provider) : null,coverage_at_attempt:attempted};
+    return {event,embedded,converted,skipped,failed,stale,attempted,...coverage};
+  };
   const wait = async () => {
     signal?.throwIfAborted();
     while (load() > threshold) { opts.progress?.(report("load_pause")); await sleep(5000); signal?.throwIfAborted(); }
   };
   const throttle = async () => { await sleep(1000/rate); await wait(); };
-  opts.progress?.(report("progress"));
   await wait();
+  opts.progress?.(report("progress"));
   let cursor = 0;
   while (attempted < limit) {
     const rows = db.query("SELECT rowid,* FROM messages_fts WHERE rowid>? AND text<>'' ORDER BY rowid LIMIT 100").all(cursor) as MessageRow[];
     if (!rows.length) break;
     for (const row of rows) {
       cursor=row.rowid; signal?.throwIfAborted();
-      if (reusableTextVector(db,row.session_id,row.message_id,row.text,row.title ?? null,provider,true)) { skipped++; continue; }
+      if (reusableBinaryTextVector(db,row.session_id,row.message_id,row.text,row.title ?? null,provider)) { skipped++; continue; }
+      const cached=reusableTextVector(db,row.session_id,row.message_id,row.text,row.title ?? null,provider);
       if (attempted >= limit) break;
       await wait();
       const current=db.query("SELECT f.text,f.title FROM message_lookup k JOIN messages_fts f ON f.rowid=k.fts_rowid WHERE k.session_id=? AND k.message_id=?").get(row.session_id,row.message_id) as MessageRow|null;
       if (!current || current.text!==row.text || (current.title ?? null)!==(row.title ?? null)) { stale++; continue; }
       attempted++;
       try {
-        const embedding=await provider.embed(row.text,{kind:"document",title:row.title,signal,beforeRequest:wait});
+        const beforeRequest=async()=> {
+          await wait();
+          const live=db.query("SELECT f.text,f.title FROM message_lookup k JOIN messages_fts f ON f.rowid=k.fts_rowid WHERE k.session_id=? AND k.message_id=?").get(row.session_id,row.message_id) as MessageRow|null;
+          if(!live || live.text!==row.text || (live.title ?? null)!==(row.title ?? null)) throw new StaleEmbeddingInput();
+        };
+        const embedding=cached ?? await provider.embed(row.text,{kind:"document",title:row.title,signal,beforeRequest});
         signal?.throwIfAborted();
         const written=db.transaction(()=> {
           const live=db.query("SELECT f.text,f.title FROM message_lookup k JOIN messages_fts f ON f.rowid=k.fts_rowid WHERE k.session_id=? AND k.message_id=?").get(row.session_id,row.message_id) as MessageRow|null;
           if (!live || live.text!==row.text || (live.title ?? null)!==(row.title ?? null)) return false;
           putTextVector(db,{...row,...vectorScope(provider,embedding.length),embedding}); return true;
         })();
-        if (written) embedded++; else stale++;
-      } catch { signal?.throwIfAborted(); failed++; }
+        if (written) {if(cached) converted++;else embedded++;} else stale++;
+      } catch (error) { signal?.throwIfAborted(); if(error instanceof StaleEmbeddingInput) stale++;else failed++; }
       // Coverage scans are once per 25 requests, plus start/end and load pauses.
       if (attempted % 25===0) opts.progress?.(report("progress"));
       await throttle();

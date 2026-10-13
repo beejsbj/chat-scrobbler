@@ -62,3 +62,30 @@ test("backfill rejects a provider's declared dimension mismatch", async () => {
   try {indexSession(db,fixture());expect(await embedBackfill(db,{provider:{...p,embed:async()=>[1,0,0]},load:()=>0,sleep:async()=>{}})).toMatchObject({embedded:0,failed:1});expect(db.query("SELECT * FROM message_vectors").all()).toHaveLength(0);}
   finally {db.close();}
 });
+
+test("a deletion during the per-request load wait prevents dispatch", async () => {
+  const {deleteIndexedSession}=await import("../src/indexer/sqlite");const db=openIndex(":memory:");
+  try {
+    indexSession(db,fixture());let checks=0,dispatched=0;
+    const report=await embedBackfill(db,{provider:{...p,embed:async(_text,context)=>{await context?.beforeRequest?.();dispatched++;return[1,0];}},load:()=>++checks===3 ? 9 : 0,sleep:async()=>{deleteIndexedSession(db,"chatgpt","test");}});
+    expect(dispatched).toBe(0);expect(report.stale).toBe(1);
+  } finally {db.close();}
+});
+test("limit includes lazy legacy conversions and those writes wait for low load", async () => {
+  const db=openIndex(":memory:");
+  try {
+    const s=fixture();s.messages.push({...s.messages[0],id:"m2",text:"second"});indexSession(db,s);
+    for(const m of s.messages)db.run(`INSERT INTO message_embeddings(session_id,message_id,embedding,text,title,role,source,provider_kind,provider_model,dimension) VALUES (?,?,?,?,?,?,?,?,?,?)`,[s.id,m.id,"[1,0]",m.text,"T","user","chatgpt","test","m",2]);
+    let checks=0,paused=false;
+    const report=await embedBackfill(db,{provider:{...p,embed:async()=>{throw new Error("legacy reuse");}},limit:1,rate:1,load:()=>++checks===2 ? 9 : 0,sleep:async ms=>{if(ms===5000){expect(db.query("SELECT * FROM message_vectors").all()).toHaveLength(0);paused=true;}}});
+    expect(paused).toBe(true);expect(report.attempted).toBe(1);expect(db.query("SELECT * FROM message_vectors").all()).toHaveLength(1);
+  } finally {db.close();}
+});
+test("coverage excludes nonfinite text blobs with valid byte lengths", async () => {
+  const db=openIndex(":memory:");
+  try {indexSession(db,fixture());
+    await embedBackfill(db,{provider:p,load:()=>0,sleep:async()=>{}});
+    db.run("UPDATE message_vectors SET embedding=?",[new Uint8Array(new Float32Array([NaN,0]).buffer)]);
+    expect(textCoverage(db,p).embedded).toBe(0);
+  } finally {db.close();}
+});

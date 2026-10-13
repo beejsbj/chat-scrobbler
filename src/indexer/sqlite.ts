@@ -479,14 +479,14 @@ function semanticCandidates(db: Database, queryEmbedding: number[], metadata: Em
     SELECT v.session_id,v.message_id,v.embedding,f.text,f.role,f.created_at,f.source,f.title
     FROM ${table} v JOIN message_lookup k ON k.session_id=v.session_id AND k.message_id=v.message_id
     JOIN messages_fts f ON f.rowid=k.fts_rowid
-    WHERE v.provider_kind=? AND COALESCE(v.provider_model,'')=? AND v.dimension=?${sourceClause}
+    WHERE v.provider_kind=? AND v.provider_model ${i===0 ? "=" : "IS"} ? AND v.dimension=?${sourceClause}
     AND v.text=f.text AND v.title IS f.title
     ${i===0 ? "" : `AND NOT EXISTS(SELECT 1 FROM message_vectors b WHERE b.session_id=v.session_id AND b.message_id=v.message_id
       AND b.provider_kind=v.provider_kind AND b.provider_model=COALESCE(v.provider_model,'') AND b.dimension=v.dimension
       AND b.text=v.text AND b.title IS v.title)`}`));
   const legacyFallback = db.query(`SELECT embedding FROM message_embeddings WHERE session_id=? AND message_id=?
     AND provider_kind=? AND COALESCE(provider_model,'')=? AND dimension=? AND text=? AND title IS ?`);
-  for (let i=0;i<scans.length;i++) for (const row of scans[i].iterate(...params) as Iterable<any>) {
+  for (let i=0;i<scans.length;i++) for (const row of scans[i].iterate(...(i===0 ? params : [kind,model || null,dimension,...(source ? [source] : [])])) as Iterable<any>) {
     let vector: ArrayLike<number>;
     try { vector=i===0 ? decodeVector(row.embedding,dimension) : parseEmbedding(row.embedding); }
     catch {

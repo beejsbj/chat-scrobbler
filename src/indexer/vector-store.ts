@@ -26,7 +26,7 @@ export function encodeVector(vector: number[]): Uint8Array {
   return bytes;
 }
 export function decodeVector(bytes: Uint8Array, dimension: number): Float32Array {
-  if (!(bytes instanceof Uint8Array) || bytes.byteLength !== dimension * 4) throw new Error("invalid binary vector length");
+  if (!Number.isInteger(dimension) || dimension < 1 || !(bytes instanceof Uint8Array) || bytes.byteLength !== dimension * 4) throw new Error("invalid binary vector length");
   // Bun returns an aligned Buffer for blobs; avoid copying during each search.
   const vector = bytes.byteOffset % 4 === 0
     ? new Float32Array(bytes.buffer, bytes.byteOffset, dimension)
@@ -51,7 +51,7 @@ export function putTextVector(db: Database, row: TextVectorRow): void {
     VALUES (?,?,?,?,?,?,?,?,?,?,?)`, [row.session_id,row.message_id,row.provider_kind,row.provider_model,row.dimension,
     encodeVector(row.embedding),row.text,row.role,row.created_at,row.source,row.title]);
 }
-export function reusableTextVector(db: Database, sessionId: string, messageId: string, text: string, title: string | null, provider: EmbeddingProvider, repair = false): number[] | null {
+export function reusableBinaryTextVector(db: Database, sessionId: string, messageId: string, text: string, title: string | null, provider: EmbeddingProvider): number[] | null {
   const kind = provider.kind?.trim() || "unknown", model = provider.model?.trim() || "";
   const params = [sessionId,messageId,kind,model,provider.dimensions ?? null,provider.dimensions ?? null,text,title];
   const rows = db.query(`SELECT embedding,dimension FROM message_vectors WHERE session_id=? AND message_id=?
@@ -59,13 +59,19 @@ export function reusableTextVector(db: Database, sessionId: string, messageId: s
   for (const row of rows) {
     try { return Array.from(decodeVector(row.embedding,row.dimension)); } catch { /* Try another matching dimension or valid legacy snapshot. */ }
   }
+  return null;
+}
+export function reusableTextVector(db: Database, sessionId: string, messageId: string, text: string, title: string | null, provider: EmbeddingProvider): number[] | null {
+  const binary=reusableBinaryTextVector(db,sessionId,messageId,text,title,provider);
+  if(binary) return binary;
+  const model=provider.model?.trim() || "";
+  const params=[sessionId,messageId,provider.kind?.trim() || "unknown",model,provider.dimensions ?? null,provider.dimensions ?? null,text,title];
   const legacy = db.query(`SELECT * FROM message_embeddings WHERE session_id=? AND message_id=?
     AND provider_kind=? AND COALESCE(provider_model,'')=? AND (? IS NULL OR dimension=?) AND text=? AND title IS ?`).get(...params) as any;
   if (!legacy) return null;
   try {
     const vector = validateEmbedding(JSON.parse(legacy.embedding));
     if (vector.length !== legacy.dimension) return null;
-    if (repair) putTextVector(db,{...legacy,provider_model: model,embedding:vector});
     return vector;
   } catch { return null; }
 }
