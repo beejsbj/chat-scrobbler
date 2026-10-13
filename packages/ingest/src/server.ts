@@ -196,7 +196,12 @@ export async function handleIngestRequest(req: Request, opts: IngestServerOption
     const rawDir = opts.rawDir ?? (opts.canonicalDir ? rawDirForCanonicalDir(opts.canonicalDir) : null);
     if (!rawDir) return json({ ok: false, error: "raw store is not configured" }, 503);
     const entries = captureJsonEntries(serialized);
-    const rawRefs = rawDir ? captures.map((capture, i) => storeRawCapture(rawDir, capture, entries[i])) : [];
+    let rawRefs: string[];
+    try { rawRefs = captures.map((capture, i) => storeRawCapture(rawDir, capture, entries[i])); }
+    catch {
+      console.error(JSON.stringify({ event: "raw_capture_store_failed", reason: "raw_store_write_failed" }));
+      return json({ ok: false, error: "raw_store_write_failed" }, 503);
+    }
     const spine: SpineResult[] = [];
     if (fat) {
       const db = indexFor(fat.indexPath);

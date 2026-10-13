@@ -51,3 +51,20 @@ test("raw ingest preserves JSON bytes for single captures and batch entries", as
     expect(Buffer.from(Bun.gunzipSync(readFileSync(join(root, refs[0])))).toString()).toBe(serialized);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
+
+test("raw write failures reject capture before canonical writes with a retriable response", async () => {
+  const { writeFileSync, existsSync } = await import("node:fs");
+  const { spyOn } = await import("bun:test");
+  const root = mkdtempSync(join(tmpdir(), "raw-write-failure-"));
+  const logs = spyOn(console, "error").mockImplementation(() => {});
+  try {
+    const rawDir = join(root, "raw");
+    writeFileSync(rawDir, "blocked");
+    const canonicalDir = join(root, "canonical", "sessions");
+    const res = await handleIngestRequest(new Request("http://local/captures", { method: "POST", body: JSON.stringify(chatgptApi) }), { rawDir, canonicalDir, indexPath: join(root, "index.db") });
+    expect(res.status).toBe(503);
+    expect(await res.json()).toMatchObject({ ok: false, error: "raw_store_write_failed" });
+    expect(existsSync(canonicalDir)).toBe(false);
+    expect(JSON.stringify(logs.mock.calls)).toContain("raw_capture_store_failed");
+  } finally { logs.mockRestore(); rmSync(root, { recursive: true, force: true }); }
+});
