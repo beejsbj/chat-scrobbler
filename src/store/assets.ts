@@ -1,3 +1,4 @@
+import { assertSessionNotDeleted } from "./tombstones";
 import { writeImmutableFile } from "./immutable-file";
 import { createHash } from "node:crypto";
 import { linkSync, mkdirSync, statSync } from "node:fs";
@@ -42,6 +43,7 @@ export function resolveLocalAssetPath(canonicalDir: string, localPath: string): 
 }
 
 export function storeCanonicalAsset(input: StoreAssetInput): StoredAsset {
+  assertSessionNotDeleted(input.canonicalDir, input.source, input.sourceId);
   if (!input.pointer.trim()) throw new Error("asset pointer is required");
   if (input.bytes.byteLength === 0) throw new Error("asset body is empty");
   if (input.bytes.byteLength > MAX_ASSET_BYTES) {

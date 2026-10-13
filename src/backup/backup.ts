@@ -6,7 +6,9 @@
 import { existsSync, statSync, readFileSync, mkdtempSync, writeFileSync as fsWrite, rmSync, readdirSync } from "node:fs";
 import { join, relative, basename, sep } from "node:path";
 import { tmpdir } from "node:os";
-import { listSessionFiles } from "../store/sessions";
+import { listSessionFiles, sessionFilePath, writeSession } from "../store/sessions";
+import { isSessionDeleted, listTombstones, markSessionDeleted, tombstoneDir } from "../store/tombstones";
+import { deleteSessionArchive } from "../store/delete";
 import { backupRaw, rawFiles, restoreRaw } from "./raw";
 import { rawDirForCanonicalDir } from "../store/raw";
 import { assetsDirForCanonicalDir } from "../store/assets";
@@ -94,6 +96,10 @@ export async function createBackup(opts: CreateBackupOptions): Promise<CreateBac
     const bytes = statSync(absPath).size;
     assetTotalBytes += bytes;
     await target.putFile(snapshot, relInSnapshot, absPath);
+  }
+
+  for (const file of listFilesRecursive(tombstoneDir(canonicalDir))) {
+    await target.putFile(snapshot, `deleted/${relative(tombstoneDir(canonicalDir), file).split(sep).join("/")}`, file);
   }
 
   const rawStats = await backupRaw(opts.rawDir ?? rawDirForCanonicalDir(canonicalDir), target, snapshot);
@@ -218,13 +224,27 @@ export async function restoreBackup(opts: RestoreBackupOptions): Promise<Restore
     f => f.startsWith("canonical/assets/") && !f.endsWith("/"),
   );
 
-  for (const relPath of sessionRelPaths.filter(f => !f.startsWith("canonical/assets/"))) {
-    // relPath is e.g. "canonical/chatgpt/abc.json"
-    // Strip the "canonical/" prefix to get the path relative to canonicalDir
-    const relInCanonical = relPath.slice("canonical/".length);
-    const destAbs = join(canonicalDir, relInCanonical);
-    await target.getFile(snapshot, relPath, destAbs);
-  }
+  // Restore deletion policy first, including when force restores over existing data.
+  const temp = mkdtempSync(join(tmpdir(), "restore-sessions-"));
+  let restoredCount = 0;
+  try {
+    for (const file of files.filter(path => path.startsWith("deleted/") && path.endsWith(".json"))) {
+      const downloaded = join(temp, "deleted.json");
+      await target.getFile(snapshot, file, downloaded);
+      const record = JSON.parse(readFileSync(downloaded, "utf8"));
+      sessionFilePath(canonicalDir, record.source, record.source_id);
+      if (typeof record.deleted_at !== "string" || !Number.isFinite(Date.parse(record.deleted_at))) throw new Error("invalid deletion tombstone");
+      markSessionDeleted(canonicalDir, record);
+    }
+    for (const relPath of sessionRelPaths.filter(f => !f.startsWith("canonical/assets/"))) {
+      const downloaded = join(temp, "session.json");
+      await target.getFile(snapshot, relPath, downloaded);
+      const session = JSON.parse(readFileSync(downloaded, "utf8"));
+      if (isSessionDeleted(canonicalDir, session.source, session.source_id)) continue;
+      writeSession(canonicalDir, session);
+      restoredCount++;
+    }
+  } finally { rmSync(temp, { recursive: true, force: true }); }
 
   const assetsDir = assetsDirForCanonicalDir(canonicalDir);
   for (const relPath of assetRelPaths) {
@@ -233,8 +253,9 @@ export async function restoreBackup(opts: RestoreBackupOptions): Promise<Restore
     await target.getFile(snapshot, relPath, destAbs);
   }
 
-  const restored_raw_count = await restoreRaw(opts.rawDir ?? rawDirForCanonicalDir(canonicalDir), target, snapshot);
-  return { restored_count: sessionRelPaths.filter(f => !f.startsWith("canonical/assets/")).length, restored_asset_count: assetRelPaths.length, restored_raw_count };
+  const restored_raw_count = await restoreRaw(opts.rawDir ?? rawDirForCanonicalDir(canonicalDir), target, snapshot, (source, id) => isSessionDeleted(canonicalDir, source, id));
+  for (const record of listTombstones(canonicalDir)) deleteSessionArchive(canonicalDir, record.source, record.source_id, opts.rawDir);
+  return { restored_count: restoredCount, restored_asset_count: assetRelPaths.length, restored_raw_count };
 }
 
 // ---------------------------------------------------------------------------

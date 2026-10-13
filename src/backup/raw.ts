@@ -18,10 +18,11 @@ export async function backupRaw(rawDir: string, target: BackupTarget, snapshot: 
   return { raw_file_count: files.length, raw_total_bytes: bytes };
 }
 
-export async function restoreRaw(rawDir: string, target: BackupTarget, snapshot: string): Promise<number> {
+export async function restoreRaw(rawDir: string, target: BackupTarget, snapshot: string, isDeleted: (source: string, id: string) => boolean = () => false): Promise<number> {
   const files = target.listFiles(snapshot).filter(path => path.startsWith("raw/") && path.endsWith(".json.gz"));
   if (!files.length) return 0;
   const temp = mkdtempSync(join(tmpdir(), "restore-raw-"));
+  let count = 0;
   try {
     for (const file of files) {
       const dest = resolve(rawDir, file.slice(4));
@@ -29,8 +30,12 @@ export async function restoreRaw(rawDir: string, target: BackupTarget, snapshot:
       if (!rel || rel.startsWith("..") || isAbsolute(rel)) throw new Error("invalid raw snapshot path");
       const downloaded = join(temp, "capture.json.gz");
       await target.getFile(snapshot, file, downloaded);
-      writeImmutableFile(dest, readFileSync(downloaded));
+      const bytes = readFileSync(downloaded);
+      const capture = JSON.parse(Buffer.from(Bun.gunzipSync(bytes)).toString("utf8"));
+      if (isDeleted(capture.source, capture.source_id)) continue;
+      writeImmutableFile(dest, bytes);
+      count++;
     }
   } finally { rmSync(temp, { recursive: true, force: true }); }
-  return files.length;
+  return count;
 }

@@ -1,5 +1,6 @@
 // src/store/sessions.ts
-import { writeAtomicFile } from "./atomic-file";
+import { assertSessionNotDeleted, isSessionDeleted } from "./tombstones";
+import { syncDirectory, writeAtomicFile } from "./atomic-file";
 import { readFileSync, existsSync, readdirSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import type { Session, Message } from "../schema/types";
@@ -14,11 +15,13 @@ export interface DeleteSessionResult {
 
 export function writeSession(baseDir: string, session: Session): string {
   const file = sessionFilePath(baseDir, session.source, session.source_id);
+  assertSessionNotDeleted(baseDir, session.source, session.source_id);
   writeAtomicFile(file, JSON.stringify(session, null, 2));
   return file;
 }
 
 export function readSession(baseDir: string, source: string, sourceId: string): Session {
+  assertSessionNotDeleted(baseDir, source, sourceId);
   return JSON.parse(readFileSync(sessionFilePath(baseDir, source, sourceId), "utf8"));
 }
 
@@ -27,8 +30,8 @@ export function deleteSession(baseDir: string, source: string, sourceId: string)
   const assetDir = assetsDirForSession(baseDir, source, sourceId);
   const sessionDeleted = existsSync(sessionPath);
   const assetsDeleted = existsSync(assetDir);
-  if (sessionDeleted) rmSync(sessionPath, { force: true });
-  if (assetsDeleted) rmSync(assetDir, { recursive: true, force: true });
+  if (sessionDeleted) { rmSync(sessionPath, { force: true }); syncDirectory(join(sessionPath, "..")); }
+  if (assetsDeleted) { rmSync(assetDir, { recursive: true, force: true }); syncDirectory(join(assetDir, "..")); }
   return { sessionPath, assetDir, sessionDeleted, assetsDeleted };
 }
 
@@ -39,7 +42,7 @@ export function listSessionFiles(baseDir: string): string[] {
     const dir = join(baseDir, source);
     let entries: string[] = [];
     try { entries = readdirSync(dir); } catch { continue; }
-    for (const f of entries) if (f.endsWith(".json")) out.push(join(dir, f));
+    for (const f of entries) if (f.endsWith(".json") && !isSessionDeleted(baseDir, source, f.slice(0, -5))) out.push(join(dir, f));
   }
   return out;
 }

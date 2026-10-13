@@ -18,7 +18,8 @@ import { deleteIndexedSession, openIndex } from "../../../src/indexer/sqlite";
 import { MAX_ASSET_BYTES, storeCanonicalAsset } from "../../../src/store/assets";
 import { captureJsonEntries } from "../../../src/store/raw-json";
 import { rawDirForCanonicalDir, storeRawCapture } from "../../../src/store/raw";
-import { deleteSession } from "../../../src/store/sessions";
+import { deleteSessionArchive } from "../../../src/store/delete";
+import { isSessionDeleted } from "../../../src/store/tombstones";
 import type { EmbeddingProvider } from "../../../src/indexer/sqlite";
 
 export interface IngestServerOptions {
@@ -60,7 +61,7 @@ export interface DeleteCaptureResponse {
   source: ProviderSource;
   source_id: string;
   local_only: true;
-  canonical: ReturnType<typeof deleteSession>;
+  canonical: ReturnType<typeof deleteSessionArchive>;
   index: ReturnType<typeof deleteIndexedSession>;
 }
 
@@ -128,7 +129,7 @@ export async function handleIngestRequest(req: Request, opts: IngestServerOption
     try {
       const source = readSource(url.searchParams.get("source"));
       const sourceId = requiredParam(url, "source_id");
-      const canonical = deleteSession(fat.canonicalDir, source, sourceId);
+      const canonical = deleteSessionArchive(fat.canonicalDir, source, sourceId, opts.rawDir);
       const index = deleteIndexedSession(indexFor(fat.indexPath), source, sourceId);
       return json({
         ok: true,
@@ -148,6 +149,7 @@ export async function handleIngestRequest(req: Request, opts: IngestServerOption
     try {
       const source = readSource(url.searchParams.get("source"));
       const sourceId = requiredParam(url, "source_id");
+      if (isSessionDeleted(fat.canonicalDir, source, sourceId)) return json({ ok: false, error: "session was deleted" }, 410);
       const pointer = requiredParam(url, "pointer");
       const filename = url.searchParams.get("filename");
       const contentType = req.headers.get("content-type") ?? url.searchParams.get("content_type");
@@ -197,6 +199,7 @@ export async function handleIngestRequest(req: Request, opts: IngestServerOption
     const serialized = await req.text();
     const body = JSON.parse(serialized);
     const captures = toCaptureArray(body);
+    if (opts.canonicalDir && captures.some(capture => isSessionDeleted(opts.canonicalDir!, capture.source, capture.source_id))) return json({ ok: false, error: "session was deleted" }, 410);
     const rawDir = opts.rawDir ?? (opts.canonicalDir ? rawDirForCanonicalDir(opts.canonicalDir) : null);
     if (!rawDir) return json({ ok: false, error: "raw store is not configured" }, 503);
     const entries = captureJsonEntries(serialized);
