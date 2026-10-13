@@ -60,7 +60,9 @@ test("provider outages stop at one request, jitter exponential backoff, and retr
     expect(scheduler.status().next_run_at).toBe(new Date(1_900_000).toISOString());
     expect(JSON.stringify(scheduler.status())).not.toContain("private");
     fail=false;
-    expect(await scheduler.runNow()).toMatchObject({embedded:4,attempted:4});
+    expect(await scheduler.runNow()).toMatchObject({embedded:2,attempted:2});
+    // Failures advanced the cursor; the completed sweep wraps and retries them.
+    expect(await scheduler.runNow()).toMatchObject({embedded:2,attempted:2});
     expect(scheduler.status()).toMatchObject({state:"scheduled",consecutive_failures:0});
   } finally {await scheduler.stop();rmSync(root,{recursive:true,force:true});}
 });
@@ -101,4 +103,52 @@ test("a busy lock records a skipped run without provider failure", async () => {
     lock.release();
     expect(await scheduler.runNow()).toMatchObject({embedded:4});
   } finally {lock.release();await scheduler.stop();rmSync(root,{recursive:true,force:true});}
+});
+
+test("covered prefixes continue on a short timer so pending tail rows do not wait one interval per page", async () => {
+  const {root,cfg}=setup();const db=openIndex(cfg.indexPath),session=fixture();
+  session.messages=Array.from({length:26},(_,i)=>({...session.messages[0],id:`m${i}`,text:`words ${i}`}));
+  indexSession(db,session);
+  const {putTextVector}=await import("../src/indexer/vector-store");
+  for(const message of session.messages.slice(0,25)) putTextVector(db,{session_id:session.id,message_id:message.id,
+    provider_kind:"test",provider_model:"m",dimension:2,embedding:[1,0],text:message.text,title:session.title,
+    role:message.role,created_at:message.created_at,source:session.source});
+  db.close();let calls=0;
+  const scheduler=startEmbeddingBackfillScheduler({cfg,scanLimit:10,now:()=>1_000_000,
+    provider:{...p,embed:async()=>{calls++;return [1,0];}}});
+  try {
+    expect(await scheduler.runNow()).toMatchObject({attempted:0,scan:{cursor:10,scanned:10,exhausted:false}});
+    expect(scheduler.status().next_run_at).toBe(new Date(1_001_000).toISOString());
+    await scheduler.runNow();expect(calls).toBe(0);
+    expect(scheduler.status().next_run_at).toBe(new Date(1_001_000).toISOString());
+    expect(await scheduler.runNow()).toMatchObject({embedded:1,scan:{exhausted:true}});
+    expect(scheduler.status().next_run_at).toBe(new Date(1_600_000).toISOString());expect(calls).toBe(1);
+  } finally {await scheduler.stop();rmSync(root,{recursive:true,force:true});}
+});
+
+test("a failing item does not hold the cursor ahead of later healthy pending messages", async () => {
+  const {root,cfg}=setup();const sent:string[]=[];
+  const scheduler=startEmbeddingBackfillScheduler({cfg,provider:{...p,embed:async text=>{
+    sent.push(text);if(text==="words 0")throw new Error("bad item");return [1,0];
+  }}});
+  try {
+    await scheduler.runNow();expect(sent).toEqual(["words 0"]);
+    expect(await scheduler.runNow()).toMatchObject({embedded:3,failed:0,scan:{exhausted:true}});
+    await scheduler.runNow();expect(sent.at(-1)).toBe("words 0");
+  } finally {await scheduler.stop();rmSync(root,{recursive:true,force:true});}
+});
+
+test("cleanup failures are contained in scheduler status instead of rejecting a timer run", async () => {
+  const fs=await import("node:fs"),{spyOn}=await import("bun:test");
+  const {root,cfg}=setup(),original=fs.rmdirSync;
+  const remove=spyOn(fs,"rmdirSync").mockImplementation(((path:Parameters<typeof fs.rmdirSync>[0],...args:unknown[])=> {
+    if(String(path).endsWith(".embed-backfill.lock")) throw new Error("private cleanup error");
+    return original(path,...args as []);
+  }) as typeof fs.rmdirSync);
+  const scheduler=startEmbeddingBackfillScheduler({cfg,provider:p});
+  try {
+    expect(await scheduler.runNow()).toBeNull();
+    expect(scheduler.status()).toMatchObject({running:false,state:"backoff",last_run:{outcome:"failed"}});
+    expect(JSON.stringify(scheduler.status())).not.toContain("private cleanup");
+  } finally {remove.mockRestore();await scheduler.stop();rmSync(root,{recursive:true,force:true});}
 });

@@ -34,6 +34,8 @@ interface SchedulerOptions {
 }
 
 /** One serial batch per interval, starting after listeners and cache warmup.
+ * Unfinished, underfilled sweeps continue after 1s; a full batch or full sweep
+ * waits the configured interval. This keeps covered prefixes from hiding new work.
  * Database and provider work stay lazy. CLI and other servers share the PID lock. */
 export function startEmbeddingBackfillScheduler(opts: SchedulerOptions): BackfillScheduler {
   const {cfg,provider}=opts, now=opts.now ?? Date.now;
@@ -70,11 +72,13 @@ export function startEmbeddingBackfillScheduler(opts: SchedulerOptions): Backfil
       report=await embedBackfill(db,{provider:provider!,canonicalDir:cfg.canonicalDir,limit:batch,
         background:{cursor,assetCursor,scanLimit:opts.scanLimit ?? 1000},signal:controller.signal,
         yieldToQueries:opts.yieldToQueries,progress:report=>{status.progress=report;}});
+      // Failed items remain pending for the next sweep without pinning its cursor.
+      cursor=report.scan?.exhausted ? 0 : report.scan?.cursor ?? cursor;
+      assetCursor=report.scan?.exhausted ? "" : report.scan?.asset_cursor ?? assetCursor;
       if(report.failed) {outcome="provider_unavailable";backoff();}
       else {
-        outcome="complete";delay=interval;status.state="scheduled";status.consecutive_failures=0;
-        cursor=report.scan?.exhausted ? 0 : report.scan?.cursor ?? cursor;
-        assetCursor=report.scan?.exhausted ? "" : report.scan?.asset_cursor ?? assetCursor;
+        outcome="complete";status.state="scheduled";status.consecutive_failures=0;
+        delay=report.scan && !report.scan.exhausted && report.attempted<batch ? Math.min(1000,interval) : interval;
       }
       return report;
     } catch {
@@ -82,16 +86,19 @@ export function startEmbeddingBackfillScheduler(opts: SchedulerOptions): Backfil
       else backoff(); // Public status contains reason codes, never provider/body errors.
       return null;
     } finally {
-      try {db?.close();} finally {lock?.release();}
       controller=undefined;
       status.last_run={started_at,finished_at:new Date(now()).toISOString(),outcome,report};
+      try {db?.close();} finally {lock?.release();}
     }
   };
   function runNow(): Promise<BackfillReport|null> {
     if(stopped || !enabled) return Promise.resolve(null);
     if(active) return active;
     clear();status.running=true;status.state="running";status.progress=null;
-    active=Promise.resolve().then(run).finally(()=> {
+    active=Promise.resolve().then(run).catch(()=> {
+      if(status.last_run) status.last_run.outcome="failed";
+      backoff();return null;
+    }).finally(()=> {
       active=undefined;status.running=false;
       if(stopped) status.state="stopped";
       else arm();
