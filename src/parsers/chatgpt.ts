@@ -103,6 +103,14 @@ export function sessionFromChatgptConversation(conv: RawConversation, opts: Chat
     const recipient = typeof m.recipient === "string" && m.recipient !== "all" ? m.recipient : null;
     const name = recipient ?? (role === "tool" ? m.author?.name : null) ?? "code";
     const contentBlocks = blocksFromContent(m.content, assets, childLocation(location, "content"));
+    const seenMedia = linkedPointers(contentBlocks);
+    const prose = [m.content?.text, ...(Array.isArray(m.content?.parts) ? m.content.parts : [])].filter(value => typeof value === "string").join("\n");
+    for (const match of prose.matchAll(/sandbox:\/[^\s)\]<>"']+/g)) {
+      if (seenMedia.has(match[0])) continue;
+      seenMedia.add(match[0]);
+      const asset = assets.byPointer(match[0]);
+      contentBlocks.push(mediaBlock(mediaKind(asset?.content_type), match[0], assets, match[0].split("/").at(-1) ?? null, asset?.content_type ?? null));
+    }
     const blocks = recipient || role === "tool"
       ? [toolCall(name), ...contentBlocks.filter(block => !["text", "reasoning", "tool_call", "tool_result"].includes(block.type))]
       : contentBlocks;
@@ -205,20 +213,24 @@ export function parseChatgpt(raw: unknown, context: ParserContext = {}): Session
   return sessions;
 }
 
-const bareId = (pointer: string) => pointer.replace(/^[a-z-]+:\/\//, "");
+const bareId = (pointer: string) => pointer.replace(/^(?:sediment|file-service):\/\//, "");
 
-/** Metadata references (attachments, code-interpreter results) link only when bytes were captured. */
+/** Retain downloadable references even when bytes failed, so backfill can retry them. */
 function metadataMediaBlocks(metadata: any, existing: Block[], assets: AssetLookup): Block[] {
-  const refs: string[] = [];
-  if (Array.isArray(metadata?.attachments)) for (const a of metadata.attachments) if (typeof a?.id === "string") refs.push(a.id);
+  const refs: Array<{ pointer: string; filename: string | null; mime: string | null }> = [];
+  if (Array.isArray(metadata?.attachments)) for (const a of metadata.attachments) if (typeof a?.id === "string") {
+    refs.push({ pointer: a.id, filename: a.name ?? null, mime: a.mime_type ?? null });
+  }
   if (Array.isArray(metadata?.aggregate_result?.messages)) {
-    for (const r of metadata.aggregate_result.messages) if (typeof r?.image_url === "string") refs.push(r.image_url);
+    for (const r of metadata.aggregate_result.messages) if (typeof r?.image_url === "string") refs.push({ pointer: r.image_url, filename: null, mime: "image/png" });
   }
   const seen = linkedPointers(existing);
   return refs.flatMap(ref => {
-    const asset = assets.all().find(a => a.pointer === ref || bareId(a.pointer) === bareId(ref));
-    if (!asset || seen.has(asset.pointer)) return [];
-    seen.add(asset.pointer);
-    return [mediaBlock(mediaKind(asset.content_type), asset.pointer, assets, asset.filename ?? null, asset.content_type ?? null)];
+    const asset = assets.all().find(a => a.pointer === ref.pointer || bareId(a.pointer) === bareId(ref.pointer));
+    const pointer = asset?.pointer ?? ref.pointer;
+    if (seen.has(pointer) || [...seen].some(p => bareId(p) === bareId(pointer))) return [];
+    seen.add(pointer);
+    const mime = asset?.content_type ?? ref.mime;
+    return [mediaBlock(mediaKind(mime), pointer, assets, asset?.filename ?? ref.filename, mime)];
   });
 }

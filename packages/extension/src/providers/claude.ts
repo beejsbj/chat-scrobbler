@@ -1,6 +1,6 @@
 import { logSyncFailure, SyncFailureTracker } from "./sync-failures";
 import { buildRawCapture } from "../../../shared/src";
-import { uploadProviderAssets } from "./assets";
+import { assetReferences, uploadProviderAssets } from "./assets";
 import { claudeAssetCandidates, claudeSandboxDownloadEndpoint } from "./claude-assets";
 import {
   asArray,
@@ -28,6 +28,7 @@ export function createClaudeAdapter(fetcher: FetchLike = fetch.bind(globalThis))
         filename: ref.filename, contentType: ref.content_type,
         url: ref.pointer.startsWith("claude-inline:") ? null
           : ref.pointer.startsWith("sandbox:") ? claudeSandboxDownloadEndpoint(org.uuid, id, ref.pointer.slice(8))
+          : ref.pointer.startsWith("/mnt/") ? claudeSandboxDownloadEndpoint(org.uuid, id, ref.pointer)
           : /^(https?:|data:|blob:|\/)/.test(ref.pointer) ? ref.pointer
           : `/api/organizations/${encodeURIComponent(org.uuid)}/files/${encodeURIComponent(ref.pointer)}/download`,
       })), { beforeFetch: options.beforeFetch });
@@ -60,10 +61,11 @@ async function captureClaudeOne(
   const org = await getOrganization(fetcher);
   const detailEndpoint = `/api/organizations/${encodeURIComponent(org.uuid)}/chat_conversations/${encodeURIComponent(id)}?tree=True&rendering_mode=messages&render_all_tools=true`;
   const payload = await fetchJson(fetcher, detailEndpoint);
+  const candidates = claudeAssetCandidates(payload, id, org.uuid);
   const assets = await uploadProviderAssets(
     fetcher,
     options.uploadAsset,
-    claudeAssetCandidates(payload, id, org.uuid),
+    candidates,
   );
   await options.emitCapture(buildRawCapture({
     source: "claude",
@@ -72,6 +74,7 @@ async function captureClaudeOne(
     account: org.uuid,
     payload,
     assets,
+    assetReferences: assetReferences(candidates),
     conversationUpdatedAt: updatedAt,
     rawUrl: `${currentOrigin()}${detailEndpoint}`,
   }));
@@ -116,10 +119,11 @@ async function syncClaude(fetcher: FetchLike, options: ProviderSyncOptions): Pro
       try {
         const detailEndpoint = `/api/organizations/${encodeURIComponent(org.uuid)}/chat_conversations/${encodeURIComponent(item.id)}?tree=True&rendering_mode=messages&render_all_tools=true`;
         const payload = await fetchJson(fetcher, detailEndpoint);
+        const candidates = claudeAssetCandidates(payload, item.id, org.uuid);
         const assets = await uploadProviderAssets(
           fetcher,
           options.uploadAsset,
-          claudeAssetCandidates(payload, item.id, org.uuid),
+          candidates,
         );
         const didCapture = await options.emitCapture(buildRawCapture({
           source: "claude",
@@ -128,6 +132,7 @@ async function syncClaude(fetcher: FetchLike, options: ProviderSyncOptions): Pro
           account: org.uuid,
           payload,
           assets,
+    assetReferences: assetReferences(candidates),
           conversationUpdatedAt: item.updatedAt,
           rawUrl: `${currentOrigin()}${detailEndpoint}`,
         }));

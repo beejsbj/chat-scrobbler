@@ -1,8 +1,9 @@
-import type { UploadedAsset } from "../../packages/shared/src";
+import type { UploadedAsset, AssetBackfillReference } from "../../packages/shared/src";
 
 export interface AssetLookup {
   byPointer(pointer: string): UploadedAsset | null;
   all(): UploadedAsset[];
+  references(): AssetBackfillReference[];
 }
 
 export function assetLookupFromRaw(raw: unknown): AssetLookup {
@@ -16,6 +17,11 @@ export function assetLookupFromRaw(raw: unknown): AssetLookup {
   return {
     byPointer(pointer: string) {
       return byPointer.get(pointer) ?? null;
+    },
+    references() {
+      const refs = raw && typeof raw === "object" ? (raw as { asset_references?: unknown }).asset_references : null;
+      const discovered = Array.isArray(refs) ? refs.filter(ref => ref && typeof ref.pointer === "string") as AssetBackfillReference[] : [];
+      return [...assets.map(asset => ({ pointer: asset.pointer, message_id: asset.message_id ?? null, filename: asset.filename ?? null, content_type: asset.content_type ?? null })), ...discovered];
     },
     all() {
       return assets;

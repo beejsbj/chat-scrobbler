@@ -58,7 +58,7 @@ export function blocksFromClaude(m: RawClaudeMsg, assets: AssetLookup = assetLoo
   }
   for (const key of ["files", "files_v2", "generated_files", "attachments"] as const) {
     for (const [i, file] of (m[key] ?? []).entries()) {
-      const pointer = file?.file_uuid ?? file?.uuid ?? file?.id ?? file?.attachment_uuid;
+      const pointer = file?.file_uuid ?? file?.uuid ?? file?.id ?? file?.attachment_uuid ?? file?.path;
       if (typeof pointer !== "string" || !pointer) { blocks.push(unknownBlock(file, childLocation(loc, key, i), key)); continue; }
       const mime = file.content_type ?? file.mime_type ?? assets.byPointer(pointer)?.content_type;
       const type = typeof mime === "string" && mime.startsWith("image/") ? "image"

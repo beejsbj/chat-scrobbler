@@ -1,6 +1,6 @@
 import { logSyncFailure, SyncFailureTracker } from "./sync-failures";
 import { buildRawCapture } from "../../../shared/src";
-import { uploadProviderAssets } from "./assets";
+import { assetReferences, uploadProviderAssets } from "./assets";
 import { chatgptAssetCandidates, chatgptFileDownloadEndpoint, resolveChatgptAssetUrl } from "./chatgpt-assets";
 import {
   asArray,
@@ -60,10 +60,11 @@ async function captureChatgptOne(
   const headers = token ? { authorization: `Bearer ${token}` } : undefined;
   const detailEndpoint = `/backend-api/conversation/${encodeURIComponent(id)}`;
   const payload = await fetchJson(fetcher, detailEndpoint, { headers });
+  const candidates = chatgptAssetCandidates(payload, id, headers);
   const assets = await uploadProviderAssets(
     fetcher,
     options.uploadAsset,
-    chatgptAssetCandidates(payload, id, headers),
+    candidates,
     { resolveUrl: candidate => resolveChatgptAssetUrl(fetcher, candidate) },
   );
   await options.emitCapture(buildRawCapture({
@@ -72,6 +73,7 @@ async function captureChatgptOne(
     endpoint: detailEndpoint,
     payload,
     assets,
+    assetReferences: assetReferences(candidates),
     conversationUpdatedAt: updatedAt,
     rawUrl: `${currentOrigin()}${detailEndpoint}`,
   }));
@@ -124,10 +126,11 @@ async function syncChatgpt(fetcher: FetchLike, options: ProviderSyncOptions): Pr
       try {
         const detailEndpoint = `/backend-api/conversation/${encodeURIComponent(item.id)}`;
         const payload = await fetchJson(fetcher, detailEndpoint, { headers });
+        const candidates = chatgptAssetCandidates(payload, item.id, headers);
         const assets = await uploadProviderAssets(
           fetcher,
           options.uploadAsset,
-          chatgptAssetCandidates(payload, item.id, headers),
+          candidates,
           { resolveUrl: candidate => resolveChatgptAssetUrl(fetcher, candidate) },
         );
         const didCapture = await options.emitCapture(buildRawCapture({
@@ -136,6 +139,7 @@ async function syncChatgpt(fetcher: FetchLike, options: ProviderSyncOptions): Pr
           endpoint: detailEndpoint,
           payload,
           assets,
+    assetReferences: assetReferences(candidates),
           conversationUpdatedAt: item.updatedAt,
           rawUrl: `${currentOrigin()}${detailEndpoint}`,
         }));

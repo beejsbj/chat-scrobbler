@@ -1,6 +1,7 @@
 import type { AssetFailure, AssetFailureReason, ProviderSource, UploadedAsset } from "../../../shared/src";
 import type { AssetFetchResponse, AssetUploadRequest } from "../messages";
 import type { FetchLike, ProviderSyncOptions } from "./types";
+import { allowedAssetUrl, assetCredentials, useBackgroundForAsset } from "./asset-url";
 import { boundedAssetBuffer } from "./asset-bytes";
 
 export const MAX_PROVIDER_ASSET_BYTES = 100 * 1024 * 1024;
@@ -50,10 +51,10 @@ export async function uploadProviderAssets(
     try {
       await options.beforeFetch?.();
       const url = options.resolveUrl ? await options.resolveUrl(candidate) : candidate.url;
-      if (!url) throw new Error("asset_url_unavailable");
-      const downloaded = candidate.fetchViaBackground
+      if (!url || !allowedAssetUrl(url)) throw new Error("asset_url_unavailable");
+      const downloaded = (candidate.fetchViaBackground || useBackgroundForAsset(url))
         ? await (options.fetchAsset ?? ((url) => fetchAssetViaBackground(url, maxBytes, candidate)))(url)
-        : await fetchCandidateBytes(fetcher, url, maxBytes, candidate.headers);
+        : await fetchCandidateBytes(fetcher, url, maxBytes, candidate.headers, candidate.source);
       if (downloaded.asset) {
         uploaded.push({ ...downloaded.asset, pointer: candidate.pointer, message_id: candidate.messageId ?? downloaded.asset.message_id ?? null });
         continue;
@@ -112,10 +113,11 @@ async function fetchCandidateBytes(
   url: string,
   maxBytes: number,
   headers?: Record<string, string>,
+  source?: ProviderSource,
 ): Promise<ProviderAssetBytes> {
   const sameOrigin = url.startsWith("/") && !url.startsWith("//")
     || (typeof location !== "undefined" && new URL(url, location.origin).origin === location.origin);
-  const res = await fetcher(url, { credentials: "include", headers: sameOrigin ? headers : undefined, signal: AbortSignal.timeout(60_000) });
+  const res = await fetcher(url, { credentials: assetCredentials(url, source), headers: sameOrigin ? headers : undefined, signal: AbortSignal.timeout(60_000) });
   if (!res.ok) throw new Error(res.status === 404 || res.status === 410 ? "asset_expired" : "asset_download_failed");
   const bytes = await boundedAssetBuffer(res, maxBytes);
   return {
@@ -149,4 +151,14 @@ async function configuredAssetLimit(): Promise<number> {
   const stored = await new Promise<Record<string, any>>(resolve => chrome.storage.local.get("scrobbler.settings", resolve));
   const limit = stored["scrobbler.settings"]?.maxAssetBytes;
   return typeof limit === "number" && Number.isSafeInteger(limit) && limit > 0 ? limit : MAX_PROVIDER_ASSET_BYTES;
+}
+
+export function assetReferences(candidates: ProviderAssetCandidate[]): import("../../../shared/src").AssetBackfillReference[] {
+  const seen = new Set<string>();
+  return candidates.flatMap(candidate => {
+    const key = JSON.stringify([candidate.messageId ?? null, candidate.pointer]);
+    if (seen.has(key)) return [];
+    seen.add(key);
+    return [{ pointer: candidate.pointer, message_id: candidate.messageId ?? null, filename: candidate.filename ?? null, content_type: candidate.contentType ?? null }];
+  });
 }

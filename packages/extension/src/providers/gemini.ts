@@ -35,7 +35,7 @@ import { logSyncFailure, SyncFailureTracker } from "./sync-failures";
  */
 
 import { buildRawCapture } from "../../../shared/src";
-import { uploadProviderAssets, type ProviderAssetCandidate } from "./assets";
+import { assetReferences, uploadProviderAssets, type ProviderAssetCandidate } from "./assets";
 import { geminiApiAssetCandidates } from "./gemini-assets";
 import {
   maxIso,
@@ -206,10 +206,13 @@ async function captureGeminiOne(
     try { payload = await fetchConversationRpc(fetcher, id, wizData); }
     catch { /* Fall through to DOM only when the provider RPC fails. */ }
     if (payload !== undefined) {
+      const apiCandidates = geminiApiAssetCandidates(payload, id);
+      const apiPointers = new Set(apiCandidates.map(candidate => candidate.pointer));
+      const candidates = [...apiCandidates, ...geminiAssetCandidates(pageCtx, id).filter(candidate => !apiPointers.has(candidate.pointer))];
       const assets = await uploadProviderAssets(
         fetcher,
         options.uploadAsset,
-        [...geminiApiAssetCandidates(payload, id), ...geminiAssetCandidates(pageCtx, id)],
+        candidates,
       );
       await options.emitCapture(buildRawCapture({
         source: "gemini",
@@ -218,6 +221,7 @@ async function captureGeminiOne(
         endpoint: `${BATCHEXECUTE_PATH}?rpcids=${CONVERSATION_RPC_ID}`,
         payload,
         assets,
+    assetReferences: assetReferences(candidates),
         fetchedAt,
         conversationUpdatedAt: updatedAt,
         rawUrl: `https://gemini.google.com/app/${id}`,
@@ -231,13 +235,15 @@ async function captureGeminiOne(
   // conversation is the currently rendered page. The gemini:api parser ignores
   // dom_fallback payloads.
   const domText = pageCtx.readConversationDom(id);
-  const assets = await uploadProviderAssets(fetcher, options.uploadAsset, geminiAssetCandidates(pageCtx, id));
+  const candidates = geminiAssetCandidates(pageCtx, id);
+  const assets = await uploadProviderAssets(fetcher, options.uploadAsset, candidates);
   await options.emitCapture(buildRawCapture({
     source: "gemini",
     sourceId: id,
     endpoint: `dom://gemini.google.com/app/${id}`,
     payload: { dom_fallback: true, text: domText ?? "" },
     assets,
+    assetReferences: assetReferences(candidates),
     fetchedAt,
     conversationUpdatedAt: updatedAt,
     rawUrl: `https://gemini.google.com/app/${id}`,

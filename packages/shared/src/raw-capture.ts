@@ -1,3 +1,5 @@
+import type { AssetBackfillReference } from "./asset-backfill";
+
 export type ProviderSource = "chatgpt" | "claude" | "gemini";
 export type ApiCaptureMethod = "api";
 
@@ -16,6 +18,7 @@ export interface RawCapture<TPayload = unknown> {
   cursor?: string | null;
   raw_url?: string | null;
   assets?: UploadedAsset[];
+  asset_references?: AssetBackfillReference[];
 }
 
 export interface UploadedAsset {
@@ -39,6 +42,7 @@ export interface BuildRawCaptureInput<TPayload = unknown> {
   cursor?: string | null;
   rawUrl?: string | null;
   assets?: UploadedAsset[];
+  assetReferences?: AssetBackfillReference[];
 }
 
 export function buildRawCapture<TPayload>(input: BuildRawCaptureInput<TPayload>): RawCapture<TPayload> {
@@ -55,6 +59,7 @@ export function buildRawCapture<TPayload>(input: BuildRawCaptureInput<TPayload>)
     cursor: input.cursor ?? null,
     raw_url: input.rawUrl ?? null,
     assets: input.assets ?? [],
+    asset_references: input.assetReferences ?? [],
   };
 }
 

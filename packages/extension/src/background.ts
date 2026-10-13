@@ -4,6 +4,7 @@ import { collectCredentialSnapshot } from "./credentials";
 import { toolbarProgressView, aggregateTabProgress, type ToolbarProgressInput } from "./toolbar-progress";
 import { appendRecentCapture, RECENT_CAPTURES_KEY, type RecentCapture } from "./recent-captures";
 import { filenameFromHeaders, MAX_PROVIDER_ASSET_BYTES } from "./providers/assets";
+import { allowedAssetUrl, assetCredentials } from "./providers/asset-url";
 import { boundedAssetBuffer } from "./providers/asset-bytes";
 import { AssetTransfers } from "./asset-transfers";
 import { uploadAssetToIngest } from "./asset-upload";
@@ -160,12 +161,10 @@ async function postAsset(asset: AssetUploadRequest): Promise<unknown> {
 
 async function fetchAssetBytes(message: AssetFetchMessage): Promise<unknown> {
   const url = new URL(message.url);
-  if (url.protocol !== "https:" && url.protocol !== "http:") {
-    throw new Error("Asset URL must be http or https");
-  }
+  if (url.protocol !== "https:" || !allowedAssetUrl(url.toString())) throw new Error("asset_url_unavailable");
   const settings = await getSettings();
   const maxBytes = Math.min(message.maxBytes ?? settings.maxAssetBytes, settings.maxAssetBytes);
-  const res = await fetch(url.toString(), { credentials: "include", signal: AbortSignal.timeout(60_000) });
+  const res = await fetch(url.toString(), { credentials: assetCredentials(url.toString(), message.upload?.source), signal: AbortSignal.timeout(60_000) });
   if (!res.ok) throw new Error(res.status === 404 || res.status === 410 ? "asset_expired" : "asset_download_failed");
   const bytes = await boundedAssetBuffer(res, maxBytes);
   const filename = filenameFromHeaders(res);

@@ -248,3 +248,11 @@ test("background assembles bounded asset chunks before hash lookup and upload", 
   expect(await sendRuntimeMessage({ type: "SCROBBLER_ASSET_UPLOAD_FINISH", uploadId: start.uploadId })).toMatchObject({ ok: true });
   expect(uploaded).toEqual([1, 2, 3]);
 });
+
+test("background rejects asset URLs outside provider hosts before fetching", async () => {
+  let fetched = false;
+  globalThis.fetch = (async () => { fetched = true; return new Response("private"); }) as unknown as typeof fetch;
+  expect(await sendRuntimeMessage({ type: "SCROBBLER_ASSET_FETCH", url: "http://127.0.0.1/private" })).toMatchObject({ ok: false });
+  expect(await sendRuntimeMessage({ type: "SCROBBLER_ASSET_FETCH", url: "https://unrelated.example/private" })).toMatchObject({ ok: false });
+  expect(fetched).toBe(false);
+});

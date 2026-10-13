@@ -119,7 +119,7 @@ export function parseGemini(raw: unknown, context: ParserContext = {}): Session[
 
   const messages: Message[] = [];
   const assetLookup = assetLookupFromRaw(raw);
-  const hasAsset = (id: string) => assetLookup.all().some(asset => asset.message_id === id);
+  const hasAsset = (id: string) => assetLookup.references().some(asset => asset.message_id === id);
   const loc = { raw_ref: context.raw_ref ?? `raw/api/gemini:${sourceId}`, raw_path: "/payload" };
   let firstTimestamp: string | null = null;
   let lastTimestamp: string | null = null;

@@ -3,5 +3,6 @@ export interface ConversationCaptureFailure {
   updated_at: string | null;
   attempts: number;
   quarantined: boolean;
+  retry_after?: string;
 }
 export const MAX_CAPTURE_ATTEMPTS = 3;

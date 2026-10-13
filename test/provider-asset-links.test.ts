@@ -131,3 +131,27 @@ test("Gemini keeps media-only user and candidate messages and falls back to the 
   expect(media(s.messages[1].blocks).map((b: any) => b.pointer)).toEqual(["blob:gen", "blob:lost"]);
   expect(s.active_leaf_id).toBe("rc_1");
 });
+
+test("ChatGPT keeps a retryable file block when upload metadata has no captured bytes", () => {
+  const session = parseChatgpt({ payload: { id: "c", mapping: { n: { id: "n", parent: null, message: {
+    id: "m", author: { role: "user" }, content: { content_type: "text", parts: ["read this"] },
+    metadata: { attachments: [{ id: "file_doc", name: "paper.pdf", mime_type: "application/pdf" }] },
+  } } } } })[0];
+  expect(session.messages[0].blocks).toContainEqual({ type: "file", pointer: "file_doc", filename: "paper.pdf", local_path: null, sha256: null, mime_type: "application/pdf" });
+});
+
+test("ChatGPT keeps root voice audio and sandbox download pointers before bytes arrive", () => {
+  const session = parseChatgpt({ payload: { id: "c", mapping: {
+    voice: { id: "voice", parent: null, message: { id: "v", author: { role: "user" }, content: { content_type: "audio_asset_pointer", audio_asset_pointer: "sediment://voice" } } },
+    output: { id: "output", parent: "voice", message: { id: "o", author: { role: "assistant" }, content: { content_type: "text", parts: ["[Download](sandbox:/mnt/data/report.csv)"] } } },
+  } } })[0];
+  expect(session.messages[0].blocks).toMatchObject([{ type: "audio", pointer: "sediment://voice", local_path: null }]);
+  expect(session.messages[1].blocks).toContainEqual({ type: "file", pointer: "sandbox:/mnt/data/report.csv", filename: "report.csv", local_path: null, sha256: null, mime_type: null });
+});
+
+test("Gemini retains failed API media references for a later canonical backfill", () => {
+  const session = parseGemini({ source_id: "c", payload: [[[["c_c", "r_user"], null, [[], 1], null]]],
+    assets: [], asset_references: [{ pointer: "https://lh3.googleusercontent.com/voice", message_id: "r_user", filename: "voice.wav", content_type: "audio/wav" }],
+  })[0];
+  expect(session.messages[0]?.blocks).toContainEqual({ type: "audio", pointer: "https://lh3.googleusercontent.com/voice", filename: "voice.wav", local_path: null, sha256: null, mime_type: "audio/wav" });
+});

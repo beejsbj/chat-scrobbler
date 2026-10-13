@@ -49,3 +49,15 @@ test("status persists and reports the provider capture failure list", async () =
     expect((await handleIngestRequest(request({ source: "chatgpt", conversations: [], capture_failures: [{ ...failures[0], attempts: -1 }] }), opts)).status).toBe(400);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
+
+test("Gemini automatically retries a timestamp-less quarantine after its cooldown", async () => {
+  const { createGeminiAdapter } = await import("../packages/extension/src/providers/gemini");
+  const payload = [[[["c_c", "r_user"], null, [["hello"]], null]]];
+  let rpcCalls = 0;
+  const adapter = createGeminiAdapter(async () => { rpcCalls++; return new Response(JSON.stringify([["wrb.fr", "hNvQHb", JSON.stringify(payload)]])); }, {
+    readWizData: () => ({ at: "csrf", bl: "b", fSid: "s" }), listConversationIds: () => ["c"], readConversationDom: () => null,
+  });
+  const result = await adapter.sync({ captureFailures: [{ source_id: "c", updated_at: null, attempts: 3, quarantined: true, retry_after: "2000-01-01T00:00:00Z" }], emitCapture: async () => {} });
+  expect(rpcCalls).toBe(1);
+  expect(result.captureFailures).toEqual([]);
+});

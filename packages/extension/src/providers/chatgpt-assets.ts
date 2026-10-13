@@ -1,3 +1,4 @@
+import { allowedAssetUrl } from "./asset-url";
 import { asArray, asObject, type FetchLike } from "./types";
 import type { ProviderAssetCandidate } from "./assets";
 
@@ -69,7 +70,7 @@ export async function resolveChatgptAssetUrl(fetcher: FetchLike, candidate: Prov
   }
   const link = asObject(await res.json());
   const url = stringValue(link.download_url ?? link.url);
-  if (!url || (!url.startsWith("/") && !/^https:\/\//.test(url))) throw new Error("asset_url_unavailable");
+  if (!url || !allowedAssetUrl(url)) throw new Error("asset_url_unavailable");
   if (!candidate.filename) candidate.filename = stringValue(link.file_name);
   return url;
 }

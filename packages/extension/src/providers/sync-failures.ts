@@ -12,13 +12,14 @@ export class SyncFailureTracker {
   }
   isQuarantined(id: string, updatedAt: string | null): boolean {
     const previous = this.failures.get(id);
-    if (previous && previous.updated_at !== updatedAt) { this.failures.delete(id); return false; }
+    if (previous && (previous.updated_at !== updatedAt || previous.retry_after && Date.parse(previous.retry_after) <= Date.now())) { this.failures.delete(id); return false; }
     return previous?.quarantined === true;
   }
   failed(id: string, updatedAt: string | null): void {
     const previous = this.failures.get(id);
     const attempts = (previous?.updated_at === updatedAt ? previous.attempts : 0) + 1;
-    this.failures.set(id, { source_id: id, updated_at: updatedAt, attempts, quarantined: attempts >= MAX_CAPTURE_ATTEMPTS });
+    this.failures.set(id, { source_id: id, updated_at: updatedAt, attempts, quarantined: attempts >= MAX_CAPTURE_ATTEMPTS,
+      ...(updatedAt === null && attempts >= MAX_CAPTURE_ATTEMPTS ? { retry_after: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString() } : {}) });
   }
   succeeded(id: string): void { this.failures.delete(id); }
   get pending(): boolean { return [...this.failures.values()].some(f => !f.quarantined); }
