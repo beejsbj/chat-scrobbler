@@ -75,3 +75,19 @@ test("replacing canonical JSON publishes a new file without changing an existing
     expect(readdirSync(join(root, "claude"))).toEqual(["cl-1.json"]);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
+
+test("canonical paths reject traversal while existing safe filenames keep resolving", () => {
+  const { writeFileSync, mkdirSync } = require("node:fs");
+  const root = mkdtempSync(join(tmpdir(), "session-path-"));
+  try {
+    for (const source_id of ["../x", "../../x", "/x", "a/b", "a\\b", ".", "..", "nul\u0000"]) {
+      expect(() => writeSession(root, { ...session, source_id })).toThrow();
+      expect(() => readSession(root, "claude", source_id)).toThrow();
+    }
+    expect(existsSync(join(root, "x.json"))).toBe(false);
+    mkdirSync(join(root, "claude"), { recursive: true });
+    const legacy = { ...session, source_id: "legacy.id with spaces" };
+    writeFileSync(join(root, "claude", `${legacy.source_id}.json`), JSON.stringify(legacy));
+    expect(readSession(root, "claude", legacy.source_id)).toEqual(legacy);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});

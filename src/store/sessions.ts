@@ -1,7 +1,7 @@
 // src/store/sessions.ts
 import { writeAtomicFile } from "./atomic-file";
-import { mkdirSync, readFileSync, existsSync, readdirSync, rmSync } from "node:fs";
-import { isAbsolute, join, relative, resolve } from "node:path";
+import { readFileSync, existsSync, readdirSync, rmSync } from "node:fs";
+import { join, resolve } from "node:path";
 import type { Session, Message } from "../schema/types";
 import { assetsDirForSession } from "./assets";
 
@@ -13,19 +13,17 @@ export interface DeleteSessionResult {
 }
 
 export function writeSession(baseDir: string, session: Session): string {
-  const dir = join(baseDir, session.source);
-  mkdirSync(dir, { recursive: true });
-  const file = join(dir, `${session.source_id}.json`);
+  const file = sessionFilePath(baseDir, session.source, session.source_id);
   writeAtomicFile(file, JSON.stringify(session, null, 2));
   return file;
 }
 
 export function readSession(baseDir: string, source: string, sourceId: string): Session {
-  return JSON.parse(readFileSync(join(baseDir, source, `${sourceId}.json`), "utf8"));
+  return JSON.parse(readFileSync(sessionFilePath(baseDir, source, sourceId), "utf8"));
 }
 
 export function deleteSession(baseDir: string, source: string, sourceId: string): DeleteSessionResult {
-  const sessionPath = safeSessionFilePath(baseDir, source, sourceId);
+  const sessionPath = sessionFilePath(baseDir, source, sourceId);
   const assetDir = assetsDirForSession(baseDir, source, sourceId);
   const sessionDeleted = existsSync(sessionPath);
   const assetsDeleted = existsSync(assetDir);
@@ -76,16 +74,9 @@ export function sessionToMarkdown(s: Session): string {
   return lines.join("\n");
 }
 
-function safeSessionFilePath(baseDir: string, source: string, sourceId: string): string {
-  const root = resolve(baseDir);
-  const sourceDir = resolve(root, source);
-  ensureContained(root, sourceDir, "source is invalid");
-  const sessionPath = resolve(sourceDir, `${sourceId}.json`);
-  ensureContained(sourceDir, sessionPath, "source_id is invalid");
-  return sessionPath;
-}
-
-function ensureContained(parent: string, child: string, message: string): void {
-  const rel = relative(parent, child);
-  if (rel === "" || rel.startsWith("..") || isAbsolute(rel)) throw new Error(message);
+/** Keep legacy basenames unchanged; reject IDs that cannot be one filename. */
+export function sessionFilePath(baseDir: string, source: string, sourceId: string): string {
+  if (!["chatgpt", "claude", "gemini"].includes(source)) throw new Error("source is invalid");
+  if (!sourceId || sourceId === "." || sourceId === ".." || /[\/\\\x00-\x1f]/.test(sourceId)) throw new Error("source_id is invalid");
+  return resolve(baseDir, source, `${sourceId}.json`);
 }
