@@ -4,6 +4,7 @@ import { openIndex } from "../indexer/sqlite";
 import { embeddingProviderFromConfig } from "../indexer/embedding-providers";
 import { embedBackfill } from "../indexer/embed-backfill";
 import { migrateLegacyVectors } from "../indexer/vector-store";
+import { acquireBackfillLock } from "../indexer/backfill-lock";
 
 export async function runEmbedBackfill(args: string[], cfg: ChatHistoryConfig, write: (text:string)=>void): Promise<void> {
   const {values}=parseArgs({args,options:{model:{type:"string"},provider:{type:"string"},limit:{type:"string"},rate:{type:"string"},"load-threshold":{type:"string"},"migrate-only":{type:"boolean"}}});
@@ -15,6 +16,8 @@ export async function runEmbedBackfill(args: string[], cfg: ChatHistoryConfig, w
   if (!values["migrate-only"] && !values.model?.trim()) throw new Error("embed-backfill requires --model");
   const provider=values["migrate-only"] ? null : embeddingProviderFromConfig({...cfg,embeddingProvider:providerKind as ChatHistoryConfig["embeddingProvider"],embeddingModel:values.model ?? null});
   if (!values["migrate-only"] && !provider) throw new Error("embed-backfill requires an enabled provider (or --provider)");
+  const lock=acquireBackfillLock(cfg.indexPath);
+  if (!lock) throw new Error("backfill already running for this index");
   const abort=new AbortController();
   const stop=()=>abort.abort(new Error("backfill interrupted; completed vectors retained"));
   process.once("SIGINT",stop); process.once("SIGTERM",stop);
@@ -34,5 +37,9 @@ export async function runEmbedBackfill(args: string[], cfg: ChatHistoryConfig, w
     }
     const result=await embedBackfill(db,{provider:provider!,canonicalDir:cfg.canonicalDir,limit:values.limit===undefined ? undefined : limit,rate,loadThreshold,signal:abort.signal,progress:report=>write(JSON.stringify(report))});
     if(result.failed) throw new Error(`${result.failed} embeddings failed; resume to retry`);
-  } finally { db?.close(); process.removeListener("SIGINT",stop); process.removeListener("SIGTERM",stop); }
+  } finally {
+    try { db?.close(); } finally {
+      lock.release(); process.removeListener("SIGINT",stop); process.removeListener("SIGTERM",stop);
+    }
+  }
 }

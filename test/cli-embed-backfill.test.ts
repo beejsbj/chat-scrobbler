@@ -58,3 +58,19 @@ test("CLI defaults to serial inference without checking aggregate host load", as
     expect(load).not.toHaveBeenCalled();
   } finally { load.mockRestore(); rmSync(root, { recursive: true, force: true }); }
 });
+
+test("manual backfill and migrate-only use the same index lock and release it after errors", async () => {
+  const { acquireBackfillLock } = await import("../src/indexer/backfill-lock");
+  const root = mkdtempSync(join(tmpdir(), "embed-cli-lock-"));
+  try {
+    const cfg = {...DEFAULT_CONFIG,indexPath:join(root,"index.db")};
+    const lock=acquireBackfillLock(cfg.indexPath)!;
+    for (const args of [["--migrate-only"],["--model","hash-v1","--provider","hash"]])
+      await expect(runEmbedBackfill(args,cfg,()=>{})).rejects.toThrow("backfill already running");
+    lock.release();
+    const db=openIndex(cfg.indexPath); indexSession(db,fixture()); db.close();
+    await expect(runEmbedBackfill(["--provider","hash","--model","hash-v1"],cfg,()=>{throw new Error("writer failed");})).rejects.toThrow("writer failed");
+    const again=acquireBackfillLock(cfg.indexPath)!;
+    expect(again).toBeTruthy(); again.release();
+  } finally {rmSync(root,{recursive:true,force:true});}
+});
