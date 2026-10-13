@@ -3,7 +3,7 @@ import { assetsUrl, capturesUrl, deleteCaptureUrl, statusUrl, DEFAULT_INGEST_BAS
 import { collectCredentialSnapshot } from "./credentials";
 import { toolbarProgressView, aggregateTabProgress, type ToolbarProgressInput } from "./toolbar-progress";
 import { appendRecentCapture, RECENT_CAPTURES_KEY, type RecentCapture } from "./recent-captures";
-import { filenameFromHeaders, MAX_PROVIDER_ASSET_BYTES } from "./providers/assets";
+import { assetContentType, filenameFromHeaders, MAX_PROVIDER_ASSET_BYTES } from "./providers/assets";
 import { allowedAssetUrl, assetCredentials } from "./providers/asset-url";
 import { boundedAssetBuffer } from "./providers/asset-bytes";
 import { AssetTransfers } from "./asset-transfers";
@@ -172,9 +172,9 @@ async function fetchAssetBytes(message: AssetFetchMessage): Promise<unknown> {
   if (message.upload) {
     let asset;
     try { asset = await uploadAssetToIngest(fetch, settings, { ...message.upload, filename: message.upload.filename ?? filename,
-      contentType: message.upload.contentType ?? contentType, bytes }); }
+      contentType: assetContentType(contentType, message.upload.contentType), bytes }); }
     catch (error) { throw new Error(error instanceof Error && error.message === "asset_too_large" ? "asset_too_large" : "asset_upload_failed"); }
-    return { ok: true, asset: { ...asset, filename: message.upload.filename ?? filename, content_type: message.upload.contentType ?? contentType } };
+    return { ok: true, asset: { ...asset, filename: message.upload.filename ?? filename, content_type: assetContentType(contentType, message.upload.contentType) } };
   }
   return { ok: true, bytes: Array.from(bytes), filename, contentType };
 }

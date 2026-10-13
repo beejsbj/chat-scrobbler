@@ -56,17 +56,18 @@ export function chatgptAssetCandidates(payload: unknown, sourceId: string, heade
 export async function resolveChatgptAssetUrl(fetcher: FetchLike, candidate: ProviderAssetCandidate): Promise<string | null> {
   if (!candidate.url) return null;
   if (!candidate.url.startsWith("/backend-api/") || !candidate.url.includes("/download")) return candidate.url;
-  let res = await fetcher(candidate.url, { credentials: "include", headers: candidate.headers, signal: AbortSignal.timeout(30_000) });
+  let downloadEndpoint = candidate.url;
+  let res = await fetcher(downloadEndpoint, { credentials: "include", headers: candidate.headers, signal: AbortSignal.timeout(30_000) });
   if (res.status === 404 && candidate.pointer.startsWith("sediment://")) {
     const id = candidate.pointer.slice("sediment://".length);
-    const fallback = `/backend-api/conversation/${encodeURIComponent(candidate.sourceId)}/attachment/${encodeURIComponent(id)}/download`;
-    res = await fetcher(fallback, { credentials: "include", headers: candidate.headers, signal: AbortSignal.timeout(30_000) });
+    downloadEndpoint = `/backend-api/conversation/${encodeURIComponent(candidate.sourceId)}/attachment/${encodeURIComponent(id)}/download`;
+    res = await fetcher(downloadEndpoint, { credentials: "include", headers: candidate.headers, signal: AbortSignal.timeout(30_000) });
   }
   if (!res.ok) throw new Error(res.status === 404 || res.status === 410 ? "asset_expired" : "asset_download_failed");
   if (!res.headers.get("content-type")?.includes("json")) {
     // Some older download routes return bytes directly.
     await res.body?.cancel();
-    return candidate.url;
+    return downloadEndpoint;
   }
   const link = asObject(await res.json());
   const url = stringValue(link.download_url ?? link.url);

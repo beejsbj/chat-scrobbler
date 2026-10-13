@@ -38,7 +38,10 @@ import { buildRawCapture } from "../../../shared/src";
 import { assetReferences, uploadProviderAssets, type ProviderAssetCandidate } from "./assets";
 import { geminiApiAssetCandidates } from "./gemini-assets";
 import {
+  isRateLimitError,
   maxIso,
+  parseRetryAfterMs,
+  RateLimitError,
   shouldCapture,
   type ConversationSummary,
   type FetchLike,
@@ -204,7 +207,10 @@ async function captureGeminiOne(
   if (wizData) {
     let payload: unknown;
     try { payload = await fetchConversationRpc(fetcher, id, wizData); }
-    catch { /* Fall through to DOM only when the provider RPC fails. */ }
+    catch (error) {
+      if (isRateLimitError(error)) throw error;
+      // Fall through to DOM only when the provider RPC fails.
+    }
     if (payload !== undefined) {
       const apiCandidates = geminiApiAssetCandidates(payload, id);
       const apiPointers = new Set(apiCandidates.map(candidate => candidate.pointer));
@@ -318,7 +324,8 @@ async function syncGemini(
       if (!didCapture) { skipped++; continue; }
       captured += 1;
       maxConversationUpdatedAt = maxIso(maxConversationUpdatedAt, fetchedAt);
-    } catch {
+    } catch (error) {
+      if (isRateLimitError(error)) throw error;
       failed++;
       failures.failed(id, null);
       if (failures.isQuarantined(id, null)) maxConversationUpdatedAt = maxIso(maxConversationUpdatedAt, fetchedAt);
@@ -368,6 +375,7 @@ async function fetchConversationRpc(
     body: body.toString(),
   });
 
+  if (res.status === 429 || res.status === 503) throw new RateLimitError(BATCHEXECUTE_PATH, res.status, parseRetryAfterMs(res.headers.get("retry-after")));
   if (!res.ok) throw new Error(`batchexecute ${CONVERSATION_RPC_ID} failed with HTTP ${res.status}`);
   const text = await res.text();
   return parseBatchExecuteResponse(text, CONVERSATION_RPC_ID);

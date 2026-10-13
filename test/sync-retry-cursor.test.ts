@@ -1,6 +1,32 @@
 import { expect, test } from "bun:test";
 import { createChatgptAdapter } from "../packages/extension/src/providers/chatgpt";
 import { createClaudeAdapter } from "../packages/extension/src/providers/claude";
+import { createGeminiAdapter } from "../packages/extension/src/providers/gemini";
+
+test("Gemini propagates throttling without capturing a DOM substitute", async () => {
+  let emitted = false;
+  const adapter = createGeminiAdapter(async () => new Response("", { status: 429, headers: { "retry-after": "60" } }), {
+    listConversationIds: () => ["c"], readWizData: () => ({ at: "csrf", bl: "b", fSid: "s" }), readConversationDom: () => "fallback",
+  });
+  await expect(adapter.sync({ emitCapture: async () => { emitted = true; } })).rejects.toMatchObject({ name: "RateLimitError" });
+  expect(emitted).toBe(false);
+});
+
+for (const source of ["chatgpt", "claude"] as const) test(`${source} stops on provider throttling instead of quarantining conversations`, async () => {
+  let detailCalls = 0;
+  const adapter = (source === "chatgpt" ? createChatgptAdapter : createClaudeAdapter)(async input => {
+    if (input === "/api/auth/session") return Response.json({});
+    if (input === "/api/organizations") return Response.json([{ uuid: "org" }]);
+    if (input.includes("conversations?")) {
+      const items = ["a", "b"].map(id => ({ id, uuid: id, updated_at: "2026-06-05T12:00:00Z", update_time: "2026-06-05T12:00:00Z" }));
+      return Response.json(source === "chatgpt" ? { items } : items);
+    }
+    detailCalls++;
+    return new Response("", { status: 429, headers: { "retry-after": "60" } });
+  });
+  await expect(adapter.sync({ emitCapture: async () => {} })).rejects.toMatchObject({ name: "RateLimitError", retryAfterMs: 60_000 });
+  expect(detailCalls).toBe(1);
+});
 
 for (const source of ["chatgpt", "claude"] as const) test(`${source} advances cursor after three failures and retains a retry record`, async () => {
   let badCalls = 0;

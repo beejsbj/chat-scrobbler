@@ -60,7 +60,7 @@ export async function uploadProviderAssets(
         continue;
       }
       if (downloaded.bytes.length > maxBytes) throw new Error("asset_too_large");
-      const contentType = candidate.contentType ?? downloaded.contentType ?? null;
+      const contentType = assetContentType(downloaded.contentType, candidate.contentType);
       const filename = candidate.filename ?? downloaded.filename ?? null;
       const request: AssetUploadRequest = {
         messageId: candidate.messageId,
@@ -131,6 +131,12 @@ export function isOversizedContentLength(value: string | null, maxBytes = MAX_PR
   if (!value) return false;
   const bytes = Number(value);
   return Number.isFinite(bytes) && bytes > maxBytes;
+}
+
+/** An actual response type is more reliable than positional provider metadata. */
+export function assetContentType(responseType?: string | null, hint?: string | null): string | null {
+  return responseType && responseType.split(";")[0].trim().toLowerCase() !== "application/octet-stream"
+    ? responseType : hint ?? responseType ?? null;
 }
 
 export function filenameFromHeaders(res: Response): string | null {

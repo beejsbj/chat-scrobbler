@@ -6,6 +6,7 @@ import {
   asArray,
   asObject,
   fetchJson,
+  isRateLimitError,
   maxIso,
   shouldCapture,
   type ConversationSummary,
@@ -150,7 +151,8 @@ async function syncChatgpt(fetcher: FetchLike, options: ProviderSyncOptions): Pr
         }
         captured += 1;
         maxConversationUpdatedAt = maxIso(maxConversationUpdatedAt, item.updatedAt);
-      } catch {
+      } catch (error) {
+        if (isRateLimitError(error)) throw error;
         failed++;
         failures.failed(item.id, item.updatedAt);
         if (failures.isQuarantined(item.id, item.updatedAt)) maxConversationUpdatedAt = maxIso(maxConversationUpdatedAt, item.updatedAt);
@@ -173,7 +175,8 @@ async function getAccessToken(fetcher: FetchLike): Promise<string | null> {
   try {
     const session = asObject(await fetchJson(fetcher, "/api/auth/session"));
     return typeof session.accessToken === "string" ? session.accessToken : null;
-  } catch {
+  } catch (error) {
+    if (isRateLimitError(error)) throw error;
     return null;
   }
 }

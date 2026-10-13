@@ -1,6 +1,15 @@
 import { expect, test } from "bun:test";
 import { createChatgptAdapter } from "../packages/extension/src/providers/chatgpt";
 import type { RawCapture } from "../packages/shared/src";
+import { resolveChatgptAssetUrl } from "../packages/extension/src/providers/chatgpt-assets";
+
+test("ChatGPT uses the successful attachment fallback for a direct binary response", async () => {
+  const url = await resolveChatgptAssetUrl(async input => input.includes("/files/download/")
+    ? new Response("", { status: 404 }) : new Response(new Uint8Array([1])), {
+    source: "chatgpt", sourceId: "c", pointer: "sediment://file_1", url: "/backend-api/files/download/file_1",
+  });
+  expect(url).toBe("/backend-api/conversation/c/attachment/file_1/download");
+});
 
 test("ChatGPT captures sediment generated images, uploads, sandbox outputs and voice audio with provider auth", async () => {
   const payload = { conversation_id: "c", mapping: {

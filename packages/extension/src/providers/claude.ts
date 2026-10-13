@@ -6,6 +6,7 @@ import {
   asArray,
   asObject,
   fetchJson,
+  isRateLimitError,
   maxIso,
   shouldCapture,
   type ConversationSummary,
@@ -27,7 +28,10 @@ export function createClaudeAdapter(fetcher: FetchLike = fetch.bind(globalThis))
       const endpoint = `/api/organizations/${encodeURIComponent(org.uuid)}/chat_conversations/${encodeURIComponent(id)}?tree=True&rendering_mode=messages&render_all_tools=true`;
       let refreshed = new Map<string, ReturnType<typeof claudeAssetCandidates>[number]>();
       try { refreshed = new Map(claudeAssetCandidates(await fetchJson(fetcher, endpoint), id, org.uuid).map(candidate => [candidate.pointer, candidate])); }
-      catch { /* Existing pointers still get their own bounded download attempt and failure report. */ }
+      catch (error) {
+        if (isRateLimitError(error)) throw error;
+        // Existing pointers still get their own bounded download attempt and failure report.
+      }
       return uploadProviderAssets(fetcher, options.uploadAsset, references.map(ref => ({
         source: "claude", sourceId: id, pointer: ref.pointer, messageId: ref.message_id,
         filename: ref.filename, contentType: ref.content_type,
@@ -148,7 +152,8 @@ async function syncClaude(fetcher: FetchLike, options: ProviderSyncOptions): Pro
         }
         captured += 1;
         maxConversationUpdatedAt = maxIso(maxConversationUpdatedAt, item.updatedAt);
-      } catch {
+      } catch (error) {
+        if (isRateLimitError(error)) throw error;
         failed++;
         failures.failed(item.id, item.updatedAt);
         if (failures.isQuarantined(item.id, item.updatedAt)) maxConversationUpdatedAt = maxIso(maxConversationUpdatedAt, item.updatedAt);

@@ -1,6 +1,15 @@
 import { expect, test } from "bun:test";
 import { uploadProviderAssets } from "../packages/extension/src/providers/assets";
 
+test("binary response MIME wins over a provider image format hint", async () => {
+  const assets = await uploadProviderAssets(async () => new Response(new Uint8Array([1]), { headers: { "content-type": "image/jpeg" } }),
+    async request => {
+      expect(request.contentType).toBe("image/jpeg");
+      return { pointer: request.pointer, local_path: "assets/gemini/c/hash.jpg" };
+    }, [{ source: "gemini", sourceId: "c", pointer: "p", url: "https://lh3.googleusercontent.com/a", contentType: "image/png" }]);
+  expect(assets[0]?.content_type).toBe("image/jpeg");
+});
+
 test("capture resolves a provider download link before archiving binary bytes", async () => {
   const failures: unknown[] = [];
   const assets = await uploadProviderAssets(async input => {
