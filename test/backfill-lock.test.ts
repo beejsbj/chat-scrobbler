@@ -25,15 +25,18 @@ test("dead PID lock recovers, live PID never expires, and release verifies owner
   const root = mkdtempSync(join(tmpdir(), "backfill-stale-"));
   const index = join(root, "index.db"), path = backfillLockPath(index);
   try {
+    const initial=acquireBackfillLock(index)!;
+    const namespace=JSON.parse(await Bun.file(join(path,readdirSync(path)[0])).text()).namespace;
+    initial.release();
     mkdirSync(path);
     const dead = Bun.spawn([process.execPath, "-e", ""], {stdout:"ignore",stderr:"ignore"});
     await dead.exited;
-    writeFileSync(join(path, `${dead.pid}-dead.json`), JSON.stringify({pid:dead.pid,token:"dead",started_at:"2000-01-01"}));
+    writeFileSync(join(path, `${dead.pid}-dead.json`), JSON.stringify({pid:dead.pid,token:"dead",namespace,started_at:"2000-01-01"}));
     const lock = acquireBackfillLock(index)!;
     expect(lock).toBeTruthy();
     lock.release();
     mkdirSync(path);
-    writeFileSync(join(path, `${process.pid}-live.json`), JSON.stringify({pid:process.pid,token:"live",started_at:"2000-01-01"}));
+    writeFileSync(join(path, `${process.pid}-live.json`), JSON.stringify({pid:process.pid,token:"live",namespace,started_at:"2000-01-01"}));
     expect(acquireBackfillLock(index)).toBeNull();
     rmSync(path, {recursive:true});
     const owned = acquireBackfillLock(index)!;
@@ -42,4 +45,20 @@ test("dead PID lock recovers, live PID never expires, and release verifies owner
     owned.release();
     expect(existsSync(join(path,file))).toBe(true);
   } finally { rmSync(root, {recursive:true,force:true}); }
+});
+
+
+test("foreign or missing PID namespaces fail closed even when their PID is dead locally", async () => {
+  const root=mkdtempSync(join(tmpdir(),"backfill-namespace-")),index=join(root,"index.db");
+  const path=backfillLockPath(index);
+  const child=Bun.spawn([process.execPath,"-e",""],{stdout:"ignore",stderr:"ignore"});await child.exited;
+  try {
+    for(const namespace of [undefined,"pid:[foreign]"]) {
+      mkdirSync(path);
+      const file=join(path,`${child.pid}-foreign.json`);
+      writeFileSync(file,JSON.stringify({pid:child.pid,token:"foreign",namespace}));
+      expect(acquireBackfillLock(index)).toBeNull();expect(existsSync(file)).toBe(true);
+      rmSync(path,{recursive:true});
+    }
+  } finally {rmSync(root,{recursive:true,force:true});}
 });

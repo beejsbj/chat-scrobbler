@@ -74,3 +74,11 @@ test("manual backfill and migrate-only use the same index lock and release it af
     expect(again).toBeTruthy(); again.release();
   } finally {rmSync(root,{recursive:true,force:true});}
 });
+
+test("embed-backfill --help describes controls without opening an index or requiring a model", async () => {
+  const output:string[]=[];
+  await runEmbedBackfill(["--help"],{...DEFAULT_CONFIG,indexPath:"/nonexistent-parent/no-help.db"},text=>output.push(text));
+  expect(output.join("\n")).toContain("--migrate-only");
+  expect(output.join("\n")).toContain("--model");
+  expect(output.join("\n")).toContain("docker exec");
+});
