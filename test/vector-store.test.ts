@@ -52,3 +52,36 @@ test("binary decode rejects wrong dimensions and invalid values", () => {
   expect(() => decodeVector(new Uint8Array(4), 2)).toThrow();
   expect(() => decodeVector(new Uint8Array(new Float32Array([NaN]).buffer), 1)).toThrow();
 });
+
+test("corrupt binary falls back to valid legacy and backfill repairs it without inference", async () => {
+  const {embedBackfill,textCoverage}=await import("../src/indexer/embed-backfill");
+  const db=openIndex(":memory:");
+  try {
+    const p=provider("legacy"); indexSession(db,fixture(),{embeddingProvider:p});
+    db.run(`INSERT INTO message_embeddings(session_id,message_id,embedding,text,title,role,source,provider_kind,provider_model,dimension) VALUES (?,?,?,?,?,?,?,?,?,?)`,["chatgpt:test","m","[1,0]","archived words","T","user","chatgpt","test","legacy",2]);
+    db.run("UPDATE message_vectors SET embedding=?",[new Uint8Array(new Float32Array([NaN,0]).buffer)]);
+    expect(searchMessages(db,"unmatched",{embeddingProvider:p})).toHaveLength(1);
+    await embedBackfill(db,{provider:{...p,embed:()=>{throw new Error("reuse legacy");}},load:()=>0,sleep:async()=>{}});
+    expect(textCoverage(db,p).embedded).toBe(1);
+    expect(Array.from(decodeVector((db.query("SELECT embedding FROM message_vectors").get() as any).embedding,2))).toEqual([1,0]);
+  } finally {db.close();}
+});
+test("unknown provider dimensions reuse the fresh row among retained dimensions", async () => {
+  const {embedBackfill}=await import("../src/indexer/embed-backfill");
+  const db=openIndex(":memory:");
+  try {
+    const p={kind:"ollama",model:"same-model",dimensions:null,embed:()=>[1,0]};
+    indexSession(db,fixture("old"),{embeddingProvider:p});
+    indexSession(db,fixture(),{embeddingProvider:{...p,embed:()=>[1,0,0]}});
+    let calls=0; const opts={provider:{...p,embed:()=>{calls++;return [1,0,0];}},load:()=>0,sleep:async()=>{}};
+    await embedBackfill(db,opts); await embedBackfill(db,opts); expect(calls).toBe(0);
+  } finally {db.close();}
+});
+test("stale retained model rows cannot displace live results", () => {
+  const db=openIndex(":memory:"); const p=provider("old");
+  try {
+    for(let i=0;i<25;i++){const s=fixture(`stale ${i}`);s.id=`chatgpt:s${i}`;s.source_id=`s${i}`;indexSession(db,s,{embeddingProvider:p}); s.messages[0].text="changed";indexSession(db,s,{embeddingProvider:provider("new")});}
+    indexSession(db,fixture("live result"),{embeddingProvider:p});
+    expect(searchMessages(db,"unmatched",{embeddingProvider:p,limit:1})[0]?.session_id).toBe("chatgpt:test");
+  } finally {db.close();}
+});

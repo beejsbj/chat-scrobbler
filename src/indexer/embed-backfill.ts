@@ -3,7 +3,7 @@ import { loadavg } from "node:os";
 import { assetBlobPath } from "../store/assets";
 import type { EmbeddingProvider } from "./sqlite";
 import { assetCoverage, embedAsset } from "./asset-embeddings";
-import { migrateLegacyVectors, putTextVector, reusableTextVector, vectorScope } from "./vector-store";
+import { decodeVector, putTextVector, reusableTextVector, vectorScope } from "./vector-store";
 
 export interface BackfillReport {
   event: "progress" | "load_pause" | "complete";
@@ -17,7 +17,7 @@ export function textCoverage(db: Database, provider: EmbeddingProvider) {
     AND v.text=f.text AND v.title IS f.title AND length(v.embedding)=v.dimension*4)
     OR EXISTS(SELECT 1 FROM message_embeddings l WHERE l.session_id=f.session_id AND l.message_id=f.message_id
       AND l.provider_kind=? AND COALESCE(l.provider_model,'')=? AND (? IS NULL OR l.dimension=?)
-      AND l.text=f.text AND l.title IS f.title AND json_valid(l.embedding)
+      AND l.text=f.text AND l.title IS f.title AND CASE WHEN json_valid(l.embedding) THEN json_type(l.embedding)='array' AND json_array_length(l.embedding)=l.dimension ELSE 0 END
       AND NOT EXISTS(SELECT 1 FROM message_vectors v WHERE v.session_id=l.session_id AND v.message_id=l.message_id
         AND v.provider_kind=l.provider_kind AND v.provider_model=COALESCE(l.provider_model,'') AND v.dimension=l.dimension))),0) AS embedded FROM messages_fts f WHERE text<>''`)
     .get(...Array.from({length:2},()=>[provider.kind?.trim() || "unknown",provider.model?.trim() || "",provider.dimensions ?? null,provider.dimensions ?? null]).flat()) as {total:number;embedded:number};
@@ -47,25 +47,25 @@ export async function embedBackfill(db: Database, opts: {
     while (load() > threshold) { opts.progress?.(report("load_pause")); await sleep(5000); signal?.throwIfAborted(); }
   };
   const throttle = async () => { await sleep(1000/rate); await wait(); };
-  // Convert in short transactions; no network or inference under a SQLite lock.
-  // The legacy table is immutable from this version, so its rowid cursor is stable.
   opts.progress?.(report("progress"));
   await wait();
-  while (true) { const migrated=migrateLegacyVectors(db,{limit:100}); if (migrated.scanned<100) break; await sleep(50); await wait(); }
   let cursor = 0;
   while (attempted < limit) {
     const rows = db.query("SELECT rowid,* FROM messages_fts WHERE rowid>? AND text<>'' ORDER BY rowid LIMIT 100").all(cursor) as MessageRow[];
     if (!rows.length) break;
     for (const row of rows) {
       cursor=row.rowid; signal?.throwIfAborted();
-      if (reusableTextVector(db,row.session_id,row.message_id,row.text,row.title ?? null,provider)) { skipped++; continue; }
+      if (reusableTextVector(db,row.session_id,row.message_id,row.text,row.title ?? null,provider,true)) { skipped++; continue; }
       if (attempted >= limit) break;
-      await wait(); attempted++;
+      await wait();
+      const current=db.query("SELECT f.text,f.title FROM message_lookup k JOIN messages_fts f ON f.rowid=k.fts_rowid WHERE k.session_id=? AND k.message_id=?").get(row.session_id,row.message_id) as MessageRow|null;
+      if (!current || current.text!==row.text || (current.title ?? null)!==(row.title ?? null)) { stale++; continue; }
+      attempted++;
       try {
-        const embedding=await provider.embed(row.text,{kind:"document",title:row.title,signal});
+        const embedding=await provider.embed(row.text,{kind:"document",title:row.title,signal,beforeRequest:wait});
         signal?.throwIfAborted();
         const written=db.transaction(()=> {
-          const live=db.query("SELECT text,title FROM messages_fts WHERE session_id=? AND message_id=?").get(row.session_id,row.message_id) as MessageRow|null;
+          const live=db.query("SELECT f.text,f.title FROM message_lookup k JOIN messages_fts f ON f.rowid=k.fts_rowid WHERE k.session_id=? AND k.message_id=?").get(row.session_id,row.message_id) as MessageRow|null;
           if (!live || live.text!==row.text || (live.title ?? null)!==(row.title ?? null)) return false;
           putTextVector(db,{...row,...vectorScope(provider,embedding.length),embedding}); return true;
         })();
@@ -86,8 +86,8 @@ export async function embedBackfill(db: Database, opts: {
         if (attempted>=limit) break;
         shaCursor=sha256;
         const exists=db.query("SELECT embedding FROM asset_vectors WHERE sha256=? AND provider_kind=? AND provider_model=? AND dimension=? AND length(embedding)=dimension*4")
-          .get(sha256,scope.provider_kind,scope.provider_model,scope.dimension);
-        if (exists) { skipped++; continue; }
+          .get(sha256,scope.provider_kind,scope.provider_model,scope.dimension) as {embedding:Uint8Array}|null;
+        if (exists) { try {decodeVector(exists.embedding,scope.dimension);skipped++;continue;} catch { /* Rebuild corruption. */ } }
         await wait(); attempted++;
         try { const result=await embedAsset(db,sha256,assetBlobPath(opts.canonicalDir,sha256),provider,signal);
           if(result==="indexed") embedded++; else if(result==="skipped") skipped++; else stale++;

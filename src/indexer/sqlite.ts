@@ -1,4 +1,5 @@
-import { createAssetVectorTables, replaceAssetLinks, pruneUnownedAssetVectors, assetSemanticCandidates } from "./asset-embeddings";
+import { createMessageLookup } from "./message-lookup";
+import { createAssetVectorTables, replaceAssetLinks, linkedAssetHashes, pruneUnownedAssetVectors, assetSemanticCandidates } from "./asset-embeddings";
 import { cosine } from "./vector-math";
 // src/indexer/sqlite.ts
 import { embeddingFailed, embeddingStatus, embeddingSucceeded, validateEmbedding, type SemanticStatus } from "./embedding-status";
@@ -12,6 +13,8 @@ export interface EmbeddingContext {
   kind: "query" | "document";
   title?: string | null;
   signal?: AbortSignal;
+  /** Backfill load check before each provider HTTP request, including chunks. */
+  beforeRequest?: () => Promise<void>;
 }
 
 export interface MessageHit {
@@ -54,6 +57,7 @@ export function openIndex(path: string): Database {
     provider_kind TEXT, provider_model TEXT, dimension INTEGER,
     PRIMARY KEY (session_id, message_id));`);
   migrateMessageEmbeddings(db);
+  createMessageLookup(db);
   createVectorTables(db);
   createAssetVectorTables(db);
   return db;
@@ -110,10 +114,12 @@ export function deleteIndexedSession(db: Database, source: string, sourceId: str
   const sessionIds = rows.length > 0 ? rows.map((row) => row.id) : [`${source}:${sourceId}`];
   for (const sessionId of sessionIds) {
     db.run(`DELETE FROM messages_fts WHERE session_id = ?`, [sessionId]);
+    db.run("DELETE FROM message_lookup WHERE session_id=?", [sessionId]);
     db.run(`DELETE FROM message_embeddings WHERE session_id = ?`, [sessionId]);
     db.run(`DELETE FROM message_vectors WHERE session_id = ?`, [sessionId]);
+    const hashes=linkedAssetHashes(db,sessionId);
     db.run("DELETE FROM asset_embedding_links WHERE session_id=?", [sessionId]);
-    pruneUnownedAssetVectors(db);
+    pruneUnownedAssetVectors(db,hashes);
     db.run(`DELETE FROM sessions WHERE id = ?`, [sessionId]);
   }
   return { deleted: rows.length > 0, sessionIds };
@@ -278,12 +284,14 @@ function indexLiteralSession(db: Database, s: Session, opts: IndexSessionOptions
           VALUES (?,?,?,?,?,?,?)`,
     [s.id, s.source, s.source_id, s.title, s.created_at, s.updated_at, activeCount]);
   db.run(`DELETE FROM messages_fts WHERE session_id = ?`, [s.id]);
+  db.run("DELETE FROM message_lookup WHERE session_id=?", [s.id]);
   const stmt = db.prepare(
     `INSERT INTO messages_fts (text, message_id, session_id, role, created_at, source, title)
      VALUES (?,?,?,?,?,?,?)`);
   for (const m of s.messages) {
     if (!m.text) continue;
-    stmt.run(m.text, m.id, s.id, m.role, m.created_at, s.source, s.title);
+    const result = stmt.run(m.text, m.id, s.id, m.role, m.created_at, s.source, s.title);
+    db.run("INSERT OR REPLACE INTO message_lookup(session_id,message_id,fts_rowid) VALUES (?,?,?)", [s.id,m.id,result.lastInsertRowid]);
   }
   return true;
 }
@@ -464,38 +472,36 @@ function finalizeHits(merged: Map<string, RankedHit>, limit: number): MessageHit
 
 function semanticCandidates(db: Database, queryEmbedding: number[], metadata: EmbeddingMetadata, source: string | undefined, limit: number): SemanticRow[] {
   const kind = metadata.provider_kind, model = metadata.provider_model ?? "", dimension = metadata.dimension;
-  const sourceClause = source ? " AND source=?" : "";
-  const params = [kind, model, dimension, ...(source ? [source] : [])];
+  const sourceClause = source ? " AND f.source=?" : "";
+  const params = [kind,model,dimension,...(source ? [source] : [])];
   const ranked: SemanticRow[] = [];
-  const scans = [
-    db.query(`SELECT session_id,message_id,embedding,text,role,created_at,source,title FROM message_vectors
-      WHERE provider_kind=? AND provider_model=? AND dimension=?${sourceClause}`),
-    db.query(`SELECT session_id,message_id,embedding,text,role,created_at,source,title FROM message_embeddings l
-      WHERE provider_kind=? AND COALESCE(provider_model,'')=? AND dimension=?${sourceClause}
-      AND NOT EXISTS(SELECT 1 FROM message_vectors b WHERE b.session_id=l.session_id AND b.message_id=l.message_id
-        AND b.provider_kind=l.provider_kind AND b.provider_model=COALESCE(l.provider_model,'') AND b.dimension=l.dimension)`),
-  ];
-  for (let i = 0; i < scans.length; i++) for (const row of scans[i].iterate(...params) as Iterable<any>) {
+  const scans = ["message_vectors", "message_embeddings"].map((table,i)=>db.query(`
+    SELECT v.session_id,v.message_id,v.embedding,f.text,f.role,f.created_at,f.source,f.title
+    FROM ${table} v JOIN message_lookup k ON k.session_id=v.session_id AND k.message_id=v.message_id
+    JOIN messages_fts f ON f.rowid=k.fts_rowid
+    WHERE v.provider_kind=? AND COALESCE(v.provider_model,'')=? AND v.dimension=?${sourceClause}
+    AND v.text=f.text AND v.title IS f.title
+    ${i===0 ? "" : `AND NOT EXISTS(SELECT 1 FROM message_vectors b WHERE b.session_id=v.session_id AND b.message_id=v.message_id
+      AND b.provider_kind=v.provider_kind AND b.provider_model=COALESCE(v.provider_model,'') AND b.dimension=v.dimension
+      AND b.text=v.text AND b.title IS v.title)`}`));
+  const legacyFallback = db.query(`SELECT embedding FROM message_embeddings WHERE session_id=? AND message_id=?
+    AND provider_kind=? AND COALESCE(provider_model,'')=? AND dimension=? AND text=? AND title IS ?`);
+  for (let i=0;i<scans.length;i++) for (const row of scans[i].iterate(...params) as Iterable<any>) {
     let vector: ArrayLike<number>;
-    try { vector = i === 0 ? decodeVector(row.embedding, dimension) : parseEmbedding(row.embedding); } catch { continue; }
-    const similarity = cosine(queryEmbedding, vector);
-    if (similarity <= 0 || (ranked.length >= limit && similarity <= ranked[ranked.length - 1].similarity)) continue;
-    ranked.push({ ...row, similarity });
-    ranked.sort((a, b) => b.similarity - a.similarity);
-    if (ranked.length > limit) ranked.pop();
+    try { vector=i===0 ? decodeVector(row.embedding,dimension) : parseEmbedding(row.embedding); }
+    catch {
+      const legacy=legacyFallback.get(row.session_id,row.message_id,kind,model,dimension,row.text,row.title) as {embedding:string}|null;
+      if(!legacy) continue;
+      vector=parseEmbedding(legacy.embedding);
+    }
+    const similarity=cosine(queryEmbedding,vector);
+    if(similarity<=0 || ranked.length>=limit && similarity<=ranked[ranked.length-1].similarity) continue;
+    ranked.push({...row,similarity}); ranked.sort((a,b)=>b.similarity-a.similarity); if(ranked.length>limit) ranked.pop();
   }
-  const assetRows = assetSemanticCandidates(db, queryEmbedding, metadata, source, limit);
-  if (!ranked.length) return assetRows.sort((a,b)=>b.similarity-a.similarity).slice(0,limit);
-  // FTS metadata is unindexed: one scan returns text only for the top-K identities.
-  const values = ranked.map(() => "(?,?)").join(",");
-  const currentRows = db.query(`SELECT session_id, message_id, text, title FROM messages_fts
-    WHERE (session_id, message_id) IN (VALUES ${values})`)
-    .all(...ranked.flatMap(row => [row.session_id, row.message_id])) as Array<{ session_id: string; message_id: string; text: string; title: string | null }>;
-  const currentText = new Map(currentRows.map(row => [hitKey(row.session_id, row.message_id), row]));
-  const current = ranked.filter(row => { const live = currentText.get(hitKey(row.session_id, row.message_id)); return live?.text === row.text && (live.title ?? null) === (row.title ?? null); });
-  const unique = new Map<string, SemanticRow>();
-  for (const row of [...current,...assetRows].sort((a,b)=>b.similarity-a.similarity)) {
-    const key = hitKey(row.session_id,row.message_id); if (!unique.has(key)) unique.set(key,row);
+  const unique=new Map<string,SemanticRow>();
+  const assetRows=assetSemanticCandidates(db,queryEmbedding,metadata,source,limit);
+  for(const row of [...ranked,...assetRows].sort((a,b)=>b.similarity-a.similarity)) {
+    const key=hitKey(row.session_id,row.message_id); if(!unique.has(key)) unique.set(key,row);
   }
   return [...unique.values()].slice(0,limit);
 }
@@ -540,7 +546,9 @@ function syncEmbedding(provider: EmbeddingProvider, text: string, context: Embed
   if (result instanceof Promise) {
     throw new Error(`Embedding provider "${provider.kind ?? "unknown"}" is async; use indexSessionWithEmbeddings/searchMessagesWithEmbeddings`);
   }
-  return validateEmbedding(result);
+  const vector = validateEmbedding(result);
+  vectorScope(provider,vector.length);
+  return vector;
 }
 
 type EmbeddingAttempt = { vector: number[] | null; status: SemanticStatus };
@@ -559,6 +567,7 @@ function safeSyncEmbedding(provider: EmbeddingProvider, text: string, context: E
 async function safeAsyncEmbedding(provider: EmbeddingProvider, text: string, context: EmbeddingContext): Promise<EmbeddingAttempt> {
   try {
     const vector = validateEmbedding(await provider.embed(text, context));
+    vectorScope(provider,vector.length);
     embeddingSucceeded(provider);
     return { vector, status: embeddingStatus(provider) };
   } catch {

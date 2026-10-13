@@ -34,3 +34,23 @@ test("asset inference cannot resurrect deleted ownership", async () => {
     expect(db.query("SELECT * FROM asset_vectors").all()).toHaveLength(0);
   } finally { db.close(); }
 });
+
+test("backfill repairs finite-sized corrupt asset vectors and coverage excludes them", async () => {
+  const {embedBackfill}=await import("../src/indexer/embed-backfill"); const db=openIndex(":memory:");
+  try {
+    indexSession(db,session());await embedAsset(db,sha,"/tmp/synthetic",provider);
+    db.run("UPDATE asset_vectors SET embedding=?",[new Uint8Array(new Float32Array([NaN,0]).buffer)]);
+    expect(assetCoverage(db,provider)).toEqual({total:1,embedded:0});
+    expect(await embedBackfill(db,{provider,canonicalDir:"/synthetic/canonical/sessions",load:()=>0,sleep:async()=>{}})).toMatchObject({embedded:1,assets:{total:1,embedded:1}});
+    expect(searchMessages(db,"unmatched",{embeddingProvider:provider})).toHaveLength(1);
+  } finally {db.close();}
+});
+test("text-only updates do not scan or prune unrelated asset hashes", async () => {
+  const db=openIndex(":memory:");
+  try {
+    indexSession(db,session());await embedAsset(db,sha,"/tmp/synthetic",provider);
+    const orphan="b".repeat(64);db.run("INSERT INTO asset_vectors VALUES (?,?,?,?,?)",[orphan,"media","m",2,new Uint8Array(new Float32Array([1,0]).buffer)]);
+    indexSession(db,fixture("attachment removed"));
+    expect((db.query("SELECT sha256 FROM asset_vectors").all() as any[]).map(row=>row.sha256)).toEqual([orphan]);
+  } finally {db.close();}
+});

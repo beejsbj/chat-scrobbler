@@ -371,7 +371,7 @@ test("concurrent queries keep their own semantic status when another query recov
   } finally { db.close(); }
 });
 
-test("semantic search validates only its ranked candidate window against current text", () => {
+test("semantic search filters stale vectors before ranking live candidates", () => {
   const db = openIndex(":memory:");
   const provider: EmbeddingProvider = { kind: "rank-window", embed: () => [1, 0] };
   try {
@@ -380,9 +380,9 @@ test("semantic search validates only its ranked candidate window against current
       indexSession(db, mk(`stale-${i}`, "chatgpt", "After", "current content"));
     }
     indexSession(db, mk("outside-window", "chatgpt", "Live", "live content"), { embeddingProvider: provider });
-    expect(searchMessages(db, "unmatched", { embeddingProvider: provider, limit: 1 })).toEqual([]);
+    expect(searchMessages(db, "unmatched", { embeddingProvider: provider, limit: 1 })[0]?.message_id).toBe("outside-window-m1");
     indexSession(db, mk("stale-0", "chatgpt", "Before", "old content"));
-    expect(searchMessages(db, "unmatched", { embeddingProvider: provider, limit: 1 })[0]?.message_id).toBe("stale-0-m1");
+    expect(searchMessages(db, "unmatched", { embeddingProvider: provider, limit: 2 }).map(hit => hit.message_id)).toContain("stale-0-m1");
   } finally { db.close(); }
 });
 
@@ -421,4 +421,10 @@ test("message_count includes renderable active messages but excludes opaque-only
     expect(listSessions(db)[0].message_count).toBe(2);
     expect(searchMessages(db, "inactive")).toHaveLength(1);
   } finally { db.close(); }
+});
+
+test("wrong query dimensions preserve literal fallback and semantic status", async () => {
+  const {searchMessagesReport}=await import("../src/indexer/sqlite");const db=openIndex(":memory:");
+  try {indexSession(db,mk("a","chatgpt","T","literal words"));expect(await searchMessagesReport(db,"literal",{embeddingProvider:{kind:"test",model:"m",dimensions:2,embed:()=>[1,0,0]}})).toMatchObject({semantic:"unavailable",hits:[{session_id:"chatgpt:a",provenance:"literal"}]});}
+  finally {db.close();}
 });

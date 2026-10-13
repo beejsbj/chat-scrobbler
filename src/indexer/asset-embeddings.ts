@@ -14,12 +14,16 @@ export function createAssetVectorTables(db: Database): void {
     PRIMARY KEY(sha256,session_id,message_id))`);
   db.run(`CREATE INDEX IF NOT EXISTS asset_link_session ON asset_embedding_links(session_id)`);
 }
-export function pruneUnownedAssetVectors(db: Database): void {
-  db.run("DELETE FROM asset_vectors WHERE NOT EXISTS(SELECT 1 FROM asset_embedding_links l WHERE l.sha256=asset_vectors.sha256)");
+export function pruneUnownedAssetVectors(db: Database, hashes: string[]): void {
+  for (const sha of hashes) db.run("DELETE FROM asset_vectors WHERE sha256=? AND NOT EXISTS(SELECT 1 FROM asset_embedding_links l WHERE l.sha256=asset_vectors.sha256)", [sha]);
+}
+export function linkedAssetHashes(db: Database, sessionId: string): string[] {
+  return (db.query("SELECT DISTINCT sha256 FROM asset_embedding_links WHERE session_id=?").all(sessionId) as Array<{sha256:string}>).map(row=>row.sha256);
 }
 // No schema/parser edits: sha256 already exists on attachment blocks. Video is a
 // forward-compatible hook for BJS-547 and legacy file attachments with a video name.
 export function replaceAssetLinks(db: Database, session: Session): void {
+  const previous=linkedAssetHashes(db,session.id);
   db.run("DELETE FROM asset_embedding_links WHERE session_id=?", [session.id]);
   for (const message of session.messages) for (const block of message.blocks) {
     if (block.type !== "attachment" || !block.sha256 || !/^[a-f0-9]{64}$/.test(block.sha256)) continue;
@@ -30,13 +34,18 @@ export function replaceAssetLinks(db: Database, session: Session): void {
     db.run(`INSERT OR REPLACE INTO asset_embedding_links(sha256,session_id,message_id,media_type,text,role,created_at,source,title)
       VALUES (?,?,?,?,?,?,?,?,?)`, [block.sha256,session.id,message.id,media,message.text,message.role,message.created_at,session.source,session.title]);
   }
-  pruneUnownedAssetVectors(db);
+  pruneUnownedAssetVectors(db,previous);
 }
 export function assetCoverage(db: Database, provider: EmbeddingProvider) {
   const scope = vectorScope(provider);
-  return db.query(`SELECT COUNT(DISTINCT l.sha256) AS total, COUNT(DISTINCT v.sha256) AS embedded FROM asset_embedding_links l
-    LEFT JOIN asset_vectors v ON v.sha256=l.sha256 AND v.provider_kind=? AND v.provider_model=? AND v.dimension=? AND length(v.embedding)=v.dimension*4`)
-    .get(scope.provider_kind,scope.provider_model,scope.dimension) as { total: number; embedded: number };
+  const total=(db.query("SELECT COUNT(DISTINCT sha256) AS total FROM asset_embedding_links").get() as {total:number}).total;
+  let embedded=0;
+  for(const row of db.query(`SELECT embedding FROM asset_vectors v WHERE provider_kind=? AND provider_model=? AND dimension=?
+    AND EXISTS(SELECT 1 FROM asset_embedding_links l WHERE l.sha256=v.sha256)`)
+    .iterate(scope.provider_kind,scope.provider_model,scope.dimension) as Iterable<{embedding:Uint8Array}>) {
+    try { decodeVector(row.embedding,scope.dimension); embedded++; } catch { /* Coverage excludes corrupt derived data. */ }
+  }
+  return {total,embedded};
 }
 export async function embedAsset(db: Database, sha256: string, path: string, provider: EmbeddingProvider, signal?: AbortSignal): Promise<"indexed"|"skipped"|"stale"> {
   if (!provider.embedAsset) throw new Error("provider has no multimodal support");

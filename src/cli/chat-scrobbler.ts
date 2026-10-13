@@ -52,8 +52,8 @@ Recall workflow (the two steps an agent follows)
 Usage: chat-scrobbler <command> [options]
 
 Derived embeddings
-  embed-backfill --model <id> [--provider <kind>] [--limit <n>] [--rate <rps>]
-    Resume missing/changed text and assets; default 0.2 requests/s, pause above load 8
+  embed-backfill --model <id> [--provider <kind>] [--limit <n>] [--rate <items/s>]
+    Resume missing/changed text and assets; default 0.2 items/s, pause above load 8
     --load-threshold <n>    Host load ceiling
     --migrate-only         Convert legacy JSON to float32 without inference
 

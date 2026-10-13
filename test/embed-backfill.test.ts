@@ -39,3 +39,26 @@ test("invalid backfill controls fail before inference and cancellation interrupt
     expect(embedBackfill(db,{ provider:p,load:()=>9,signal:abort.signal,sleep:async()=>abort.abort() })).rejects.toThrow();
   } finally { db.close(); }
 });
+
+test("deleted queued messages never reach inference", async () => {
+  const {deleteIndexedSession}=await import("../src/indexer/sqlite");const db=openIndex(":memory:");
+  try {
+    const s=fixture();s.messages.push({...s.messages[0],id:"second",text:"must not send"});indexSession(db,s);
+    const calls:string[]=[];await embedBackfill(db,{provider:{...p,embed:async text=>{calls.push(text);deleteIndexedSession(db,"chatgpt","test");return[1,0];}},load:()=>0,sleep:async()=>{}});
+    expect(calls).toEqual(["archived words"]);
+  } finally {db.close();}
+});
+test("normal backfill limits work and leaves unrelated legacy models unconverted", async () => {
+  const db=openIndex(":memory:");
+  try {
+    indexSession(db,fixture());
+    for(let i=0;i<3;i++) db.run(`INSERT INTO message_embeddings(session_id,message_id,embedding,text,provider_kind,provider_model,dimension) VALUES (?,?,?,?,?,?,?)`,["old",`m${i}`,"[1,0]","old","test","another-model",2]);
+    await embedBackfill(db,{provider:p,limit:1,load:()=>0,sleep:async()=>{}});
+    expect(db.query("SELECT * FROM message_vectors WHERE provider_model='another-model'").all()).toHaveLength(0);
+  } finally {db.close();}
+});
+test("backfill rejects a provider's declared dimension mismatch", async () => {
+  const db=openIndex(":memory:");
+  try {indexSession(db,fixture());expect(await embedBackfill(db,{provider:{...p,embed:async()=>[1,0,0]},load:()=>0,sleep:async()=>{}})).toMatchObject({embedded:0,failed:1});expect(db.query("SELECT * FROM message_vectors").all()).toHaveLength(0);}
+  finally {db.close();}
+});
