@@ -115,10 +115,33 @@ test("EmbeddingGemma sends prefixed text with role and model to /v1/embeddings",
   });
   expect(JSON.parse(calls[1].init?.body as string)).toEqual({
     model: "gemma-test", input: "title: Recall | text: water filter notes",
-    input_format: "prefixed", role: "document",
+    input_format: "prefixed", role: "document", title: "Recall",
   });
   expect(JSON.parse(calls[2].init?.body as string).input).toBe("title: none | text: untitled notes");
+  expect(JSON.parse(calls[2].init?.body as string).title).toBe("none");
   expect(JSON.parse(calls[3].init?.body as string).input).toBe("title: none | text: null title notes");
+  expect(JSON.parse(calls[3].init?.body as string).title).toBe("none");
+});
+
+test("EmbeddingGemma supplies the exact document title when it contains prefix delimiters", async () => {
+  const provider = new EmbeddingGemmaProvider({ baseUrl: "http://embed.example:4320", model: "gemma-test" });
+  const title = "Recall | text: 旅 | text: notes";
+  const prefix = "title: Recall | text: 旅 | text: notes | text: ";
+  for (const text of ["actual | text: content\n", "🙂".repeat(3000) + " | text: ending"]) {
+    const calls = mockEmbeddingGemmaFetch();
+    await provider.embed(text, { kind: "document", title });
+    const chunks: string[] = [];
+    for (const call of calls) {
+      const body = JSON.parse(call.init?.body as string);
+      expect(body.title).toBe(title);
+      expect(body.role).toBe("document");
+      expect(body.input_format).toBe("prefixed");
+      expect(body.input.startsWith(prefix)).toBe(true);
+      chunks.push(body.input.slice(prefix.length));
+    }
+    expect(calls).toHaveLength(text === "actual | text: content\n" ? 1 : 2);
+    expect(chunks.join("") === text).toBe(true);
+  }
 });
 
 test("EmbeddingGemma sends image, audio, and video objects without text prefixes", async () => {
@@ -250,4 +273,199 @@ test("EmbeddingGemma times out text and media even with a caller signal", async 
   } finally {
     timeout.mockRestore();
   }
+});
+
+test("EmbeddingGemma batches 100 KiB Unicode and unbroken documents without losing content", async () => {
+  const provider = new EmbeddingGemmaProvider({ baseUrl: "http://embed.example:4320", model: "gemma-test" });
+  for (const text of ["🙂漢é".repeat(12000), "x".repeat(100 * 1024)]) {
+    const calls = mockEmbeddingGemmaFetch();
+    expect(Buffer.byteLength(text)).toBeGreaterThanOrEqual(100 * 1024);
+    await provider.embed(text, { kind: "document", title: "旅 🙂" });
+    expect(calls.length).toBeGreaterThan(1);
+    const chunks: string[] = [];
+    for (const call of calls) {
+      const body = JSON.parse(call.init?.body as string);
+      expect(body.model).toBe("gemma-test");
+      expect(body.role).toBe("document");
+      expect(body.input_format).toBe("prefixed");
+      expect(body.input.startsWith("title: 旅 🙂 | text: ")).toBe(true);
+      const chunk = body.input.slice("title: 旅 🙂 | text: ".length);
+      expect(Buffer.byteLength(chunk)).toBeLessThanOrEqual(8192);
+      expect(chunk.length).toBeGreaterThan(0);
+      expect(chunk).not.toContain("�");
+      chunks.push(chunk);
+    }
+    expect(chunks.join("") === text).toBe(true);
+  }
+});
+
+test("EmbeddingGemma prefers paragraph then word boundaries and retains whitespace", async () => {
+  const provider = new EmbeddingGemmaProvider({ baseUrl: "http://embed.example:4320", model: "gemma-test" });
+  const paragraph = "a".repeat(6000) + "\r\n \r\n";
+  const word = "b".repeat(7000) + " \t";
+  for (const [first, rest] of [[paragraph, "word ".repeat(1000)], [word, "c".repeat(4000)]]) {
+    const calls = mockEmbeddingGemmaFetch();
+    await provider.embed(first + rest);
+    expect(JSON.parse(calls[0].init?.body as string).input === "title: none | text: " + first).toBe(true);
+    const chunks = calls.map(call => JSON.parse(call.init?.body as string).input.slice("title: none | text: ".length));
+    expect(chunks.join("") === first + rest).toBe(true);
+  }
+});
+
+test("EmbeddingGemma normalizes pooled vectors weighted by body UTF-8 bytes", async () => {
+  let calls = 0;
+  globalThis.fetch = (async (_url: string | URL | Request, _init?: RequestInit) => {
+    const vector = new Array(768).fill(0);
+    vector[calls++] = 1;
+    return new Response(JSON.stringify({ data: [{ embedding: vector }] }));
+  }) as typeof fetch;
+  const provider = new EmbeddingGemmaProvider({ baseUrl: "http://embed.example:4320", model: "gemma-test" });
+  // 8192 bytes of accented text, then 2048 bytes of emoji: weights are 4:1.
+  const vector = await provider.embed("é".repeat(4096) + "🙂".repeat(512), { kind: "document", title: "Recall" });
+  expect(calls).toBe(2);
+  expect(vector[0]).toBeCloseTo(4 / Math.sqrt(17), 12);
+  expect(vector[1]).toBeCloseTo(1 / Math.sqrt(17), 12);
+  expect(vector.slice(2)).toEqual(new Array(766).fill(0));
+  expect(Math.hypot(...vector)).toBeCloseTo(1, 12);
+});
+
+test("EmbeddingGemma preserves a single request vector through the 8 KiB body limit", async () => {
+  const provider = new EmbeddingGemmaProvider({ baseUrl: "http://embed.example:4320", model: "gemma-test" });
+  for (const text of ["", "notes", "🙂".repeat(2048)]) {
+    for (const vector of [new Array(768).fill(0), new Array(768).fill(0.25)]) {
+      const calls = mockEmbeddingGemmaFetch({ data: [{ embedding: vector }] });
+      await expect(provider.embed(text)).resolves.toEqual(vector);
+      expect(calls).toHaveLength(1);
+      expect(JSON.parse(calls[0].init?.body as string).input === "title: none | text: " + text).toBe(true);
+    }
+  }
+  const zero = new Array(768).fill(0);
+  mockEmbeddingGemmaFetch({ data: [{ embedding: zero }] });
+  await expect(provider.embed("x".repeat(9000))).resolves.toEqual(zero);
+});
+
+test("EmbeddingGemma waits for each document response before issuing the next request", async () => {
+  let calls = 0;
+  let active = 0;
+  let maxActive = 0;
+  let releaseFirst!: () => void;
+  const first = new Promise<void>(resolve => { releaseFirst = resolve; });
+  globalThis.fetch = (async (_url: string | URL | Request, _init?: RequestInit) => {
+    calls++;
+    active++;
+    maxActive = Math.max(maxActive, active);
+    if (calls === 1) await first;
+    return {
+      ok: true,
+      async json() {
+        await Promise.resolve();
+        active--;
+        return { data: [{ embedding: new Array(768).fill(0.25) }] };
+      },
+    } as Response;
+  }) as typeof fetch;
+  const provider = new EmbeddingGemmaProvider({ baseUrl: "http://embed.example:4320", model: "gemma-test" });
+  const pending = provider.embed("x".repeat(100 * 1024));
+  await Promise.resolve();
+  expect(calls).toBe(1);
+  releaseFirst();
+  await pending;
+  expect(calls).toBe(13);
+  expect(maxActive).toBe(1);
+  expect(active).toBe(0);
+});
+
+test("EmbeddingGemma caller abort stops later batches even if the response succeeds", async () => {
+  const controller = new AbortController();
+  const failure = new Error("cancel remaining batches");
+  let calls = 0;
+  globalThis.fetch = (async (_url: string | URL | Request, _init?: RequestInit) => {
+    calls++;
+    controller.abort(failure);
+    return new Response(JSON.stringify({ data: [{ embedding: new Array(768).fill(0.25) }] }));
+  }) as typeof fetch;
+  const provider = new EmbeddingGemmaProvider({ baseUrl: "http://embed.example:4320", model: "gemma-test" });
+  await expect(provider.embed("x".repeat(100 * 1024), {
+    kind: "document", signal: controller.signal,
+  })).rejects.toBe(failure);
+  expect(calls).toBe(1);
+  await expect(provider.embed("more notes", { kind: "document", signal: controller.signal })).rejects.toBe(failure);
+  expect(calls).toBe(1);
+});
+
+test("EmbeddingGemma awaits the load hook before every document batch request", async () => {
+  const calls = mockEmbeddingGemmaFetch();
+  let hooks = 0;
+  let releaseFirst!: () => void;
+  let releaseSecond!: () => void;
+  let startSecond!: () => void;
+  const first = new Promise<void>(resolve => { releaseFirst = resolve; });
+  const second = new Promise<void>(resolve => { releaseSecond = resolve; });
+  const secondStarted = new Promise<void>(resolve => { startSecond = resolve; });
+  const context = {
+    kind: "document" as const,
+    async beforeRequest() {
+      hooks++;
+      if (hooks === 1) await first;
+      else {
+        startSecond();
+        await second;
+      }
+    },
+  };
+  const provider = new EmbeddingGemmaProvider({ baseUrl: "http://embed.example:4320", model: "gemma-test" });
+  const pending = provider.embed("x".repeat(9000), context);
+  await Promise.resolve();
+  expect(hooks).toBe(1);
+  expect(calls).toHaveLength(0);
+  releaseFirst();
+  await secondStarted;
+  expect(hooks).toBe(2);
+  expect(calls).toHaveLength(1);
+  releaseSecond();
+  await pending;
+  expect(calls).toHaveLength(2);
+});
+
+test("EmbeddingGemma load hook rejection prevents text and media fetching", async () => {
+  const calls = mockEmbeddingGemmaFetch();
+  const failure = new Error("load check failed");
+  const context = { kind: "document" as const, async beforeRequest() { throw failure; } };
+  const provider = new EmbeddingGemmaProvider({ baseUrl: "http://embed.example:4320", model: "gemma-test" });
+  await expect(provider.embed("notes", context)).rejects.toBe(failure);
+  await expect(provider.embedAsset({ type: "image", path: "/archive/image.png" }, context)).rejects.toBe(failure);
+  expect(calls).toHaveLength(0);
+});
+
+test("EmbeddingGemma stops remaining batches when a later load check rejects", async () => {
+  const calls = mockEmbeddingGemmaFetch();
+  const failure = new Error("stop remaining batches");
+  let hooks = 0;
+  const context = {
+    kind: "document" as const,
+    async beforeRequest() { if (++hooks === 2) throw failure; },
+  };
+  const provider = new EmbeddingGemmaProvider({ baseUrl: "http://embed.example:4320", model: "gemma-test" });
+  await expect(provider.embed("x".repeat(100 * 1024), context)).rejects.toBe(failure);
+  expect(hooks).toBe(2);
+  expect(calls).toHaveLength(1);
+});
+
+test("EmbeddingGemma checks cancellation after awaiting the load hook", async () => {
+  const calls = mockEmbeddingGemmaFetch();
+  const controller = new AbortController();
+  const failure = new Error("canceled during load check");
+  let hooks = 0;
+  const context = {
+    kind: "document" as const, signal: controller.signal,
+    async beforeRequest() { hooks++; controller.abort(failure); },
+  };
+  const provider = new EmbeddingGemmaProvider({ baseUrl: "http://embed.example:4320", model: "gemma-test" });
+  await expect(provider.embed("notes", context)).rejects.toBe(failure);
+  expect(hooks).toBe(1);
+  expect(calls).toHaveLength(0);
+  // Even an already canceled context runs its hook before the signal check.
+  await expect(provider.embed("notes", context)).rejects.toBe(failure);
+  expect(hooks).toBe(2);
+  expect(calls).toHaveLength(0);
 });
