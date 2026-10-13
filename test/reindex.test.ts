@@ -221,7 +221,7 @@ test("unify refuses empty-mount pruning and large deletion fractions unless forc
   } finally { db.close(); logs.mockRestore(); rmSync(dir, { recursive: true, force: true }); }
 });
 
-test("unify opens its embedding circuit after consecutive failures and finishes literal indexing", async () => {
+test("unify opens its embedding circuit after consecutive failed sessions and finishes literal indexing", async () => {
   const { spyOn } = await import("bun:test");
   const logs = spyOn(console, "error").mockImplementation(() => {});
   const dir = mkdtempSync(join(tmpdir(), "unify-circuit-"));
@@ -230,7 +230,8 @@ test("unify opens its embedding circuit after consecutive failures and finishes 
   try {
     for (let i = 0; i < 6; i++) writeSession(opts.canonicalDir, { ...sessionA, id: `chatgpt:circuit-${i}`, source_id: `circuit-${i}` });
     expect(await runUnify({ ...opts, embeddingFailureLimit: 2, embeddingProvider: { async embed(): Promise<number[]> { calls++; throw new Error("offline"); } } })).toBe(6);
-    expect(calls).toBe(2);
+    // Both messages are tried independently in each of the two failed sessions.
+    expect(calls).toBe(4);
     expect(JSON.stringify(logs.mock.calls)).toContain("unify_embedding_circuit_open");
     const db = openIndex(opts.indexPath);
     try { expect(searchMessages(db, "photosynthesis")).toHaveLength(12); } finally { db.close(); }

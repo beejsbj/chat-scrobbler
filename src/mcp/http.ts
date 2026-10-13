@@ -92,7 +92,9 @@ export async function startHttpServer(
     envVarName: "MCP_AUTH_TOKEN",
     serviceName: "MCP HTTP server",
   });
-  const database=openIndex(opts.indexPath);
+  // Keep startup independent of index readiness; authorized MCP work opens one
+  // service-owned connection lazily, then reuses it across stateless transports.
+  let database:ReturnType<typeof openIndex>|undefined;
   const server = Bun.serve({
     hostname: bindHost,
     port: opts.port,
@@ -130,7 +132,7 @@ export async function startHttpServer(
         indexPath: opts.indexPath,
         canonicalDir: opts.canonicalDir,
         embeddingProvider: opts.embeddingProvider ?? null,
-        database,
+        database: database ??= openIndex(opts.indexPath),
       });
 
       await mcpServer.connect(transport);
@@ -147,7 +149,7 @@ export async function startHttpServer(
   const stop=server.stop.bind(server);
   server.stop=async closeActiveConnections=> {
     await stop(closeActiveConnections);
-    database.close();
+    database?.close();
   };
 
   const authNote = mcpAuthToken ? " (auth token required)" : "";
