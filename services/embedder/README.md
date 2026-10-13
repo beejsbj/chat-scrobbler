@@ -251,33 +251,87 @@ close. The first unload deliberately precedes all media work. It attempts no
 trim operation that would hide allocator retention. OOM, high-load abort, timeout,
 or ineffective user cgroup caps mean the experiment is incomplete.
 
-**Current state, 2026-10-13:** 29 fake-engine and synthetic ffmpeg tests pass under
-existing Python 3.12; installed API source audit passes; the compose overlay
-resolves with the expected resource limits and unchanged provider. The guarded
-measurement was attempted at one-minute load 7.73. Native load completed in
-2.04 seconds (RSS 249216 KiB), and lazy load plus short text in 3.22 seconds
-(RSS 351832 KiB). Baseline RSS was 16364 KiB. The watchdog aborted at load 9.11,
-exit 75, after 4.283 seconds. Systemd reported a cgroup memory peak of 419.5M
-and zero swap. These are contended, page-cache-warm observations, not latency
-promises. The partial receipt is in `measurement-2026-10-13.json`.
+## Current verification, 2026-10-13
 
-A second, **idle-first** attempt completed text, first idle unload, 1/5/15-second
-settling, reload and text before the watchdog aborted during media at one-minute
-load 8.21 (exit 75, runtime 26.233 seconds). Baseline RSS was 16252 KiB (15.9 MiB),
-loaded text 351676 KiB (343.4 MiB), immediate unload 203404 KiB (198.6 MiB), and
-15 seconds after unload 203132 KiB (198.4 MiB). Immediate close released
-148272 KiB (144.8 MiB), but RSS retained 182.5 MiB above baseline after 15 seconds.
-Reload plus text completed in 2.84 seconds, at 375484 KiB RSS (366.7 MiB).
+The local Python 3.12 suite passes **42 tests, zero failures, zero skips** in
+6.804 seconds. Docker Compose v5.0.2 is available locally; the main deployment
+plan is tested with its profile disabled, enabled, and with explicit Coolify
+provider/model overrides. Native load/inference watchdog, a hung idle close in
+the HTTP polling thread, watchdog lifecycle cleanup, query priority, FIFO within
+a priority, queue saturation/expiry, idle close failures, and model-fetch hash
+verification/cache reuse are covered. Unit tests use fake engines and synthetic
+ffmpeg inputs, never the model. In environments without Docker the two rendered
+Compose tests skip. See [Python receipt](verification/python-review-2026-10-13.json)
+and [native API audit](verification/native-api-review-2026-10-13.json).
 
-**Idle unload and reload are now measured for short text.** Close releases some
-RSS; it does not return this process to baseline. One reload cannot establish
-long-term allocator growth. The second experiment's systemd summary reported a
-memory peak of 288.0K, inconsistent with its recorded cgroup/RSS samples; that
-summary is explicitly excluded as a valid peak. See
-`measurement-idle-first-2026-10-13.json` for the recorded samples.
+### Native parity and eight frames
 
-Eight-frame native peak, completed native media inference, the second unload
-following media, and Ubuntu image/venv ABI execution remain **unmeasured**. The
-instrumented script retains those stages for a future quiet window. No further
-model runs were attempted. No Docker build/start or deployment has been performed,
-Changes are committed with the implementation handoff.
+The finite probe reuses the exact existing spike model revision, Python runtime,
+compilation cache, synthetic fixtures, and NPZ references. No model download or
+production data access occurs. Run from the repo root:
+
+```sh
+python3 -B -m services.embedder.native_check
+```
+
+It uses the same transient `MemoryMax=2G`, `MemorySwapMax=0`, `CPUQuota=200%`,
+`Nice=19`, `RuntimeMaxSec=300` and effective-cap checks as `measure`. A watchdog
+exits 75 if one-minute load exceeds 8. `--video-only` and `--eight-only` resume
+unfinished cases without repeating completed parity calls after a guarded abort.
+
+Each completed case ran once. Three attempts were stopped by the load guard,
+then the remaining case completed in a quiet window. Text/image/audio and the
+exact original four video frames match the spike's `vec_a_a_text.npz` and
+`vec_a_a_media.npz`:
+
+| Case | Seconds | Cosine vs spike | Maximum absolute vector delta |
+| --- | ---: | ---: | ---: |
+| Text query, including lazy load | 1.038592 | 1.0 | 0.0 |
+| Image | 10.734381 | 1.0000001192092896 | 2.9802322387695312e-08 |
+| Audio | 15.017243 | 1.0 | 1.1920928955078125e-07 |
+| Exact four spike video frames, including lazy load | 41.906265 | 1.0000001192092896 | 0.0 |
+
+Cosines slightly above 1 are float32 rounding. Single images/audio use the bare
+native `ImageFile`/`AudioFile`, matching the spike; multiple frames use a list.
+All returned vectors have 768 finite entries and unit norm within float tolerance.
+
+The service decoded a synthetic ten-second video into **eight frames** and
+completed inference in **91.826558 seconds**, including lazy load and decoding.
+It ran in its own fresh process after previous aborted attempts, so this is not
+a peak after a completed text/image/audio workload in the same process.
+
+| Eight-frame observation | Exact value |
+| --- | ---: |
+| Baseline RSS | 16,324 KiB |
+| Process peak RSS (`ru_maxrss`) | **1,486,800 KiB (1.418 GiB)** |
+| RSS after inference | 1,479,648 KiB |
+| Cgroup peak (`memory.peak`) | **1,134,075,904 bytes** |
+| RSS immediately after native idle close | 218,848 KiB |
+| RSS 15 seconds after close | 218,848 KiB |
+| Retained RSS above baseline after close | 202,524 KiB |
+| Transient unit runtime / CPU time | 108.604 s / 178.372 s |
+| Swap / exit status | 0 bytes / 0 |
+
+Retain the maximum of eight frames: RSS and cgroup peaks are below the 1.8 GiB
+"near limit" threshold. Idle close released 1,260,800 KiB relative to the
+post-inference sample, while retaining memory above baseline. One clip and one
+close do not establish worst-case asset memory or long-term allocator growth.
+Latency is measured on a contended, page-cache-warm host, not a promise.
+
+The systemd summary reported a 1.3M memory peak, inconsistent with recorded RSS
+and cgroup samples. Use the process/cgroup measurements above; that summary is
+excluded as a valid peak. The full standalone [native receipt](verification/native-review-2026-10-13.json)
+contains every attempt's samples and load-guard exits. All four transient units
+are inactive; no native worker remains running. The production image build and
+ABI execution remain unverified. No deployment was performed.
+
+### Historical text-unload measurements
+
+The earlier `measurement-2026-10-13.json` and
+`measurement-idle-first-2026-10-13.json` record guarded experiments preceding
+these review changes. The idle-first experiment completed short text, close,
+15-second settling and reload before a high-load abort during media. Its text RSS
+was 351,676 KiB, settling at 203,132 KiB after close; reload plus text took
+2.844790 seconds. These are historical receipts, not current deployment or
+multimodal verification claims. Current image construction and Compose policy
+are described above.
