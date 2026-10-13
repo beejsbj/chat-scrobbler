@@ -38,7 +38,7 @@ function fill(db:Database,cache:Cache,scope:VectorScope,session?:string):void {
       norm=Math.sqrt(norm);
       const index=cache.free.pop() ?? cache.entries.length;
       if((index+1)*scope.dimension>cache.matrix.length) {
-        const matrix=new Float32Array(Math.max(scope.dimension*1024,cache.matrix.length*2));
+        const matrix=new Float32Array(cache.matrix.length+scope.dimension*1024);
         matrix.set(cache.matrix);cache.matrix=matrix;
       }
       const offset=index*scope.dimension;
@@ -60,7 +60,7 @@ function load(db:Database,scope:VectorScope):Cache {
       SELECT session_id,message_id FROM message_vectors WHERE provider_kind=? AND provider_model=? AND dimension=?
       UNION SELECT session_id,message_id FROM message_embeddings WHERE provider_kind=? AND COALESCE(provider_model,'')=? AND dimension=?)`)
       .get(scope.provider_kind,scope.provider_model,scope.dimension,scope.provider_kind,scope.provider_model,scope.dimension) as {n:number}).n;
-    cache={scope:key,revision,dimension:scope.dimension,...state,matrix:new Float32Array(Math.max(count,1024)*scope.dimension),entries:[],identities:new Map(),free:[]};
+    cache={scope:key,revision,dimension:scope.dimension,...state,matrix:new Float32Array(Math.max(1,Math.ceil(count/1024))*1024*scope.dimension),entries:[],identities:new Map(),free:[]};
     fill(db,cache,scope);active.set(db,cache);
   } else if(revision!==cache.revision) {
     const dirty=new Set((db.query("SELECT session_id FROM search_changes WHERE revision>?").all(cache.revision) as Array<{session_id:string}>).map(r=>r.session_id));
