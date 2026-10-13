@@ -320,3 +320,67 @@ test("deleteIndexedSession removes session, FTS, and embedding rows for a captur
   ).get("chatgpt:a") as { count: number };
   expect(embeddingRows.count).toBe(0);
 });
+
+test("failed sync and async re-embedding preserve previous vectors and update literal text", async () => {
+  for (const asyncMode of [false, true]) {
+    const db = openIndex(":memory:");
+    let failing = false;
+    const provider: EmbeddingProvider = { kind: "preserve-test", embed: () => { if (failing) throw new Error("secret-provider-response"); return [1, 0]; } };
+    try {
+      const s = mk("a", "chatgpt", "Before", "old text");
+      indexSession(db, s, { embeddingProvider: provider });
+      const before = db.query("SELECT * FROM message_embeddings").all();
+      failing = true;
+      const changed = mk("a", "chatgpt", "After", "current text");
+      if (asyncMode) await (await import("../src/indexer/sqlite")).indexSessionWithEmbeddings(db, changed, { embeddingProvider: provider });
+      else indexSession(db, changed, { embeddingProvider: provider });
+      expect(db.query("SELECT * FROM message_embeddings").all()).toEqual(before);
+      expect(searchMessages(db, "current")).toHaveLength(1);
+      failing = false;
+      expect(searchMessages(db, "unmatched-query", { embeddingProvider: provider })).toEqual([]);
+    } finally { db.close(); }
+  }
+});
+
+test("file indexes enable WAL and a busy timeout on every open", () => {
+  const root = mkdtempSync(join(tmpdir(), "wal-index-"));
+  try {
+    for (let i = 0; i < 2; i++) {
+      const db = openIndex(join(root, "index.db"));
+      expect(db.query("PRAGMA journal_mode").get()).toEqual({ journal_mode: "wal" });
+      expect(db.query("PRAGMA busy_timeout").get()).toEqual({ timeout: 5000 });
+      db.close();
+    }
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("concurrent queries keep their own semantic status when another query recovers", async () => {
+  const { searchMessagesReport } = await import("../src/indexer/sqlite");
+  const db = openIndex(":memory:");
+  let fail!: (reason: unknown) => void;
+  let succeed!: (vector: number[]) => void;
+  const provider: EmbeddingProvider = { kind: "concurrent-query", embed(text) { return new Promise<number[]>((resolve, reject) => { if (text === "failed") fail = reject; else succeed = resolve; }); } };
+  try {
+    const failed = searchMessagesReport(db, "failed", { embeddingProvider: provider });
+    const recovered = searchMessagesReport(db, "recovered", { embeddingProvider: provider });
+    fail(new Error("offline"));
+    succeed([1, 0]);
+    expect(await failed).toMatchObject({ semantic: "unavailable", reason: "embedding_query_failed" });
+    expect(await recovered).toMatchObject({ semantic: "available" });
+  } finally { db.close(); }
+});
+
+test("semantic search validates only its ranked candidate window against current text", () => {
+  const db = openIndex(":memory:");
+  const provider: EmbeddingProvider = { kind: "rank-window", embed: () => [1, 0] };
+  try {
+    for (let i = 0; i < 20; i++) {
+      indexSession(db, mk(`stale-${i}`, "chatgpt", "Before", "old content"), { embeddingProvider: provider });
+      indexSession(db, mk(`stale-${i}`, "chatgpt", "After", "current content"));
+    }
+    indexSession(db, mk("outside-window", "chatgpt", "Live", "live content"), { embeddingProvider: provider });
+    expect(searchMessages(db, "unmatched", { embeddingProvider: provider, limit: 1 })).toEqual([]);
+    indexSession(db, mk("stale-0", "chatgpt", "After", "old content"));
+    expect(searchMessages(db, "unmatched", { embeddingProvider: provider, limit: 1 })[0]?.message_id).toBe("stale-0-m1");
+  } finally { db.close(); }
+});

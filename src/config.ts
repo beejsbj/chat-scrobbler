@@ -14,7 +14,7 @@ import { join } from "node:path";
 import { DEFAULT_INGEST_BASE_URL } from "../packages/shared/src/config";
 
 export interface ChatHistoryConfig {
-  /** Canonical session store (source of truth). One JSON file per session. */
+  /** Derived canonical session store. One JSON file per session. */
   canonicalDir: string;
   /** Rebuildable SQLite FTS index. */
   indexPath: string;

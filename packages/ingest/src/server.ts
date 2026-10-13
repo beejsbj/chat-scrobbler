@@ -1,7 +1,9 @@
+import { cachedIngestHealth } from "./health";
 import { Database } from "bun:sqlite";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { foldCaptureIntoSpineWithEmbeddings, type SpineResult } from "./pipeline";
+import { recordAssetFailures } from "./asset-failures";
 import { conversationStatuses } from "./status";
 import {
   ASSET_INGEST_PATH,
@@ -14,7 +16,10 @@ import {
 } from "../../shared/src";
 import { deleteIndexedSession, openIndex } from "../../../src/indexer/sqlite";
 import { MAX_ASSET_BYTES, storeCanonicalAsset } from "../../../src/store/assets";
-import { deleteSession } from "../../../src/store/sessions";
+import { captureJsonEntries } from "../../../src/store/raw-json";
+import { rawDirForCanonicalDir, storeRawCapture } from "../../../src/store/raw";
+import { deleteSessionArchive } from "../../../src/store/delete";
+import { isSessionDeleted } from "../../../src/store/tombstones";
 import type { EmbeddingProvider } from "../../../src/indexer/sqlite";
 
 export interface IngestServerOptions {
@@ -33,6 +38,7 @@ export interface IngestServerOptions {
    */
   canonicalDir?: string;
   indexPath?: string;
+  rawDir?: string;
   embeddingProvider?: EmbeddingProvider | null;
 }
 
@@ -40,6 +46,7 @@ export interface IngestResponse {
   ok: true;
   count: number;
   spine: SpineResult[];
+  skipped_deleted: Array<{ source: ProviderSource; source_id: string }>;
 }
 
 export interface AssetUploadResponse {
@@ -55,7 +62,7 @@ export interface DeleteCaptureResponse {
   source: ProviderSource;
   source_id: string;
   local_only: true;
-  canonical: ReturnType<typeof deleteSession>;
+  canonical: ReturnType<typeof deleteSessionArchive>;
   index: ReturnType<typeof deleteIndexedSession>;
 }
 
@@ -92,7 +99,12 @@ export async function handleIngestRequest(req: Request, opts: IngestServerOption
   // GET /health is always unauthenticated -- used for local health checks and
   // Tailscale load-balancer probes that cannot easily set bearer headers.
   if (req.method === "GET" && url.pathname === HEALTH_PATH) {
-    return json({ ok: true, service: "chat-scrobbler-ingest" });
+    return json({ ok: true, service: "chat-scrobbler-ingest", status: "alive" });
+  }
+  if (req.method === "GET" && url.pathname === `${HEALTH_PATH}/deep`) {
+    if (!opts.ingestToken || req.headers.get("authorization") !== `Bearer ${opts.ingestToken}`) return json({ ok: false, error: "Unauthorized" }, 401);
+    const health = await cachedIngestHealth(opts);
+    return json(health, health.ok ? 200 : 503);
   }
 
   const isCapture = req.method === "POST" && url.pathname === CAPTURE_INGEST_PATH;
@@ -118,7 +130,7 @@ export async function handleIngestRequest(req: Request, opts: IngestServerOption
     try {
       const source = readSource(url.searchParams.get("source"));
       const sourceId = requiredParam(url, "source_id");
-      const canonical = deleteSession(fat.canonicalDir, source, sourceId);
+      const canonical = deleteSessionArchive(fat.canonicalDir, source, sourceId, opts.rawDir);
       const index = deleteIndexedSession(indexFor(fat.indexPath), source, sourceId);
       return json({
         ok: true,
@@ -138,6 +150,7 @@ export async function handleIngestRequest(req: Request, opts: IngestServerOption
     try {
       const source = readSource(url.searchParams.get("source"));
       const sourceId = requiredParam(url, "source_id");
+      if (isSessionDeleted(fat.canonicalDir, source, sourceId)) return json({ ok: false, error: "session was deleted" }, 410);
       const pointer = requiredParam(url, "pointer");
       const filename = url.searchParams.get("filename");
       const contentType = req.headers.get("content-type") ?? url.searchParams.get("content_type");
@@ -152,6 +165,8 @@ export async function handleIngestRequest(req: Request, opts: IngestServerOption
         sourceId,
         pointer,
         filename,
+        messageId: url.searchParams.get("message_id"),
+        originalUrl: url.searchParams.get("original_url"),
         contentType,
         bytes,
       });
@@ -168,27 +183,49 @@ export async function handleIngestRequest(req: Request, opts: IngestServerOption
   if (isStatus) {
     if (!fat) return json({ ok: false, error: "status endpoint requires canonicalDir + indexPath" }, 400);
     try {
-      const body = await req.json() as { source?: string; conversations?: Array<{ id: string; updated_at?: string | null }> };
+      const body = await req.json() as { source?: string; asset_failures?: unknown; conversations?: Array<{ id: string; updated_at?: string | null }> };
       if (typeof body.source !== "string" || !Array.isArray(body.conversations)) {
         return json({ ok: false, error: "status requires { source, conversations[] }" }, 400);
       }
-      const statuses = conversationStatuses(indexFor(fat.indexPath), body.source, body.conversations);
-      return json({ ok: true, statuses });
+      const source = readSource(body.source);
+      const count = recordAssetFailures(fat.indexPath, source, body.asset_failures);
+      const statuses = conversationStatuses(indexFor(fat.indexPath), source, body.conversations);
+      return json({ ok: true, statuses, ...(body.asset_failures === undefined ? {} : { asset_failures: count }) });
     } catch (error) {
       return json({ ok: false, error: error instanceof Error ? error.message : String(error) }, 400);
     }
   }
 
   try {
-    const body = await req.json();
-    const captures = toCaptureArray(body);
+    const serialized = await req.text();
+    const body = JSON.parse(serialized);
+    const incoming = toCaptureArray(body);
+    const entries = captureJsonEntries(serialized);
+    const skipped_deleted: IngestResponse["skipped_deleted"] = [];
+    const accepted = incoming.flatMap((capture, i) => {
+      if (opts.canonicalDir && isSessionDeleted(opts.canonicalDir, capture.source, capture.source_id)) {
+        skipped_deleted.push({ source: capture.source, source_id: capture.source_id });
+        return [];
+      }
+      return [{ capture, serialized: entries[i] }];
+    });
+    const captures = accepted.map(entry => entry.capture);
+    const rawDir = opts.rawDir ?? (opts.canonicalDir ? rawDirForCanonicalDir(opts.canonicalDir) : null);
+    if (!rawDir) return json({ ok: false, error: "raw store is not configured" }, 503);
+    let rawRefs: string[];
+    try { rawRefs = captures.map((capture, i) => storeRawCapture(rawDir, capture, accepted[i].serialized)); }
+    catch {
+      console.error(JSON.stringify({ event: "raw_capture_store_failed", reason: "raw_store_write_failed" }));
+      return json({ ok: false, error: "raw_store_write_failed" }, 503);
+    }
     const spine: SpineResult[] = [];
-    if (fat) {
+    if (fat && captures.length) {
       const db = indexFor(fat.indexPath);
-      for (const capture of captures) {
+      for (const [i, capture] of captures.entries()) {
         try {
           spine.push(...await foldCaptureIntoSpineWithEmbeddings(capture, {
             canonicalDir: fat.canonicalDir,
+            rawRef: rawRefs[i],
             db,
             embeddingProvider: opts.embeddingProvider ?? null,
           }));
@@ -198,7 +235,7 @@ export async function handleIngestRequest(req: Request, opts: IngestServerOption
         }
       }
     }
-    return json({ ok: true, count: captures.length, spine } satisfies IngestResponse);
+    return json({ ok: true, count: captures.length, spine, skipped_deleted } satisfies IngestResponse);
   } catch (error) {
     return json({ ok: false, error: error instanceof Error ? error.message : String(error) }, 400);
   }

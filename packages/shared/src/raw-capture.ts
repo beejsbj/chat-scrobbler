@@ -63,12 +63,14 @@ export function assertRawCapture(value: unknown): asserts value is RawCapture {
   if (!isProviderSource(value.source)) throw new Error("Raw capture source is invalid");
   if (value.capture_method !== "api") throw new Error("Raw capture method must be api");
   if (value.schema_version !== RAW_CAPTURE_SCHEMA_VERSION) throw new Error("Raw capture schema version is invalid");
+  if (typeof value.fetched_at === "string" && value.fetched_at.length > 64) throw new Error("Raw capture fetched_at exceeds 64 characters");
   if (typeof value.fetched_at !== "string" || !isIsoDate(value.fetched_at)) {
     throw new Error("Raw capture fetched_at must be an ISO timestamp");
   }
   if (typeof value.source_id !== "string" || value.source_id.trim() === "") {
     throw new Error("Raw capture source_id is required");
   }
+  if (value.source_id.length > 200 || encodeURIComponent(value.source_id).replace(/\./g, "%2E").length > 240) throw new Error("Raw capture source_id is too long");
   if (typeof value.endpoint !== "string" || value.endpoint.trim() === "") {
     throw new Error("Raw capture endpoint is required");
   }

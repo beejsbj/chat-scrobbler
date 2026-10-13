@@ -34,10 +34,10 @@ export function blocksFromContent(content: any, assets: AssetLookup = assetLooku
         blocks.push({ type: "text", text: part.text });
       } else if (part?.content_type === "image_asset_pointer") {
         const pointer = part.asset_pointer ?? "";
-        blocks.push({ type: "attachment", kind: "image", filename: null, pointer, local_path: assets.byPointer(pointer)?.local_path ?? null });
+        blocks.push({ type: "attachment", kind: "image", filename: null, pointer, local_path: assets.byPointer(pointer)?.local_path ?? null, sha256: assets.byPointer(pointer)?.sha256 ?? null });
       } else if (part?.asset_pointer || part?.audio_asset_pointer) {
         const ptr = part.asset_pointer ?? part.audio_asset_pointer?.asset_pointer ?? "";
-        blocks.push({ type: "attachment", kind: "audio", filename: null, pointer: ptr, local_path: assets.byPointer(ptr)?.local_path ?? null });
+        blocks.push({ type: "attachment", kind: "audio", filename: null, pointer: ptr, local_path: assets.byPointer(ptr)?.local_path ?? null, sha256: assets.byPointer(ptr)?.sha256 ?? null });
       }
     }
     return blocks;

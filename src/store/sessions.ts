@@ -1,6 +1,10 @@
 // src/store/sessions.ts
-import { mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync, rmSync } from "node:fs";
-import { isAbsolute, join, relative, resolve } from "node:path";
+import { assetHashes } from "./asset-hashes";
+import { recordAssetReferences } from "./asset-reference-store";
+import { assertSessionNotDeleted, isSessionDeleted } from "./tombstones";
+import { syncDirectory, writeAtomicFile } from "./atomic-file";
+import { readFileSync, existsSync, readdirSync, rmSync } from "node:fs";
+import { join, resolve } from "node:path";
 import type { Session, Message } from "../schema/types";
 import { assetsDirForSession } from "./assets";
 
@@ -12,24 +16,26 @@ export interface DeleteSessionResult {
 }
 
 export function writeSession(baseDir: string, session: Session): string {
-  const dir = join(baseDir, session.source);
-  mkdirSync(dir, { recursive: true });
-  const file = join(dir, `${session.source_id}.json`);
-  writeFileSync(file, JSON.stringify(session, null, 2));
+  const file = sessionFilePath(baseDir, session.source, session.source_id);
+  assertSessionNotDeleted(baseDir, session.source, session.source_id);
+  const hashes = assetHashes(session);
+  recordAssetReferences(baseDir, session.source, session.source_id, hashes);
+  writeAtomicFile(file, JSON.stringify(session, null, 2));
   return file;
 }
 
 export function readSession(baseDir: string, source: string, sourceId: string): Session {
-  return JSON.parse(readFileSync(join(baseDir, source, `${sourceId}.json`), "utf8"));
+  assertSessionNotDeleted(baseDir, source, sourceId);
+  return JSON.parse(readFileSync(sessionFilePath(baseDir, source, sourceId), "utf8"));
 }
 
 export function deleteSession(baseDir: string, source: string, sourceId: string): DeleteSessionResult {
-  const sessionPath = safeSessionFilePath(baseDir, source, sourceId);
+  const sessionPath = sessionFilePath(baseDir, source, sourceId);
   const assetDir = assetsDirForSession(baseDir, source, sourceId);
   const sessionDeleted = existsSync(sessionPath);
   const assetsDeleted = existsSync(assetDir);
-  if (sessionDeleted) rmSync(sessionPath, { force: true });
-  if (assetsDeleted) rmSync(assetDir, { recursive: true, force: true });
+  if (sessionDeleted) { rmSync(sessionPath, { force: true }); syncDirectory(join(sessionPath, "..")); }
+  if (assetsDeleted) { rmSync(assetDir, { recursive: true, force: true }); syncDirectory(join(assetDir, "..")); }
   return { sessionPath, assetDir, sessionDeleted, assetsDeleted };
 }
 
@@ -40,7 +46,7 @@ export function listSessionFiles(baseDir: string): string[] {
     const dir = join(baseDir, source);
     let entries: string[] = [];
     try { entries = readdirSync(dir); } catch { continue; }
-    for (const f of entries) if (f.endsWith(".json")) out.push(join(dir, f));
+    for (const f of entries) if (f.endsWith(".json") && !isSessionDeleted(baseDir, source, f.slice(0, -5))) out.push(join(dir, f));
   }
   return out;
 }
@@ -75,16 +81,9 @@ export function sessionToMarkdown(s: Session): string {
   return lines.join("\n");
 }
 
-function safeSessionFilePath(baseDir: string, source: string, sourceId: string): string {
-  const root = resolve(baseDir);
-  const sourceDir = resolve(root, source);
-  ensureContained(root, sourceDir, "source is invalid");
-  const sessionPath = resolve(sourceDir, `${sourceId}.json`);
-  ensureContained(sourceDir, sessionPath, "source_id is invalid");
-  return sessionPath;
-}
-
-function ensureContained(parent: string, child: string, message: string): void {
-  const rel = relative(parent, child);
-  if (rel === "" || rel.startsWith("..") || isAbsolute(rel)) throw new Error(message);
+/** Keep legacy basenames unchanged; reject IDs that cannot be one filename. */
+export function sessionFilePath(baseDir: string, source: string, sourceId: string): string {
+  if (!["chatgpt", "claude", "gemini"].includes(source)) throw new Error("source is invalid");
+  if (!sourceId || sourceId === "." || sourceId === ".." || /[\/\\\x00-\x1f]/.test(sourceId)) throw new Error("source_id is invalid");
+  return resolve(baseDir, source, `${sourceId}.json`);
 }

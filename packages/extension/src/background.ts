@@ -6,6 +6,7 @@ import { appendRecentCapture, RECENT_CAPTURES_KEY, type RecentCapture } from "./
 import { filenameFromHeaders, isOversizedContentLength, MAX_PROVIDER_ASSET_BYTES } from "./providers/assets";
 import type {
   AssetFetchMessage,
+  AssetFailureMessage,
   CaptureLoggedMessage,
   CaptureProgressMessage,
   CaptureReadyMessage,
@@ -90,6 +91,7 @@ chrome.runtime.onMessage.addListener((message: RuntimeMessage, sender: any, send
 async function handleRuntimeMessage(message: RuntimeMessage, sender: any): Promise<unknown> {
   if (message.type === "SCROBBLER_CAPTURE_READY") return postCapture(message);
   if (message.type === "SCROBBLER_ASSET_UPLOAD") return postAsset(message.asset);
+  if (message.type === "SCROBBLER_ASSET_FAILURE") return postAssetFailure(message);
   if (message.type === "SCROBBLER_ASSET_FETCH") return fetchAssetBytes(message);
   if (message.type === "SCROBBLER_PROVIDER_READY" && sender.tab?.id) {
     maybeSyncVisitedTab(sender.tab, message.provider).catch(console.error);
@@ -118,6 +120,19 @@ async function handleRuntimeMessage(message: RuntimeMessage, sender: any): Promi
   return { ok: false, error: "Unknown message" };
 }
 
+async function postAssetFailure(message: AssetFailureMessage): Promise<unknown> {
+  const settings = await getSettings();
+  const { source, ...failure } = message.failure;
+  const headers: Record<string, string> = { "content-type": "application/json" };
+  if (settings.ingestToken) headers.authorization = `Bearer ${settings.ingestToken}`;
+  const res = await fetch(statusUrl(settings.ingestBaseUrl), {
+    method: "POST", headers,
+    body: JSON.stringify({ source, conversations: [], asset_failures: [failure] }),
+  });
+  if (!res.ok) throw new Error(`Asset failure report rejected (${res.status})`);
+  return { ok: true };
+}
+
 async function postAsset(asset: AssetUploadRequest): Promise<unknown> {
   const settings = await getSettings();
   const headers: Record<string, string> = {};
@@ -127,6 +142,8 @@ async function postAsset(asset: AssetUploadRequest): Promise<unknown> {
   url.searchParams.set("source", asset.source);
   url.searchParams.set("source_id", asset.sourceId);
   url.searchParams.set("pointer", asset.pointer);
+  if (asset.messageId) url.searchParams.set("message_id", asset.messageId);
+  if (asset.originalUrl) url.searchParams.set("original_url", asset.originalUrl);
   if (asset.filename) url.searchParams.set("filename", asset.filename);
   if (asset.contentType) url.searchParams.set("content_type", asset.contentType);
   const res = await fetch(url.toString(), {
@@ -278,11 +295,13 @@ async function postCapture(message: CaptureReadyMessage): Promise<unknown> {
     body: JSON.stringify(message.capture),
   });
   if (!res.ok) throw new Error(`Ingest rejected capture with HTTP ${res.status}: ${await res.text()}`);
+  const ingest = await res.json();
+  if (ingest.count === 0 && Array.isArray(ingest.skipped_deleted) && ingest.skipped_deleted.some((item: { source: string; source_id: string }) => item.source === message.capture.source && item.source_id === message.capture.source_id)) return { ok: true, captured: false, ingest };
   await mutateStatus((status) => {
     status.lastCaptureAt = new Date().toISOString();
     status.capturesPosted += 1;
   });
-  return { ok: true, captured: true, ingest: await res.json() };
+  return { ok: true, captured: true, ingest };
 }
 
 async function deleteCapture(message: DeleteCaptureMessage): Promise<unknown> {

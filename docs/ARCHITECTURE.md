@@ -12,14 +12,28 @@ connector. This document is a technical tour of how those pieces fit together.
 ```
 browser extension (scrobbler)
   |-- POST /captures --> ingest server (port 4318)
+                           |-- storeRawCapture() -> append-only raw/<source>/<source_id>/*.json.gz
                            |-- parser registry (chatgpt:api | claude:api | gemini:api)
                            |-- writeSession() -> canonical store (~/.local/share/chat-scrobbler/canonical/sessions/)
                            `-- indexSession() -> SQLite FTS5 + semantic index (~/.local/share/chat-scrobbler/index/sessions.db)
 ```
 
-The canonical store is the source of truth. The SQLite index is a rebuildable view:
-`chat-scrobbler unify` rebuilds FTS and semantic rows from scratch by re-reading every
-canonical session file. Nothing important lives only in the index.
+Raw captures and SHA-256 asset blobs are the source of truth. Ingest archives the
+entire valid capture batch before opening the index or parsing it. Raw write
+failure returns 503; parser failure leaves the raw versions intact. Canonical
+sessions are projections, with `raw_ref` relative to the raw store. Legacy
+canonical sessions without raw history remain usable and must be retained.
+
+`chat-scrobbler unify` refreshes FTS and semantic rows in place from canonical
+session files. Embedding failure keeps previous vectors. Raw-to-canonical reparse
+is reserved for BJS-545.
+
+`src/store/raw.ts` provides `storeRawCapture`, `listRawCaptures`, and
+`readRawCapture`. Defaults place raw at `<data>/raw` when canonical is
+`<data>/canonical/sessions`; other canonical layouts use a sibling `raw` directory.
+Capture bytes are gzip-compressed without reserialization, including entries of
+JSON batches. The SHA-256 covers the complete capture bytes, so only identical
+captures deduplicate. Provider IDs are encoded without lossy sanitization.
 
 ---
 
@@ -53,10 +67,10 @@ Endpoints:
 
 | Method | Path | Auth | Purpose |
 |--------|------|------|---------|
-| GET | /health | none | liveness check |
+| GET | /health | none | write checks for index/stores and bounded embedder probe; 503 if degraded |
 | POST | /captures | optional bearer | receive raw captures, parse, store, index |
 | POST | /assets | optional bearer | receive provider-authenticated attachment bytes |
-| POST | /status | optional bearer | return synced/stale/missing for a list of conversation ids |
+| POST | /status | optional bearer | conversation state and optional asset failure reports |
 
 `pipeline.ts` (`foldCaptureIntoSpine`) is the hot path for POST /captures: it picks
 the right parser from the registry, writes the canonical session file, and indexes it
@@ -76,6 +90,9 @@ Layout under `canonicalDir` (default `~/.local/share/chat-scrobbler/canonical/se
 ```
 canonical/
   assets/
+    sha256/
+      <first-two-hash-characters>/<sha256>       # shared immutable blob
+      <first-two-hash-characters>/<sha256>.json  # first-seen metadata
     chatgpt/
       <source_id>/<sha256>.<ext>
     claude/
@@ -98,13 +115,19 @@ the same conversation is idempotent.
 Attachment assets live beside sessions under `canonical/assets`, derived from
 `dirname(canonicalDir)/assets`. `POST /assets` stores bytes by content hash and returns
 a canonical-relative `local_path` such as `assets/chatgpt/<source_id>/<sha>.png`.
-Canonical session JSON keeps the provider `pointer` and stores this relative
-`local_path` when upload succeeds. Absolute paths are not written into session JSON.
+The session paths are hard-link aliases to shared immutable blobs, preserving
+existing extension responses. Metadata records MIME, byte size, original pointer
+and URL, and the first session/message seen. Canonical attachment blocks keep
+`pointer`, `local_path`, and an optional `sha256`; older JSON loads unchanged. Local
+session deletion removes its aliases and projections while retaining raw and
+shared blobs. Blob collection and full archive erasure are separate concerns.
 
 Asset capture is best-effort and local-only. The browser extension fetches provider
 asset URLs in the authenticated page context, then uploads bytes to the local ingest
 server. If a provider rejects or expires an asset URL, text capture continues and the
-attachment block keeps `local_path: null`.
+attachment block keeps `local_path: null`. Download, size, and upload failures
+produce structured logs and reports through `/status`, with URLs and provider
+error bodies omitted from logs. Failure counts are process-local.
 
 Provider limits:
 
@@ -198,7 +221,7 @@ structured error log line and an HTTP 400 response.
 
 `src/indexer/sqlite.ts`
 
-Three tables:
+The search tables are:
 
 - `sessions` -- one row per session (id, source, source_id, title, created_at,
   updated_at, message_count). Used by `list_sessions`.
@@ -218,7 +241,20 @@ by `(session_id, message_id)`, and fuses ranks with literal hits weighted strong
 shape: the legacy fields plus `provenance`, `score`, and `match_sources`. `listSessions`
 queries the `sessions` table ordered by `updated_at DESC`.
 
-The index can be fully rebuilt from the canonical store at any time:
+`openIndex` enables WAL and a 5000 ms busy timeout for every writer. Health also
+writes a single `index_health_probe` row. Literal replacement and vector replacement
+use short transactions; embedding calls run outside them. Failed embedding calls
+log categorical reasons and increment process-local counters. Preserved vectors
+for changed or deleted message text are excluded from semantic results.
+
+`searchMessagesReport` adds `semantic`, `reason`, and `embedding_failures` to the
+array of hits. MCP keeps the existing text array and adds these fields plus `hits`
+in `structuredContent`, including empty searches. Failed-query hits also carry
+status fields. `/health` tests embedding reachability with a two-second deadline;
+normal provider calls have a ten-second timeout. Each health request embeds a
+fixed diagnostic string, which incurs provider cost when using a paid backend.
+
+The index can be refreshed from the canonical store at any time:
 `chat-scrobbler unify` (or `bun run unify`) calls `indexSessionWithEmbeddings` on every
 session file. With `CHAT_SCROBBLER_EMBED_PROVIDER=none` (the default), it rebuilds FTS
 only.
@@ -295,9 +331,15 @@ same name. `backups` and `restore` use the first entry as the primary target.
     chatgpt/<id>.json
     claude/<id>.json
     gemini/<id>.json
+  raw/
+    <source>/<encoded-source-id>/<timestamp>-<sha256>.json.gz
   config/
     <config-filename>.json  # optional, included when a config file is active
 ```
+
+Raw history and asset blobs/metadata are included in snapshots; optional manifest
+fields record raw counts and bytes. Old snapshots without raw remain compatible.
+Raw restoration is append-only, including with `force: true`.
 
 **Restore guard**: `restoreBackup` refuses to write into a non-empty `canonicalDir`
 unless `force: true` is passed, to prevent accidental overwrites.
@@ -351,7 +393,7 @@ The CLI is a thin frontend over the same core functions the MCP uses. Commands:
 | `unify` | Rebuild SQLite index from canonical store |
 | `init` | Scaffold data dirs + starter config file |
 | `serve` | Start ingest receiver + MCP HTTP connector together |
-| `backup` | Snapshot canonical/ + config to all configured targets |
+| `backup` | Snapshot raw, canonical/assets, sessions, and config to all configured targets |
 | `backups` | List snapshots in the primary target |
 | `restore <snapshot>` | Restore a snapshot; `--force` to allow non-empty dest |
 

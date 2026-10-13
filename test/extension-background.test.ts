@@ -179,3 +179,24 @@ function installChromeStub(): void {
     },
   });
 }
+
+test("background forwards asset failure reports to authenticated status endpoint", async () => {
+  storageData["scrobbler.settings"] = { ingestBaseUrl: "http://local:4318", ingestToken: "test-token" };
+  const reports: unknown[] = [];
+  globalThis.fetch = (async (input, init) => {
+    expect(String(input)).toBe("http://local:4318/status");
+    expect((init?.headers as Record<string, string>).authorization).toBe("Bearer test-token");
+    reports.push(JSON.parse(String(init?.body)));
+    return Response.json({ ok: true });
+  }) as typeof fetch;
+  expect(await sendRuntimeMessage({ type: "SCROBBLER_ASSET_FAILURE", failure: { source: "chatgpt", source_id: "conv", message_id: "m1", reason: "asset_upload_failed" } })).toMatchObject({ ok: true });
+  expect(reports).toEqual([{ source: "chatgpt", conversations: [], asset_failures: [{ source_id: "conv", message_id: "m1", reason: "asset_upload_failed" }] }]);
+});
+
+test("background treats server deletion skips as uncaptured without incrementing posted counts", async () => {
+  const ingest = { ok: true, count: 0, skipped_deleted: [{ source: "chatgpt", source_id: "gone" }] };
+  globalThis.fetch = (async () => Response.json(ingest)) as unknown as typeof fetch;
+  const response = await sendRuntimeMessage({ type: "SCROBBLER_CAPTURE_READY", capture: buildRawCapture({ source: "chatgpt", sourceId: "gone", endpoint: "/detail", payload: {} }) });
+  expect(response).toMatchObject({ ok: true, captured: false, ingest });
+  expect((storageData["scrobbler.status"] as { capturesPosted?: number } | undefined)?.capturesPosted ?? 0).toBe(0);
+});

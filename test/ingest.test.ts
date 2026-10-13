@@ -1,4 +1,4 @@
-import { expect, spyOn, test } from "bun:test";
+import { afterAll, expect, spyOn, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -9,6 +9,9 @@ import { indexSession, listSessions, openIndex } from "../src/indexer/sqlite";
 import { writeSession } from "../src/store/sessions";
 import type { Session } from "../src/schema/types";
 
+const rawDir = mkdtempSync(join(tmpdir(), "ingest-raw-only-"));
+afterAll(() => rmSync(rawDir, { recursive: true, force: true }));
+
 interface IngestTestResponse {
   ok: boolean;
   count: number;
@@ -17,10 +20,10 @@ interface IngestTestResponse {
   service?: string;
 }
 
-test("health endpoint reports receiver status", async () => {
+test("health endpoint reports receiver liveness", async () => {
   const res = await handleIngestRequest(new Request("http://local/health"), {});
   expect(res.status).toBe(200);
-  expect(await res.json()).toMatchObject({ ok: true, service: "chat-scrobbler-ingest" });
+  expect(await res.json()).toMatchObject({ ok: true, service: "chat-scrobbler-ingest", status: "alive" });
 });
 
 test("capture endpoint accepts a single raw capture and returns count", async () => {
@@ -34,7 +37,7 @@ test("capture endpoint accepts a single raw capture and returns count", async ()
 
   const res = await handleIngestRequest(
     new Request("http://local/captures", { method: "POST", body: JSON.stringify(capture) }),
-    {},
+    { rawDir },
   );
   const body = await res.json() as IngestTestResponse;
 
@@ -163,7 +166,7 @@ test("DELETE /captures requires the configured bearer token", async () => {
 test("capture endpoint rejects malformed captures", async () => {
   const res = await handleIngestRequest(
     new Request("http://local/captures", { method: "POST", body: JSON.stringify({ source: "chatgpt" }) }),
-    {},
+    { rawDir },
   );
   const body = await res.json() as IngestTestResponse;
 
@@ -182,7 +185,7 @@ test("capture endpoint returns 401 when token configured and header is missing",
 
   const res = await handleIngestRequest(
     new Request("http://local/captures", { method: "POST", body: JSON.stringify(capture) }),
-    { ingestToken: "secret-token" },
+    { ingestToken: "secret-token", rawDir },
   );
   const body = await res.json() as IngestTestResponse;
 
@@ -205,7 +208,7 @@ test("capture endpoint returns 401 when token configured and header is wrong", a
       body: JSON.stringify(capture),
       headers: { "authorization": "Bearer wrong-token" },
     }),
-    { ingestToken: "secret-token" },
+    { ingestToken: "secret-token", rawDir },
   );
   const body = await res.json() as IngestTestResponse;
 
@@ -228,7 +231,7 @@ test("capture endpoint accepts correct bearer token", async () => {
       body: JSON.stringify(capture),
       headers: { "authorization": "Bearer secret-token" },
     }),
-    { ingestToken: "secret-token" },
+    { ingestToken: "secret-token", rawDir },
   );
   const body = await res.json() as IngestTestResponse;
 
@@ -249,7 +252,7 @@ test("capture endpoint allows any request when no token configured (local dev)",
   // No ingestToken set -- should succeed without any Authorization header
   const res = await handleIngestRequest(
     new Request("http://local/captures", { method: "POST", body: JSON.stringify(capture) }),
-    {},
+    { rawDir },
   );
   const body = await res.json() as IngestTestResponse;
 
@@ -277,7 +280,7 @@ test("capture endpoint accepts batches and returns correct count", async () => {
 
   const res = await handleIngestRequest(
     new Request("http://local/captures", { method: "POST", body: JSON.stringify(captures) }),
-    {},
+    { rawDir },
   );
   const body = await res.json() as IngestTestResponse;
 
@@ -325,4 +328,16 @@ test("capture endpoint logs fat-mode parse failures with light capture context",
     errorSpy.mockRestore();
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("status accepts asset failure telemetry and never logs URL credentials", async () => {
+  const root = mkdtempSync(join(tmpdir(), "asset-status-"));
+  const logs = spyOn(console, "error").mockImplementation(() => {});
+  const opts = { canonicalDir: join(root, "canonical", "sessions"), indexPath: join(root, "index.db") };
+  try {
+    const res = await handleIngestRequest(new Request("http://local/status", { method: "POST", body: JSON.stringify({ source: "chatgpt", conversations: [], asset_failures: [{ source_id: "conv", message_id: "m1", reason: "asset_upload_failed", pointer: "https://example.com?token=secret" }] }) }), opts);
+    expect(await res.json()).toMatchObject({ ok: true, asset_failures: 1 });
+    expect(JSON.stringify(logs.mock.calls)).toContain("asset_capture_failed");
+    expect(JSON.stringify(logs.mock.calls)).not.toContain("secret");
+  } finally { logs.mockRestore(); rmSync(root, { recursive: true, force: true }); }
 });

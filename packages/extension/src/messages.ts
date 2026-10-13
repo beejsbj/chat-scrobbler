@@ -1,4 +1,4 @@
-import type { ProviderSource, RawCapture } from "../../shared/src";
+import type { AssetFailure, ProviderSource, RawCapture } from "../../shared/src";
 import type { ProviderSyncResult } from "./providers";
 import type { CaptureKind } from "./recent-captures";
 
@@ -14,6 +14,8 @@ export interface CaptureReadyMessage {
 }
 
 export interface AssetUploadRequest {
+  messageId?: string | null;
+  originalUrl?: string | null;
   source: ProviderSource;
   sourceId: string;
   pointer: string;
@@ -25,6 +27,11 @@ export interface AssetUploadRequest {
 export interface AssetUploadMessage {
   type: "SCROBBLER_ASSET_UPLOAD";
   asset: AssetUploadRequest;
+}
+
+export interface AssetFailureMessage {
+  type: "SCROBBLER_ASSET_FAILURE";
+  failure: AssetFailure;
 }
 
 export interface AssetFetchMessage {
@@ -114,6 +121,7 @@ export interface CaptureLoggedMessage {
 export type RuntimeMessage =
   | SyncRequest
   | CaptureReadyMessage
+  | AssetFailureMessage
   | AssetUploadMessage
   | AssetFetchMessage
   | ProviderReadyMessage

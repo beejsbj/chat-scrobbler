@@ -652,3 +652,51 @@ function json(body: unknown, status = 200): Response {
     headers: { "content-type": "application/json" },
   });
 }
+
+test("asset download, size, and upload failures are reported while text capture can continue", async () => {
+  const failures: unknown[] = [];
+  const errors = (await import("bun:test")).spyOn(console, "error").mockImplementation(() => {});
+  try {
+    for (const mode of ["download", "size", "upload"]) {
+      const assets = await uploadProviderAssets(
+        async () => mode === "download" ? new Response("denied", { status: 403 }) : new Response(new Uint8Array([1, 2, 3])),
+        async () => { throw new Error("upload failed https://example.com/?token=secret"); },
+        [{ source: "chatgpt", sourceId: "conv", messageId: "m1", pointer: "https://example.com/?token=secret", url: "/asset" }],
+        { maxBytes: mode === "size" ? 2 : 100, reportFailure: async failure => { failures.push(failure); } },
+      );
+      expect(assets).toEqual([]);
+    }
+    expect(failures).toEqual([
+      { source: "chatgpt", source_id: "conv", message_id: "m1", reason: "asset_download_failed" },
+      { source: "chatgpt", source_id: "conv", message_id: "m1", reason: "asset_too_large" },
+      { source: "chatgpt", source_id: "conv", message_id: "m1", reason: "asset_upload_failed" },
+    ]);
+    expect(JSON.stringify(errors.mock.calls)).not.toContain("secret");
+  } finally { errors.mockRestore(); }
+});
+
+for (const source of ["chatgpt", "claude"] as const) {
+  test(`${source} sync continues after a failed detail or ingest and keeps its retry cursor`, async () => {
+    const logs = (await import("bun:test")).spyOn(console, "error").mockImplementation(() => {});
+    try {
+      for (const mode of ["detail", "emit"]) {
+        const emitted: string[] = [];
+        const fetcher: FetchLike = async input => {
+          if (input === "/api/auth/session") return json({});
+          if (input === "/api/organizations") return json([{ uuid: "org" }]);
+          if (input.includes("conversations?")) return json(source === "chatgpt" ? { items: [{ id: "bad", update_time: "2026-06-05T09:00:00Z" }, { id: "good", update_time: "2026-06-05T11:00:00Z" }] } : [{ uuid: "bad", updated_at: "2026-06-05T09:00:00Z" }, { uuid: "good", updated_at: "2026-06-05T11:00:00Z" }]);
+          if (input.includes("/bad") && mode === "detail") throw new Error("private-token");
+          return json({ mapping: {}, chat_messages: [] });
+        };
+        const adapter = source === "chatgpt" ? createChatgptAdapter(fetcher) : createClaudeAdapter(fetcher);
+        const result = await adapter.sync({ lastSync: "2026-06-05T08:00:00Z", emitCapture: async capture => {
+          if (capture.source_id === "bad") throw new Error("private-token");
+          emitted.push(capture.source_id);
+        } });
+        expect(emitted).toEqual(["good"]);
+        expect(result).toMatchObject({ scanned: 2, captured: 1, failed: 1, maxConversationUpdatedAt: "2026-06-05T08:00:00Z" });
+      }
+      expect(JSON.stringify(logs.mock.calls)).not.toContain("private-token");
+    } finally { logs.mockRestore(); }
+  });
+}

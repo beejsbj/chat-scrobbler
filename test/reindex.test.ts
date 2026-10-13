@@ -156,3 +156,107 @@ test("reindex also reads historical sessions with capture_method export or takeo
     rmSync(root2, { recursive: true, force: true });
   }
 });
+
+test("unify preserves vectors when rebuilding with a failed embedder", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "reindex-vectors-"));
+  const opts = { canonicalDir: join(dir, "canonical", "sessions"), indexPath: join(dir, "index.db") };
+  let failing = false;
+  const provider = { kind: "unify-test", async embed(): Promise<number[]> { if (failing) throw new Error("offline"); return [1, 0]; } };
+  try {
+    writeSession(opts.canonicalDir, sessionA);
+    await runUnify({ ...opts, embeddingProvider: provider });
+    const db = openIndex(opts.indexPath);
+    const before = db.query("SELECT * FROM message_embeddings").all();
+    failing = true;
+    await runUnify({ ...opts, embeddingProvider: provider });
+    expect(db.query("SELECT * FROM message_embeddings").all()).toEqual(before);
+    expect(searchMessages(db, "photosynthesis")).toHaveLength(2);
+    db.close();
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("unify preserves sessions captured while an embedding rebuild is in flight", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "reindex-concurrent-"));
+  const opts = { canonicalDir: join(dir, "canonical", "sessions"), indexPath: join(dir, "index.db") };
+  let captured = false;
+  try {
+    writeSession(opts.canonicalDir, sessionA);
+    const provider = { kind: "concurrent-test", async embed(): Promise<number[]> {
+      if (!captured) {
+        captured = true;
+        writeSession(opts.canonicalDir, sessionB);
+        const writer = openIndex(opts.indexPath);
+        (await import("../src/indexer/sqlite")).indexSession(writer, sessionB);
+        writer.close();
+      }
+      return [1, 0];
+    } };
+    await runUnify({ ...opts, embeddingProvider: provider });
+    const db = openIndex(opts.indexPath);
+    try { expect(searchMessages(db, "mitochondria")).toHaveLength(2); }
+    finally { db.close(); }
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("unify refuses empty-mount pruning and large deletion fractions unless forced", async () => {
+  const { mkdirSync } = await import("node:fs");
+  const { spyOn } = await import("bun:test");
+  const dir = mkdtempSync(join(tmpdir(), "unify-prune-"));
+  const opts = { canonicalDir: join(dir, "canonical", "sessions"), indexPath: join(dir, "index.db") };
+  const logs = spyOn(console, "error").mockImplementation(() => {});
+  const db = openIndex(opts.indexPath);
+  try {
+    mkdirSync(opts.canonicalDir, { recursive: true });
+    const { indexSession, listSessions } = await import("../src/indexer/sqlite");
+    for (let i = 0; i < 10; i++) indexSession(db, { ...sessionA, id: `chatgpt:prune-${i}`, source_id: `prune-${i}` });
+    await runUnify(opts);
+    expect(listSessions(db)).toHaveLength(10);
+    expect(JSON.stringify(logs.mock.calls)).toContain("unify_prune_refused");
+    for (let i = 0; i < 8; i++) writeSession(opts.canonicalDir, { ...sessionA, id: `chatgpt:prune-${i}`, source_id: `prune-${i}` });
+    await runUnify(opts);
+    expect(listSessions(db)).toHaveLength(10);
+    await runUnify({ ...opts, force: true });
+    expect(listSessions(db)).toHaveLength(8);
+  } finally { db.close(); logs.mockRestore(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("unify opens its embedding circuit after consecutive failures and finishes literal indexing", async () => {
+  const { spyOn } = await import("bun:test");
+  const logs = spyOn(console, "error").mockImplementation(() => {});
+  const dir = mkdtempSync(join(tmpdir(), "unify-circuit-"));
+  const opts = { canonicalDir: join(dir, "canonical", "sessions"), indexPath: join(dir, "index.db") };
+  let calls = 0;
+  try {
+    for (let i = 0; i < 6; i++) writeSession(opts.canonicalDir, { ...sessionA, id: `chatgpt:circuit-${i}`, source_id: `circuit-${i}` });
+    expect(await runUnify({ ...opts, embeddingFailureLimit: 2, embeddingProvider: { async embed(): Promise<number[]> { calls++; throw new Error("offline"); } } })).toBe(6);
+    expect(calls).toBe(2);
+    expect(JSON.stringify(logs.mock.calls)).toContain("unify_embedding_circuit_open");
+    const db = openIndex(opts.indexPath);
+    try { expect(searchMessages(db, "photosynthesis")).toHaveLength(12); } finally { db.close(); }
+  } finally { logs.mockRestore(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("unify skips vector replacement when canonical mtime or indexed revision changes during embedding", async () => {
+  const { indexSession } = await import("../src/indexer/sqlite");
+  for (const mode of ["mtime", "updated_at"]) {
+    const dir = mkdtempSync(join(tmpdir(), "unify-revision-"));
+    const opts = { canonicalDir: join(dir, "canonical", "sessions"), indexPath: join(dir, "index.db") };
+    const db = openIndex(opts.indexPath);
+    let changed = false;
+    try {
+      writeSession(opts.canonicalDir, sessionA);
+      indexSession(db, sessionA, { embeddingProvider: { kind: "revision-test", embed: () => [0, 1] } });
+      const provider = { kind: "revision-test", async embed(): Promise<number[]> {
+        if (!changed) {
+          changed = true;
+          const newer = { ...sessionA, title: "Newer", updated_at: mode === "updated_at" ? "2099-01-01T00:00:00Z" : sessionA.updated_at };
+          writeSession(opts.canonicalDir, newer);
+          if (mode === "updated_at") indexSession(db, newer, { embeddingProvider: { kind: "revision-test", embed: () => [0, 1] } });
+        }
+        return [1, 0];
+      } };
+      await runUnify({ ...opts, embeddingProvider: provider });
+      expect(db.query("SELECT embedding FROM message_embeddings").all()).toEqual([{ embedding: "[0,1]" }, { embedding: "[0,1]" }]);
+    } finally { db.close(); rmSync(dir, { recursive: true, force: true }); }
+  }
+});

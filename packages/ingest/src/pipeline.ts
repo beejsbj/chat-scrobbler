@@ -19,6 +19,7 @@ export interface SpineResult {
 export interface SpineContext {
   canonicalDir: string;
   db: Database;
+  rawRef?: string;
   embeddingProvider?: EmbeddingProvider | null;
 }
 
@@ -28,6 +29,7 @@ export function foldCaptureIntoSpine(capture: RawCapture, ctx: SpineContext): Sp
   const parse = getParser(capture.source, "api");
   const sessions = parse(capture);
   return sessions.map((session) => {
+    if (ctx.rawRef) session.raw_ref = ctx.rawRef;
     writeSession(ctx.canonicalDir, session);
     indexSession(ctx.db, session);
     return { session_id: session.id, source: session.source, source_id: session.source_id, indexed: true };
@@ -41,6 +43,7 @@ export async function foldCaptureIntoSpineWithEmbeddings(capture: RawCapture, ct
   const sessions = parse(capture);
   const results: SpineResult[] = [];
   for (const session of sessions) {
+    if (ctx.rawRef) session.raw_ref = ctx.rawRef;
     writeSession(ctx.canonicalDir, session);
     await indexSessionWithEmbeddings(ctx.db, session, { embeddingProvider: ctx.embeddingProvider });
     results.push({ session_id: session.id, source: session.source, source_id: session.source_id, indexed: true });

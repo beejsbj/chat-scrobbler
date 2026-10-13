@@ -1,3 +1,4 @@
+import { logSyncFailure } from "./sync-failures";
 import { buildRawCapture } from "../../../shared/src";
 import { uploadProviderAssets, type ProviderAssetCandidate } from "./assets";
 import {
@@ -72,6 +73,7 @@ async function syncChatgpt(fetcher: FetchLike, options: ProviderSyncOptions): Pr
   let scanned = 0;
   let captured = 0;
   let skipped = 0;
+  let failed = 0;
   let maxConversationUpdatedAt: string | null = null;
 
   while (true) {
@@ -102,35 +104,40 @@ async function syncChatgpt(fetcher: FetchLike, options: ProviderSyncOptions): Pr
         continue;
       }
 
-      const detailEndpoint = `/backend-api/conversation/${encodeURIComponent(item.id)}`;
-      const payload = await fetchJson(fetcher, detailEndpoint, { headers });
-      const assets = await uploadProviderAssets(
-        fetcher,
-        options.uploadAsset,
-        chatgptAssetCandidates(payload, item.id),
-      );
-      const didCapture = await options.emitCapture(buildRawCapture({
-        source: "chatgpt",
-        sourceId: item.id,
-        endpoint: detailEndpoint,
-        payload,
-        assets,
-        conversationUpdatedAt: item.updatedAt,
-        rawUrl: `${currentOrigin()}${detailEndpoint}`,
-      }));
-      if (didCapture === false) {
-        skipped += 1;
-        continue;
+      try {
+        const detailEndpoint = `/backend-api/conversation/${encodeURIComponent(item.id)}`;
+        const payload = await fetchJson(fetcher, detailEndpoint, { headers });
+        const assets = await uploadProviderAssets(
+          fetcher,
+          options.uploadAsset,
+          chatgptAssetCandidates(payload, item.id),
+        );
+        const didCapture = await options.emitCapture(buildRawCapture({
+          source: "chatgpt",
+          sourceId: item.id,
+          endpoint: detailEndpoint,
+          payload,
+          assets,
+          conversationUpdatedAt: item.updatedAt,
+          rawUrl: `${currentOrigin()}${detailEndpoint}`,
+        }));
+        if (didCapture === false) {
+          skipped += 1;
+          continue;
+        }
+        captured += 1;
+        maxConversationUpdatedAt = maxIso(maxConversationUpdatedAt, item.updatedAt);
+      } catch {
+        failed++;
+        logSyncFailure("chatgpt", item.id);
       }
-      captured += 1;
-      maxConversationUpdatedAt = maxIso(maxConversationUpdatedAt, item.updatedAt);
     }
 
     offset += items.length;
     if (items.length < LIST_LIMIT) break;
   }
 
-  return { source: "chatgpt", scanned, captured, skipped, maxConversationUpdatedAt, account: null };
+  return { source: "chatgpt", scanned, captured, skipped, failed, maxConversationUpdatedAt: failed ? options.lastSync ?? null : maxConversationUpdatedAt, account: null };
 }
 
 function chatgptAssetCandidates(payload: unknown, sourceId: string): ProviderAssetCandidate[] {

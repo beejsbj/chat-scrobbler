@@ -1,3 +1,4 @@
+import { invalidateReferences } from "../store/asset-reference-store";
 // src/backup/backup.ts
 //
 // Orchestration: createBackup, listBackups, restoreBackup.
@@ -6,7 +7,11 @@
 import { existsSync, statSync, readFileSync, mkdtempSync, writeFileSync as fsWrite, rmSync, readdirSync } from "node:fs";
 import { join, relative, basename, sep } from "node:path";
 import { tmpdir } from "node:os";
-import { listSessionFiles } from "../store/sessions";
+import { listSessionFiles, sessionFilePath, writeSession } from "../store/sessions";
+import { isSessionDeleted, listTombstones, markSessionDeleted, tombstoneDir } from "../store/tombstones";
+import { deleteSessionArchives } from "../store/delete";
+import { backupRaw, rawFiles, restoreRaw } from "./raw";
+import { rawDirForCanonicalDir } from "../store/raw";
 import { assetsDirForCanonicalDir } from "../store/assets";
 import type { BackupTarget } from "./target";
 
@@ -25,6 +30,8 @@ export interface BackupManifest {
   asset_file_count?: number;
   /** Total bytes of all asset files. */
   asset_total_bytes?: number;
+  raw_file_count?: number;
+  raw_total_bytes?: number;
   /** Absolute path to the canonical dir at backup time. */
   canonical_dir: string;
   /** Schema version for forward-compat. Always 1. */
@@ -36,8 +43,9 @@ export interface BackupManifest {
 // ---------------------------------------------------------------------------
 
 export interface CreateBackupOptions {
-  /** Absolute path to canonical/sessions (the source of truth). */
+  /** Absolute path to canonical/sessions; raw history is backed up alongside it. */
   canonicalDir: string;
+  rawDir?: string;
   /** Resolved backup target. */
   target: BackupTarget;
   /**
@@ -91,6 +99,12 @@ export async function createBackup(opts: CreateBackupOptions): Promise<CreateBac
     await target.putFile(snapshot, relInSnapshot, absPath);
   }
 
+  for (const file of listFilesRecursive(tombstoneDir(canonicalDir))) {
+    await target.putFile(snapshot, `deleted/${relative(tombstoneDir(canonicalDir), file).split(sep).join("/")}`, file);
+  }
+
+  const rawStats = await backupRaw(opts.rawDir ?? rawDirForCanonicalDir(canonicalDir), target, snapshot);
+
   // Optionally include the config file
   if (configPath && existsSync(configPath)) {
     const configFilename = basename(configPath);
@@ -104,6 +118,7 @@ export async function createBackup(opts: CreateBackupOptions): Promise<CreateBac
     total_bytes: totalBytes,
     asset_file_count: assetFiles.length,
     asset_total_bytes: assetTotalBytes,
+    ...rawStats,
     canonical_dir: canonicalDir,
     schema: 1,
   };
@@ -170,6 +185,7 @@ export interface RestoreBackupOptions {
   snapshot: string;
   /** Absolute path to the canonical dir to restore into. */
   canonicalDir: string;
+  rawDir?: string;
   /**
    * When false (default) the restore refuses if canonicalDir already contains
    * session files to prevent accidental overwrites.
@@ -182,6 +198,7 @@ export interface RestoreBackupResult {
   restored_count: number;
   /** Number of asset files restored. */
   restored_asset_count?: number;
+  restored_raw_count?: number;
 }
 
 export async function restoreBackup(opts: RestoreBackupOptions): Promise<RestoreBackupResult> {
@@ -191,7 +208,8 @@ export async function restoreBackup(opts: RestoreBackupOptions): Promise<Restore
   if (!force) {
     const existing = listSessionFiles(canonicalDir);
     const existingAssets = listFilesRecursive(assetsDirForCanonicalDir(canonicalDir));
-    if (existing.length > 0 || existingAssets.length > 0) {
+    const existingRaw = rawFiles(opts.rawDir ?? rawDirForCanonicalDir(canonicalDir));
+    if (existing.length > 0 || existingAssets.length > 0 || existingRaw.length > 0) {
       throw new Error(
         `canonicalDir "${canonicalDir}" is not empty (${existing.length} session file(s), ${existingAssets.length} asset file(s) found). ` +
           `Pass force: true to overwrite.`,
@@ -207,13 +225,27 @@ export async function restoreBackup(opts: RestoreBackupOptions): Promise<Restore
     f => f.startsWith("canonical/assets/") && !f.endsWith("/"),
   );
 
-  for (const relPath of sessionRelPaths.filter(f => !f.startsWith("canonical/assets/"))) {
-    // relPath is e.g. "canonical/chatgpt/abc.json"
-    // Strip the "canonical/" prefix to get the path relative to canonicalDir
-    const relInCanonical = relPath.slice("canonical/".length);
-    const destAbs = join(canonicalDir, relInCanonical);
-    await target.getFile(snapshot, relPath, destAbs);
-  }
+  // Restore deletion policy first, including when force restores over existing data.
+  const temp = mkdtempSync(join(tmpdir(), "restore-sessions-"));
+  let restoredCount = 0;
+  try {
+    for (const file of files.filter(path => path.startsWith("deleted/") && path.endsWith(".json"))) {
+      const downloaded = join(temp, "deleted.json");
+      await target.getFile(snapshot, file, downloaded);
+      const record = JSON.parse(readFileSync(downloaded, "utf8"));
+      sessionFilePath(canonicalDir, record.source, record.source_id);
+      if (typeof record.deleted_at !== "string" || !Number.isFinite(Date.parse(record.deleted_at))) throw new Error("invalid deletion tombstone");
+      markSessionDeleted(canonicalDir, record);
+    }
+    for (const relPath of sessionRelPaths.filter(f => !f.startsWith("canonical/assets/"))) {
+      const downloaded = join(temp, "session.json");
+      await target.getFile(snapshot, relPath, downloaded);
+      const session = JSON.parse(readFileSync(downloaded, "utf8"));
+      if (isSessionDeleted(canonicalDir, session.source, session.source_id)) continue;
+      writeSession(canonicalDir, session);
+      restoredCount++;
+    }
+  } finally { rmSync(temp, { recursive: true, force: true }); }
 
   const assetsDir = assetsDirForCanonicalDir(canonicalDir);
   for (const relPath of assetRelPaths) {
@@ -222,7 +254,11 @@ export async function restoreBackup(opts: RestoreBackupOptions): Promise<Restore
     await target.getFile(snapshot, relPath, destAbs);
   }
 
-  return { restored_count: sessionRelPaths.filter(f => !f.startsWith("canonical/assets/")).length, restored_asset_count: assetRelPaths.length };
+  // Reference records are derived. Restored legacy aliases require one fresh ownership pass.
+  invalidateReferences(assetsDir);
+  const restored_raw_count = await restoreRaw(opts.rawDir ?? rawDirForCanonicalDir(canonicalDir), target, snapshot, (source, id) => isSessionDeleted(canonicalDir, source, id));
+  deleteSessionArchives(canonicalDir, listTombstones(canonicalDir), opts.rawDir);
+  return { restored_count: restoredCount, restored_asset_count: assetRelPaths.length, restored_raw_count };
 }
 
 // ---------------------------------------------------------------------------

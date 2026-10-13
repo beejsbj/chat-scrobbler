@@ -278,3 +278,25 @@ test("createBackup includes the config file when configPath exists", async () =>
   const files = target.listFiles(result.snapshot);
   expect(files.some(f => f.startsWith("config/"))).toBe(true);
 });
+
+test("backup and restore retain raw capture versions alongside canonical and assets", async () => {
+  const { storeRawCapture, listRawCaptures, readRawCapture, rawDirForCanonicalDir } = await import("../src/store/raw");
+  const { buildRawCapture } = await import("../packages/shared/src");
+  const root = makeTmp("backup-raw-");
+  const canonicalDir = join(root, "canonical", "sessions");
+  const rawDir = rawDirForCanonicalDir(canonicalDir);
+  const capture = buildRawCapture({ source: "chatgpt", sourceId: "raw-session", endpoint: "/detail", payload: { unknown_widget: { exact: true } } });
+  storeRawCapture(rawDir, capture);
+  const target = new LocalDirTarget(makeTmp("backup-raw-target-"));
+  const { snapshot, manifest } = await createBackup({ canonicalDir, target });
+  expect(manifest.raw_file_count).toBe(1);
+  const restoredDir = join(makeTmp("restore-raw-"), "canonical", "sessions");
+  const result = await restoreBackup({ canonicalDir: restoredDir, target, snapshot });
+  expect(result.restored_raw_count).toBe(1);
+  const restoredRaw = rawDirForCanonicalDir(restoredDir);
+  const refs = listRawCaptures(restoredRaw, "chatgpt", "raw-session");
+  expect(refs).toHaveLength(1);
+  expect(readRawCapture(restoredRaw, refs[0])).toEqual(capture);
+  expect((await restoreBackup({ canonicalDir: restoredDir, target, snapshot, force: true })).restored_raw_count).toBe(1);
+  expect(listRawCaptures(restoredRaw, "chatgpt", "raw-session")).toHaveLength(1);
+});

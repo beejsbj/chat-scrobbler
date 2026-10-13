@@ -62,7 +62,7 @@ export function blocksFromClaude(m: RawClaudeMsg, assets: AssetLookup = assetLoo
       kind: "file",
       filename: f.file_name ?? f.filename ?? null,
       pointer,
-      local_path: assets.byPointer(pointer)?.local_path ?? null,
+      local_path: assets.byPointer(pointer)?.local_path ?? null, sha256: assets.byPointer(pointer)?.sha256 ?? null,
     });
   }
   for (const a of m.attachments ?? []) {
@@ -73,7 +73,7 @@ export function blocksFromClaude(m: RawClaudeMsg, assets: AssetLookup = assetLoo
       kind: "file",
       filename: a.file_name ?? a.filename ?? a.name ?? null,
       pointer,
-      local_path: assets.byPointer(pointer)?.local_path ?? null,
+      local_path: assets.byPointer(pointer)?.local_path ?? null, sha256: assets.byPointer(pointer)?.sha256 ?? null,
     });
   }
   return blocks;

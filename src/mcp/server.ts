@@ -2,7 +2,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import type { Database } from "bun:sqlite";
-import { grepMessages, openIndex, searchMessagesWithEmbeddings, listSessions, type EmbeddingProvider } from "../indexer/sqlite";
+import { grepMessages, openIndex, searchMessagesReport, listSessions, type EmbeddingProvider } from "../indexer/sqlite";
 import { readSession, sessionToMarkdown } from "../store/sessions";
 import { loadConfig } from "../config";
 import { parseSessionId } from "../core/session-id";
@@ -10,19 +10,16 @@ import { embeddingProviderFromConfig } from "../indexer/embedding-providers";
 
 export interface ServerOptions { indexPath: string; canonicalDir: string; embeddingProvider?: EmbeddingProvider | null; }
 
-type ToolResult = { content: { type: "text"; text: string }[]; isError?: boolean };
+type ToolResult = { structuredContent?: Record<string, unknown>; content: { type: "text"; text: string }[]; isError?: boolean };
 
 const SERVER_INSTRUCTIONS = "Read-only archive of Burooj's AI chat history (ChatGPT, Claude, Gemini), captured continuously by the chat-scrobbler browser extension. Use it to recall past conversations: what was discussed, decided, or drafted in earlier chats across all providers. `search` blends full-text, semantic, and literal substring recall (set regex=true for regular expressions); `list_sessions` browses recent conversations; `get_session` fetches a full transcript by `source:source_id` id. Message hits carry provenance back to their exact session. The archive is append-only from this connector: nothing here can modify or delete history.";
 
 export async function handleSearch(db: Database, args: { query: string; source?: string; limit?: number; regex?: boolean }, embeddingProvider: EmbeddingProvider | null = null): Promise<ToolResult> {
-  const hits = args.regex
-    ? grepMessages(db, args.query, { source: args.source, limit: args.limit })
-    : await searchMessagesWithEmbeddings(db, args.query, {
-      source: args.source,
-      limit: args.limit,
-      embeddingProvider,
-    });
-  return { content: [{ type: "text", text: JSON.stringify(hits, null, 2) }] };
+  const report = args.regex
+    ? { hits: grepMessages(db, args.query, { source: args.source, limit: args.limit }), semantic: "disabled", reason: "regex_search", embedding_failures: 0 }
+    : await searchMessagesReport(db, args.query, { source: args.source, limit: args.limit, embeddingProvider });
+  const { hits, ...status } = report;
+  return { content: [{ type: "text", text: JSON.stringify(hits, null, 2) }], structuredContent: status };
 }
 
 export function handleGetSession(canonicalDir: string, args: { id: string; format?: "json" | "markdown" }): ToolResult {

@@ -176,6 +176,7 @@ export async function runList(opts: ListOpts): Promise<void> {
 // ---------------------------------------------------------------------------
 
 export interface UnifyOpts {
+  force?: boolean;
   cfg: ChatHistoryConfig;
   write: Writer;
 }
@@ -186,6 +187,7 @@ export async function runUnifyCmd(opts: UnifyOpts): Promise<void> {
     canonicalDir: opts.cfg.canonicalDir,
     indexPath: opts.cfg.indexPath,
     embeddingProvider: provider,
+    force: opts.force,
   });
   const embeddingNote = provider ? ` with ${provider.kind ?? "configured"} embeddings` : "";
   opts.write(`Reindexed ${count} sessions from canonical into index${embeddingNote}.`);
@@ -684,6 +686,7 @@ export async function startServe(cfg: ChatHistoryConfig): Promise<ServeHandles> 
     envVarName: "INGEST_TOKEN",
     serviceName: "ingest server",
   });
+  const embeddingProvider = embeddingProviderFromConfig(cfg);
   const ingestServer = Bun.serve({
     hostname: cfg.bindHost,
     port: cfg.ingestPort,
@@ -692,7 +695,7 @@ export async function startServe(cfg: ChatHistoryConfig): Promise<ServeHandles> 
         canonicalDir: cfg.canonicalDir,
         indexPath: cfg.indexPath,
         ingestToken: cfg.ingestToken ?? undefined,
-        embeddingProvider: embeddingProviderFromConfig(cfg),
+        embeddingProvider,
       });
     },
   });
@@ -702,7 +705,7 @@ export async function startServe(cfg: ChatHistoryConfig): Promise<ServeHandles> 
     bindHost: cfg.bindHost,
     indexPath: cfg.indexPath,
     canonicalDir: cfg.canonicalDir,
-    embeddingProvider: embeddingProviderFromConfig(cfg),
+    embeddingProvider,
     mcpAuthToken: cfg.mcpAuthToken,
   });
 
