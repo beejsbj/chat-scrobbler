@@ -277,8 +277,20 @@ async function main(argv: string[]): Promise<void> {
       case "serve": {
         const handles = await startServe(cfg);
         printServeInfo(cfg, handles);
-        // Keep alive indefinitely until the process is terminated.
-        await new Promise<void>(() => {});
+        const exitCode=await new Promise<number>(resolve=> {
+          let closing=false;
+          const shutdown=async(code:number)=> {
+            if(closing) return;
+            closing=true;
+            try {await handles.stop!();}
+            catch {process.stderr.write("Error: serve shutdown failed\n");code=1;}
+            finally {process.removeListener("SIGINT",interrupt);process.removeListener("SIGTERM",terminate);}
+            resolve(code);
+          };
+          const interrupt=()=>{void shutdown(130);},terminate=()=>{void shutdown(0);};
+          process.on("SIGINT",interrupt);process.on("SIGTERM",terminate);
+        });
+        process.exit(exitCode);
         break;
       }
 

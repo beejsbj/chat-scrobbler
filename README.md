@@ -103,6 +103,45 @@ export CHAT_SCROBBLER_EMBED_MODEL=mxbai-embed-large
 chat-scrobbler unify
 ```
 
+`serve` fills pending embeddings in the background when a provider is configured.
+The first batch waits 10 minutes for startup and search cache warmup. Each run
+attempts at most 25 items, scans at most 1,000 rows, and yields every 100 scanned
+rows and before inference requests. An unfinished sweep with fewer than 25
+attempts continues after one second; a filled batch or completed sweep waits
+the configured interval. Provider failures stop the batch and use jittered
+exponential backoff, capped at one hour or the configured interval if longer.
+
+| Environment variable | Default | JSON config key |
+| --- | --- | --- |
+| `CHAT_SCROBBLER_EMBED_BACKFILL_ENABLED` | `true` | `embeddingBackfillEnabled` |
+| `CHAT_SCROBBLER_EMBED_BACKFILL_INTERVAL_MS` | `600000` | `embeddingBackfillIntervalMs` |
+| `CHAT_SCROBBLER_EMBED_BACKFILL_BATCH_SIZE` | `25` | `embeddingBackfillBatchSize` |
+
+The bjslab Compose service forwards these controls from Coolify. Set enabled to
+`false` to disable scheduling. With no configured provider, scheduling is disabled.
+Authenticated `GET /health/deep` includes live `backfill` progress, scan cursors,
+the last run, and the next run time. Its counts describe the batch; background
+runs avoid full coverage scans and decoding covered vectors. Manual
+`embed-backfill --model <id>` validates vectors and reports full coverage;
+`embed-backfill --help` lists its controls.
+
+The scheduler, manual backfill, and `--migrate-only` share an index lock. Live
+locks never expire by age. Only dead owners in the same PID namespace can be
+recovered automatically; foreign or unknown namespaces fail closed. Run manual
+CLI against a container-shared index through `docker exec` in the server's PID
+namespace.
+
+Serve handles SIGTERM and SIGINT by aborting background inference, releasing its
+lock, and closing both listeners. SIGKILL or another ungraceful stop can leave a
+foreign-namespace lock after container recreation. Verify that the old container
+is dead before manually removing the index's `.embed-backfill.lock` directory.
+
+Serve shares one provider object across MCP, health, and backfill. Ollama and
+Gemini finish an active document call, then serve waiting queries before another
+document. Gemma uses its native priority queue per HTTP request, allowing queries
+to enter between document chunks. A manual CLI in a separate process has its own
+provider queue.
+
 `get` can narrow a conversation down for an agent: `--role` keeps only the turns
 you want (`user`, `assistant`, `system`, `tool`, comma-separated), and
 `--text-only` strips reasoning and tool blocks to leave just the prose. They

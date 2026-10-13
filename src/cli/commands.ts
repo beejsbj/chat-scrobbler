@@ -1,5 +1,7 @@
 import { textCoverage } from "../indexer/embed-backfill";
 import { assetCoverage } from "../indexer/asset-embeddings";
+import { startEmbeddingBackfillScheduler, type BackfillScheduler } from "../indexer/backfill-scheduler";
+import { queryPriorityProvider } from "../indexer/query-priority-provider";
 // src/cli/commands.ts
 // Command implementations for the chat-scrobbler CLI.
 // All commands accept an injected cfg and a write() function for testability.
@@ -693,6 +695,9 @@ export async function runRestore(opts: RestoreCmdOpts): Promise<void> {
 export interface ServeHandles {
   ingestServer: ReturnType<typeof Bun.serve>;
   mcpServer: Awaited<ReturnType<typeof startHttpServer>>;
+  backfillScheduler?: BackfillScheduler;
+  /** Abort background work, release its lock, and close both listeners. */
+  stop?: () => Promise<void>;
 }
 
 export async function startServe(cfg: ChatHistoryConfig): Promise<ServeHandles> {
@@ -702,7 +707,9 @@ export async function startServe(cfg: ChatHistoryConfig): Promise<ServeHandles> 
     envVarName: "INGEST_TOKEN",
     serviceName: "ingest server",
   });
-  const embeddingProvider = embeddingProviderFromConfig(cfg);
+  const configuredProvider = embeddingProviderFromConfig(cfg);
+  const embeddingProvider = configuredProvider ? queryPriorityProvider(configuredProvider) : null;
+  let backfillScheduler: BackfillScheduler | undefined;
   const ingestServer = Bun.serve({
     hostname: cfg.bindHost,
     port: cfg.ingestPort,
@@ -716,20 +723,35 @@ export async function startServe(cfg: ChatHistoryConfig): Promise<ServeHandles> 
         monitorRecentHours: cfg.monitorRecentHours,
         monitorStatePath: cfg.monitorStatePath,
         embeddingProvider,
+        backfillStatus: backfillScheduler ? () => backfillScheduler!.status() : undefined,
       });
     },
   });
 
-  const mcpServer = await startHttpServer({
+  let mcpServer: ServeHandles["mcpServer"];
+  try { mcpServer = await startHttpServer({
     port: cfg.mcpHttpPort,
     bindHost: cfg.bindHost,
     indexPath: cfg.indexPath,
     canonicalDir: cfg.canonicalDir,
     embeddingProvider,
     mcpAuthToken: cfg.mcpAuthToken,
-  });
+    warmSearchCaches: true,
+  }); } catch(error) {ingestServer.stop(true);throw error;}
 
-  return { ingestServer, mcpServer };
+  backfillScheduler=startEmbeddingBackfillScheduler({cfg,provider:embeddingProvider});
+  const stopIngest=ingestServer.stop.bind(ingestServer);
+  ingestServer.stop=(closeActiveConnections?: boolean)=> {
+    void backfillScheduler!.stop();
+    return stopIngest(closeActiveConnections);
+  };
+
+  let stopping: Promise<void> | undefined;
+  const stop=()=>stopping ??= (async()=> {
+    try {await backfillScheduler!.stop();}
+    finally {await Promise.all([ingestServer.stop(true),mcpServer.stop(true)]);}
+  })();
+  return { ingestServer, mcpServer, backfillScheduler, stop };
 }
 
 export function printServeInfo(cfg: ChatHistoryConfig, handles: ServeHandles): void {
