@@ -34,7 +34,9 @@ export function decodeVector(bytes: Uint8Array, dimension: number): Float32Array
   const vector = bytes.byteOffset % 4 === 0
     ? new Float32Array(bytes.buffer, bytes.byteOffset, dimension)
     : Float32Array.from({ length: dimension }, (_, i) => new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getFloat32(i * 4, true));
-  if (!vector.every(Number.isFinite)) throw new Error("invalid binary vector");
+  // Keep this loop inline: a callback per coordinate dominated the 31k x 768
+  // scan in the review benchmark, even before computing cosine similarity.
+  for(let i=0;i<vector.length;i++) if(!Number.isFinite(vector[i])) throw new Error("invalid binary vector");
   return vector;
 }
 export function createVectorTables(db: Database): void {

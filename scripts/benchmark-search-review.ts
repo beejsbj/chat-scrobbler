@@ -1,6 +1,7 @@
 // Synthetic copy-sized dataset. No archive content is read.
 import { openIndex, searchMessages } from "../src/indexer/sqlite";
-import { encodeVector } from "../src/indexer/vector-store";
+import { decodeVector, encodeVector } from "../src/indexer/vector-store";
+import { cosine } from "../src/indexer/vector-math";
 const db = openIndex(":memory:");
 const dimension = 768, messages = 35718, vectors = 31143;
 const vector = Array.from({length: dimension}, (_, i) => Math.sin(i + 1));
@@ -23,7 +24,11 @@ const time=(run:()=>unknown)=>{const start=performance.now();run();return perfor
 const stage:Record<string,number>={};
 stage.substring_sql_ms=time(()=>db.query("SELECT text FROM messages_fts WHERE instr(lower(text),'unmatched query')>0 LIMIT 20").all());
 stage.binary_read_ms=time(()=>{for(const row of db.query("SELECT embedding FROM message_vectors").iterate()) void row;});
+stage.binary_decode_ms=time(()=>{for(const row of db.query("SELECT embedding FROM message_vectors").iterate() as Iterable<{embedding:Uint8Array}>) decodeVector(row.embedding,dimension);});
 stage.validated_read_ms=time(()=>{for(const row of db.query(`SELECT v.embedding,f.text FROM message_vectors v JOIN message_lookup k ON k.session_id=v.session_id AND k.message_id=v.message_id JOIN messages_fts f ON f.rowid=k.fts_rowid WHERE v.text=f.text`).iterate()) void row;});
+const decoded=decodeVector(blob,dimension);
+stage.cosine_scan_ms=time(()=>{let sum=0;for(let i=0;i<vectors;i++)sum+=cosine(vector,decoded);return sum;});
+stage.top_k_sort_ms=time(()=>{const ranked:number[]=[];for(let i=0;i<vectors;i++){const score=Math.sin(i*.17);if(score<=0 || ranked.length>=60 && score<=ranked[59])continue;ranked.push(score);ranked.sort((a,b)=>b-a);if(ranked.length>60)ranked.pop();}});
 const cold=time(()=>searchMessages(db,"unmatched query",{embeddingProvider:provider}));
 const warm=Array.from({length:5},()=>time(()=>searchMessages(db,"unmatched query",{embeddingProvider:provider}))).sort((a,b)=>a-b);
 console.log(JSON.stringify({messages,vectors,dimension,text_bytes:text.length*messages,stages:stage,cold_ms:cold,warm_median_ms:warm[2],warm_max_ms:warm[4],rss_mib:process.memoryUsage().rss/1024**2}));
