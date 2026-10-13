@@ -140,7 +140,7 @@ async function syncChatgpt(fetcher: FetchLike, options: ProviderSyncOptions): Pr
           endpoint: detailEndpoint,
           payload,
           assets,
-    assetReferences: assetReferences(candidates),
+          assetReferences: assetReferences(candidates),
           conversationUpdatedAt: item.updatedAt,
           rawUrl: `${currentOrigin()}${detailEndpoint}`,
         }));

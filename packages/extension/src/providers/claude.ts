@@ -141,7 +141,7 @@ async function syncClaude(fetcher: FetchLike, options: ProviderSyncOptions): Pro
           account: org.uuid,
           payload,
           assets,
-    assetReferences: assetReferences(candidates),
+          assetReferences: assetReferences(candidates),
           conversationUpdatedAt: item.updatedAt,
           rawUrl: `${currentOrigin()}${detailEndpoint}`,
         }));

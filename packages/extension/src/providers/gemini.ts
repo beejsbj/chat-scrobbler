@@ -227,7 +227,7 @@ async function captureGeminiOne(
         endpoint: `${BATCHEXECUTE_PATH}?rpcids=${CONVERSATION_RPC_ID}`,
         payload,
         assets,
-    assetReferences: assetReferences(candidates),
+        assetReferences: assetReferences(candidates),
         fetchedAt,
         conversationUpdatedAt: updatedAt,
         rawUrl: `https://gemini.google.com/app/${id}`,
