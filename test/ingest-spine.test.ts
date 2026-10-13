@@ -6,8 +6,9 @@ import { mkdtempSync, rmSync, existsSync, readFileSync, mkdirSync } from "node:f
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { handleIngestRequest } from "../packages/ingest/src";
-import { foldCaptureIntoSpine } from "../packages/ingest/src/pipeline";
+import { foldCaptureIntoSpine, foldCaptureIntoSpineWithEmbeddings } from "../packages/ingest/src/pipeline";
 import { openIndex, searchMessages, indexSession, type EmbeddingProvider } from "../src/indexer/sqlite";
+import { embedBackfill, textCoverage } from "../src/indexer/embed-backfill";
 import { readSession, writeSession } from "../src/store/sessions";
 import { makeSessionId, type Session } from "../src/schema/types";
 import type { RawCapture } from "../packages/shared/src";
@@ -131,6 +132,99 @@ test("POST /captures acknowledges every capture in a batch without starting hang
     clearTimeout(deadline);
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("reingest preserves successful vectors and explicit backfill resumes missing and stale inputs", async () => {
+  const { root, canonicalDir, indexPath } = ctx();
+  const calls: string[] = [];
+  const provider: EmbeddingProvider = {
+    kind: "test-pending",
+    model: "current",
+    dimensions: 2,
+    embed(text) {
+      calls.push(text);
+      return [1, 0];
+    },
+  };
+  const ingest = (capture: unknown) => handleIngestRequest(
+    new Request("http://local/captures", { method: "POST", body: JSON.stringify(capture) }),
+    { canonicalDir, indexPath, embeddingProvider: provider },
+  );
+  try {
+    expect((await ingest(chatgptApi)).status).toBe(200);
+    const db = openIndex(indexPath);
+    const backfill = { provider, load: () => 0, sleep: async () => {} };
+    try {
+      // FTS inputs with no matching vector are the durable pending marker.
+      expect(textCoverage(db, provider)).toEqual({ total: 3, embedded: 0 });
+      expect(await embedBackfill(db, { ...backfill, limit: 1 })).toMatchObject({ embedded: 1 });
+      expect((await ingest(chatgptApi)).status).toBe(200);
+      expect(calls).toHaveLength(1);
+      expect(textCoverage(db, provider)).toEqual({ total: 3, embedded: 1 });
+      expect(await embedBackfill(db, backfill)).toMatchObject({ embedded: 2, skipped: 1 });
+
+      const otherModel = { ...provider, model: "previous", embed: () => [0, 1] };
+      await embedBackfill(db, { ...backfill, provider: otherModel });
+      expect((await ingest(chatgptApi)).status).toBe(200);
+      expect(textCoverage(db, provider)).toEqual({ total: 3, embedded: 3 });
+      expect(textCoverage(db, otherModel)).toEqual({ total: 3, embedded: 3 });
+      expect(calls).toHaveLength(3);
+
+      const changed = structuredClone(chatgptApi);
+      changed.payload.mapping.n3.message.content.parts[0] = "A newly revised protective answer.";
+      expect((await ingest(changed)).status).toBe(200);
+      expect(calls).toHaveLength(3);
+      expect(searchMessages(db, "revised")).toHaveLength(1);
+      expect(textCoverage(db, provider)).toEqual({ total: 3, embedded: 2 });
+      expect(textCoverage(db, otherModel)).toEqual({ total: 3, embedded: 2 });
+      expect(searchMessages(db, "synonym", { embeddingProvider: provider })).toHaveLength(2);
+      expect(await embedBackfill(db, backfill)).toMatchObject({ embedded: 1, skipped: 2 });
+      expect(calls).toHaveLength(5); // Three documents, one query, one changed document.
+      expect(calls.at(-1)).toBe("A newly revised protective answer.\n\n[image]");
+
+      changed.payload.title = "A revised title";
+      expect((await ingest(changed)).status).toBe(200);
+      expect(calls).toHaveLength(5);
+      expect(textCoverage(db, provider)).toEqual({ total: 3, embedded: 0 });
+      expect(searchMessages(db, "synonym", { embeddingProvider: provider })).toHaveLength(0);
+      expect(await embedBackfill(db, backfill)).toMatchObject({ embedded: 3, skipped: 0 });
+      expect(textCoverage(db, provider)).toEqual({ total: 3, embedded: 3 });
+      expect(await embedBackfill(db, backfill)).toMatchObject({ embedded: 0, skipped: 3 });
+    } finally {
+      db.close();
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("async fold compatibility leaves no inference work using the caller-owned DB", async () => {
+  const { root, canonicalDir } = ctx();
+  const db = openIndex(":memory:");
+  let inferenceCalls = 0;
+  try {
+    const result = await foldCaptureIntoSpineWithEmbeddings(chatgptApi as RawCapture, {
+      canonicalDir,
+      db,
+      embeddingProvider: {
+        embed() {
+          inferenceCalls++;
+          return [1, 0];
+        },
+      },
+    });
+    expect(result).toEqual([
+      { session_id: "chatgpt:conv-1", source: "chatgpt", source_id: "conv-1", indexed: true },
+    ]);
+    expect(searchMessages(db, "protective")).toHaveLength(1);
+    expect(readSession(canonicalDir, "chatgpt", "conv-1").messages).toHaveLength(3);
+  } finally {
+    db.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+  // Allow queued continuations a turn after closing the connection.
+  await new Promise(resolve => setTimeout(resolve, 0));
+  expect(inferenceCalls).toBe(0);
 });
 
 test("POST /status reports synced / stale / missing from the index", async () => {
