@@ -2,7 +2,13 @@
 import { openIndex, searchMessages } from "../src/indexer/sqlite";
 import { decodeVector, encodeVector } from "../src/indexer/vector-store";
 import { cosine } from "../src/indexer/vector-math";
-const db = openIndex(":memory:");
+import { mkdtempSync,rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+const httpMode=process.argv.includes("--http");
+const root=httpMode ? mkdtempSync(join(tmpdir(),"bjs548-search-")) : null;
+const indexPath=root ? join(root,"synthetic.db") : ":memory:";
+const db = openIndex(indexPath);
 const dimension = 768, messages = 35718, vectors = 31143;
 const vector = Array.from({length: dimension}, (_, i) => Math.sin(i + 1));
 const blob = encodeVector(vector), json = JSON.stringify(vector);
@@ -29,8 +35,27 @@ stage.validated_read_ms=time(()=>{for(const row of db.query(`SELECT v.embedding,
 const decoded=decodeVector(blob,dimension);
 stage.cosine_scan_ms=time(()=>{let sum=0;for(let i=0;i<vectors;i++)sum+=cosine(vector,decoded);return sum;});
 stage.top_k_sort_ms=time(()=>{const ranked:number[]=[];for(let i=0;i<vectors;i++){const score=Math.sin(i*.17);if(score<=0 || ranked.length>=60 && score<=ranked[59])continue;ranked.push(score);ranked.sort((a,b)=>b-a);if(ranked.length>60)ranked.pop();}});
-const cold=time(()=>searchMessages(db,"unmatched query",{embeddingProvider:provider}));
-const warm=Array.from({length:5},()=>time(()=>searchMessages(db,"unmatched query",{embeddingProvider:provider}))).sort((a,b)=>a-b);
-console.log(JSON.stringify({messages,vectors,dimension,text_bytes:text.length*messages,stages:stage,cold_ms:cold,warm_median_ms:warm[2],warm_max_ms:warm[4],rss_mib:process.memoryUsage().rss/1024**2}));
-db.close();
+let cold:number,warm:number[];
+if(httpMode) {
+  const {startHttpServer}=await import("../src/mcp/http");
+  const {Client}=await import("@modelcontextprotocol/sdk/client");
+  const {StreamableHTTPClientTransport}=await import("@modelcontextprotocol/sdk/client/streamableHttp.js");
+  const server=await startHttpServer({port:0,indexPath,canonicalDir:root!,embeddingProvider:provider});
+  const client=new Client({name:"synthetic-benchmark",version:"1.0.0"});
+  try {
+    await client.connect(new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${server.port}/mcp`)));
+    const request=async()=>{
+      const start=performance.now();
+      const result=await client.callTool({name:"search",arguments:{query:"unmatched query"}});
+      if((result.structuredContent as {hits:unknown[]})?.hits?.length!==20) throw new Error("HTTP search lost expected hits");
+      return performance.now()-start;
+    };
+    cold=await request();warm=[];for(let i=0;i<5;i++)warm.push(await request());warm.sort((a,b)=>a-b);
+  } finally {await client.close();await server.stop(true);}
+} else {
+  cold=time(()=>searchMessages(db,"unmatched query",{embeddingProvider:provider}));
+  warm=Array.from({length:5},()=>time(()=>searchMessages(db,"unmatched query",{embeddingProvider:provider}))).sort((a,b)=>a-b);
+}
+console.log(JSON.stringify({mode:httpMode ? "http_mcp" : "direct",messages,vectors,dimension,text_bytes:text.length*messages,stages:stage,cold_ms:cold,warm_median_ms:warm[2],warm_max_ms:warm[4],rss_mib:process.memoryUsage().rss/1024**2}));
+db.close();if(root)rmSync(root,{recursive:true,force:true});
 if(process.argv.includes("--assert") && warm[2]>=300) throw new Error("copy-sized warm search exceeds 300ms");

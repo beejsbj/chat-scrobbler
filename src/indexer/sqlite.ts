@@ -1,3 +1,4 @@
+import { cachedSubstringCandidates } from "./literal-cache";
 import { createMessageLookup, ensureMessageLookup } from "./message-lookup";
 import { createAssetVectorTables, replaceAssetLinks, linkedAssetHashes, pruneUnownedAssetVectors, assetSemanticCandidates } from "./asset-embeddings";
 import { cachedSemanticCandidates } from "./active-vector-cache";
@@ -95,7 +96,7 @@ export async function indexSessionWithEmbeddings(db: Database, s: Session, opts:
       const row={session_id:s.id,message_id:message.id,text:message.text,role:message.role,
         created_at:message.created_at,source:s.source,title:s.title,embedding,...embeddingMetadata(embeddingProvider,embedding)};
       const written=db.transaction(()=> {
-        const live=db.query("SELECT f.text,f.title FROM message_lookup k JOIN messages_fts f ON f.rowid=k.fts_rowid WHERE k.session_id=? AND k.message_id=?")
+        const live=db.query("SELECT f.text,f.title FROM message_lookup k JOIN messages_fts f ON f.rowid=k.fts_rowid AND f.session_id=k.session_id AND f.message_id=k.message_id WHERE k.session_id=? AND k.message_id=?")
           .get(s.id,message.id) as {text:string;title:string|null}|null;
         if(!live || live.text!==message.text || live.title!==s.title || opts.shouldReplaceEmbeddings && !opts.shouldReplaceEmbeddings()) return false;
         putTextVector(db,{...row,provider_model:row.provider_model ?? ""});return true;
@@ -375,19 +376,7 @@ function substringCandidates(db: Database, query: string, source: string | undef
   const literal = literalSearchQuery(query);
   if (!literal) return [];
 
-  const params: any[] = [literal.toLowerCase()];
-  let where = "instr(lower(text), ?) > 0";
-  if (source) {
-    where += " AND source = ?";
-    params.push(source);
-  }
-  params.push(limit);
-
-  return db.query(
-    `SELECT text, message_id, session_id, role, created_at, source, title
-     FROM messages_fts WHERE ${where}
-     LIMIT ?`,
-  ).all(...params) as any[];
+  return cachedSubstringCandidates(db,literal,source,limit);
 }
 
 function mergeSubstringHits(merged: Map<string, RankedHit>, rows: any[], query: string): void {
