@@ -19,6 +19,7 @@ import { deleteIndexedSession, openIndex } from "../../../src/indexer/sqlite";
 import { MAX_ASSET_BYTES, storeCanonicalAsset } from "../../../src/store/assets";
 import { AssetBlobMissingError, lookupAssetBlob, referenceExistingAsset } from "../../../src/store/asset-dedup";
 import { BodyTooLargeError, readBoundedBody } from "./bounded-body";
+import { handleAssetBackfill } from "./asset-backfill";
 import { captureJsonEntries } from "../../../src/store/raw-json";
 import { rawDirForCanonicalDir, storeRawCapture } from "../../../src/store/raw";
 import { deleteSessionArchive } from "../../../src/store/delete";
@@ -118,7 +119,8 @@ export async function handleIngestRequest(req: Request, opts: IngestServerOption
   const isAssetLookup = req.method === "GET" && url.pathname === ASSET_INGEST_PATH;
   const isAssetReference = req.method === "POST" && url.pathname === `${ASSET_INGEST_PATH}/reference`;
   const isStatus = req.method === "POST" && url.pathname === STATUS_PATH;
-  if (!isCapture && !isDeleteCapture && !isAsset && !isAssetLookup && !isAssetReference && !isStatus) {
+  const isBackfill = (req.method === "GET" || req.method === "POST") && url.pathname === `${ASSET_INGEST_PATH}/backfill`;
+  if (!isBackfill && !isCapture && !isDeleteCapture && !isAsset && !isAssetLookup && !isAssetReference && !isStatus) {
     return json({ ok: false, error: "Not found" }, 404);
   }
 
@@ -131,6 +133,12 @@ export async function handleIngestRequest(req: Request, opts: IngestServerOption
   }
 
   const fat = fatMode(opts);
+
+  if (isBackfill) {
+    if (!fat) return json({ ok: false, error: "asset endpoint requires canonicalDir + indexPath" }, 400);
+    const rawDir = opts.rawDir ?? rawDirForCanonicalDir(fat.canonicalDir);
+    return handleAssetBackfill(req, url, { canonicalDir: fat.canonicalDir, rawDir, db: indexFor(fat.indexPath), readSource }, json);
+  }
 
   if (isDeleteCapture) {
     if (!fat) return json({ ok: false, error: "delete endpoint requires canonicalDir + indexPath" }, 400);
