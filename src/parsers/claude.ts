@@ -22,6 +22,8 @@ export interface RawClaudeMsg {
   text?: string; content?: any[];
   attachments?: any[];
   files?: any[];
+  files_v2?: any[];
+  generated_files?: any[];
   model?: string | null;
 }
 export interface RawClaudeConv {

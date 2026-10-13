@@ -17,9 +17,14 @@ export function blocksFromContent(content: any, assets: AssetLookup = assetLooku
         return [mediaBlock("image", part.asset_pointer, assets)];
       }
       // Audio pointers are only decoded for the known audio content types.
-      if (["audio", "input_audio", "input_audio_buffer", "audio_unconditional"].includes(part?.content_type)) {
+      if (["audio", "input_audio", "input_audio_buffer", "audio_unconditional", "audio_asset_pointer",
+        "real_time_user_audio_video_asset_pointer"].includes(part?.content_type)) {
         const pointer = part.asset_pointer ?? part.audio_asset_pointer?.asset_pointer;
-        if (typeof pointer === "string") return [mediaBlock("audio", pointer, assets)];
+        const video = part.video_container_asset_pointer?.asset_pointer;
+        const found: Block[] = [];
+        if (typeof pointer === "string") found.push(mediaBlock("audio", pointer, assets));
+        if (typeof video === "string") found.push(mediaBlock("video", video, assets));
+        if (found.length) return found;
       }
       return [...proseBlocks(part), unknownBlock(part, at)];
     })];

@@ -16,7 +16,7 @@ export function geminiOpaqueSlots(value: unknown[], known: number[], loc: PartLo
     ? [] : [unknownBlock(part, childLocation(loc, i), `${prefix}.content`)]);
 }
 
-export function geminiCandidates(turn: unknown[], loc: PartLocation): Array<{ id: string; blocks: Block[] }> {
+export function geminiCandidates(turn: unknown[], loc: PartLocation, keepEmpty: (id: string) => boolean = () => false): Array<{ id: string; blocks: Block[] }> {
   const resp = turn[3];
   if (!Array.isArray(resp) || !Array.isArray(resp[0])) return [];
   return resp[0].flatMap((candidate, i) => {
@@ -24,6 +24,6 @@ export function geminiCandidates(turn: unknown[], loc: PartLocation): Array<{ id
     const at = childLocation(loc, 3, 0, i);
     const blocks = [...geminiTextParts(candidate[1], childLocation(at, 1)),
       ...geminiOpaqueSlots(candidate, [0, 1], at, "gemini.candidate")];
-    return blocks.length ? [{ id: candidate[0], blocks }] : [];
+    return blocks.length || keepEmpty(candidate[0]) ? [{ id: candidate[0], blocks }] : [];
   });
 }

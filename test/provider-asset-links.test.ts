@@ -1,0 +1,133 @@
+import { test, expect } from "bun:test";
+import { parseChatgpt } from "../src/parsers/chatgpt";
+import { parseClaude } from "../src/parsers/claude";
+import { parseGemini } from "../src/parsers/gemini";
+
+const asset = (pointer: string, local: string, extra: Record<string, unknown> = {}) =>
+  ({ pointer, local_path: local, sha256: local.slice(-6), ...extra });
+
+const media = (blocks: any[]) => blocks.filter(b => ["image", "audio", "video", "file"].includes(b.type));
+
+function gpt(messages: Array<{ id: string; role: string; content: any; metadata?: any; recipient?: string; author?: any }>, assets: any[]) {
+  const mapping: Record<string, any> = { root: { id: "root", message: null, parent: null, children: [messages[0].id] } };
+  messages.forEach((m, i) => {
+    mapping[m.id] = { id: m.id, parent: i === 0 ? "root" : messages[i - 1].id,
+      children: messages[i + 1] ? [messages[i + 1].id] : [],
+      message: { id: m.id, author: m.author ?? { role: m.role }, create_time: 1, recipient: m.recipient ?? "all",
+        content: m.content, metadata: m.metadata ?? {} } };
+  });
+  return { source: "chatgpt", source_id: "c1", payload: { conversation_id: "c1", current_node: messages.at(-1)!.id, mapping }, assets };
+}
+
+test("ChatGPT links metadata attachments by file id and keeps the opaque entry", () => {
+  const [s] = parseChatgpt(gpt([{ id: "u1", role: "user", content: { content_type: "text", parts: ["see file"] },
+    metadata: { attachments: [{ id: "file-DOC1", name: "report.pdf", mime_type: "application/pdf" }] } }],
+    [asset("file-service://file-DOC1", "assets/chatgpt/c1/doc111.pdf", { content_type: "application/pdf", filename: "report.pdf" })]));
+  const files = media(s.messages[0].blocks);
+  expect(files).toEqual([expect.objectContaining({ type: "file", pointer: "file-service://file-DOC1",
+    local_path: "assets/chatgpt/c1/doc111.pdf", mime_type: "application/pdf" })]);
+  expect(s.messages[0].blocks.some(b => b.type === "unknown" && b.provider_type === "attachments")).toBe(true);
+});
+
+test("ChatGPT links assets by message_id once, even for a media-only tool message", () => {
+  const [s] = parseChatgpt(gpt([
+    { id: "u1", role: "user", content: { content_type: "text", parts: ["plot it"] } },
+    { id: "t1", role: "tool", author: { role: "tool", name: "python" }, content: { content_type: "execution_output", text: "" },
+      metadata: { aggregate_result: { messages: [{ message_type: "image", image_url: "file-service://file-PLOT" }] } } },
+    { id: "t2", role: "tool", author: { role: "tool", name: "dalle.text2im" }, content: { content_type: "text", parts: [""] } },
+  ], [
+    asset("file-service://file-PLOT", "assets/chatgpt/c1/plot111.png", { message_id: "t1", content_type: "image/png" }),
+    asset("sediment://file_GEN", "assets/chatgpt/c1/gen111.webp", { message_id: "t2", content_type: "image/webp" }),
+  ]));
+  expect(media(s.messages.find(m => m.id === "t1")!.blocks)).toHaveLength(1);
+  expect(media(s.messages.find(m => m.id === "t2")!.blocks)).toEqual([
+    expect.objectContaining({ type: "image", pointer: "sediment://file_GEN", local_path: "assets/chatgpt/c1/gen111.webp" })]);
+});
+
+test("ChatGPT voice parts link audio and video container pointers without duplicating", () => {
+  const [s] = parseChatgpt(gpt([{ id: "u1", role: "user", content: { content_type: "multimodal_text", parts: [
+    { content_type: "audio_transcription", text: "hello there" },
+    { content_type: "audio_asset_pointer", asset_pointer: "file-service://file-VOICE", format: "wav" },
+    { content_type: "real_time_user_audio_video_asset_pointer", audio_asset_pointer: { asset_pointer: "file-service://file-RT" },
+      video_container_asset_pointer: { asset_pointer: "file-service://file-VID" } },
+  ] } }], [
+    asset("file-service://file-VOICE", "assets/chatgpt/c1/voice11.wav", { message_id: "u1", content_type: "audio/wav" }),
+    asset("file-service://file-RT", "assets/chatgpt/c1/rt1111.wav", { message_id: "u1", content_type: "audio/wav" }),
+    asset("file-service://file-VID", "assets/chatgpt/c1/vid111.mp4", { message_id: "u1", content_type: "video/mp4" }),
+  ]));
+  const m = media(s.messages[0].blocks);
+  expect(m.map(b => [b.type, b.local_path])).toEqual([
+    ["audio", "assets/chatgpt/c1/voice11.wav"], ["audio", "assets/chatgpt/c1/rt1111.wav"], ["video", "assets/chatgpt/c1/vid111.mp4"]]);
+  expect(s.messages[0].blocks.some(b => b.type === "unknown")).toBe(false);
+});
+
+test("ChatGPT keeps unmatched in-content pointers with null local_path", () => {
+  const [s] = parseChatgpt(gpt([{ id: "u1", role: "user", content: { content_type: "multimodal_text", parts: [
+    { content_type: "image_asset_pointer", asset_pointer: "file-service://file-GONE" }] } }], []));
+  expect(media(s.messages[0].blocks)).toEqual([expect.objectContaining({ pointer: "file-service://file-GONE", local_path: null })]);
+});
+
+const claudeCapture = (msgs: any[], assets: any[]) => ({ source: "claude", source_id: "cl1", account: "org",
+  payload: { uuid: "cl1", name: "t", chat_messages: msgs }, assets });
+
+test("Claude links generated_files, files_v2 and nested tool_result visuals", () => {
+  const [s] = parseClaude(claudeCapture([
+    { uuid: "h1", sender: "human", text: "make a chart", content: [{ type: "text", text: "make a chart" }] },
+    { uuid: "a1", sender: "assistant", parent_message_uuid: "h1", content: [
+      { type: "text", text: "Here you go" },
+      { type: "tool_result", name: "bash_tool", content: [
+        { type: "image", source: { type: "file", file_uuid: "img-uuid-1", media_type: "image/png" } },
+        { type: "image", source: { type: "base64", media_type: "image/png", data: "AAAA" } }] }],
+      generated_files: [{ file_uuid: "gen-uuid-1", file_name: "out.csv", mime_type: "text/csv" }],
+      files_v2: [{ file_uuid: "v2-uuid-1", file_name: "in.png", file_kind: "image" }] },
+  ], [
+    asset("gen-uuid-1", "assets/claude/cl1/gen111.csv", { content_type: "text/csv" }),
+    asset("img-uuid-1", "assets/claude/cl1/img111.png", { content_type: "image/png" }),
+    asset("v2-uuid-1", "assets/claude/cl1/v21111.png", { content_type: "image/png" }),
+    asset("claude-blob-bin", "assets/claude/cl1/bin111.png", { message_id: "a1", content_type: "image/png" }),
+  ]));
+  const m = media(s.messages[1].blocks).map((b: any) => [b.type, b.pointer, b.local_path]);
+  expect(m).toContainEqual(["file", "gen-uuid-1", "assets/claude/cl1/gen111.csv"]);
+  expect(m).toContainEqual(["image", "img-uuid-1", "assets/claude/cl1/img111.png"]);
+  expect(m).toContainEqual(["image", "v2-uuid-1", "assets/claude/cl1/v21111.png"]);
+  expect(m).toContainEqual(["image", "claude-blob-bin", "assets/claude/cl1/bin111.png"]);
+  expect(m).toHaveLength(4);
+});
+
+test("Claude keeps a media-only message that has only a captured asset", () => {
+  const [s] = parseClaude(claudeCapture([
+    { uuid: "h1", sender: "human", content: [], text: "" },
+  ], [asset("up-1", "assets/claude/cl1/up1111.png", { message_id: "h1", content_type: "image/png" })]));
+  expect(s.messages).toHaveLength(1);
+  expect(media(s.messages[0].blocks)).toHaveLength(1);
+});
+
+const turn = (user: string[] | null, rc: Array<[string, string[] | null]>) => [
+  ["c_g1", "r_user"], ["c_g1", "r_resp", rc[0][0]], [user, 2, null, 1, "hex", 1, null, null, false],
+  [rc.map(([id, parts]) => [id, parts]), null, null, rc[0][0]], [1760000000, 0]];
+
+const gemCapture = (turns: any[], assets: any[]) => ({ source: "gemini", source_id: "g1",
+  fetched_at: "2026-06-06T00:00:00.000Z", payload: [turns, null, null, []], assets });
+
+test("Gemini places uploads and outputs by message_id without duplicates", () => {
+  const [s] = parseGemini(gemCapture([turn(["look at this"], [["rc_1", ["nice picture"]]])], [
+    asset("blob:up", "assets/gemini/g1/up1111.png", { message_id: "r_user", content_type: "image/png" }),
+    asset("blob:out", "assets/gemini/g1/out111.png", { message_id: "rc_1", content_type: "image/png" }),
+    asset("blob:out", "assets/gemini/g1/out111.png", { message_id: "rc_1", content_type: "image/png" }),
+  ]));
+  expect(media(s.messages[0].blocks).map((b: any) => b.pointer)).toEqual(["blob:up"]);
+  expect(media(s.messages[1].blocks).map((b: any) => b.pointer)).toEqual(["blob:out"]);
+});
+
+test("Gemini keeps media-only user and candidate messages and falls back to the tip", () => {
+  const [s] = parseGemini(gemCapture([turn(null, [["rc_1", null]])], [
+    asset("blob:up", "assets/gemini/g1/up1111.png", { message_id: "r_user", content_type: "image/png" }),
+    asset("blob:gen", "assets/gemini/g1/gen111.png", { message_id: "rc_1", content_type: "image/png" }),
+    asset("blob:lost", "assets/gemini/g1/los111.mp4", { content_type: "video/mp4" }),
+  ]));
+  expect(s.messages.map(m => m.id)).toEqual(["r_user", "rc_1"]);
+  expect(s.messages[0].parent_id).toBeNull();
+  expect(s.messages[1].parent_id).toBe("r_user");
+  expect(media(s.messages[1].blocks).map((b: any) => b.pointer)).toEqual(["blob:gen", "blob:lost"]);
+  expect(s.active_leaf_id).toBe("rc_1");
+});

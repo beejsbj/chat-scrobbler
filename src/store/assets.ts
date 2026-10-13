@@ -7,7 +7,7 @@ import { dirname, extname, join, relative, sep } from "node:path";
 import { sanitizePathSegment } from "../../packages/shared/src";
 import type { ProviderSource } from "../../packages/shared/src";
 
-export const MAX_ASSET_BYTES = 50 * 1024 * 1024;
+export const MAX_ASSET_BYTES = 100 * 1024 * 1024;
 
 export interface StoreAssetInput {
   canonicalDir: string;
@@ -19,6 +19,8 @@ export interface StoreAssetInput {
   filename?: string | null;
   contentType?: string | null;
   bytes: Uint8Array;
+  /** Per-call size bound; defaults to MAX_ASSET_BYTES. */
+  maxBytes?: number;
 }
 
 export interface StoredAsset {
@@ -47,8 +49,9 @@ export function storeCanonicalAsset(input: StoreAssetInput): StoredAsset {
   assertSessionNotDeleted(input.canonicalDir, input.source, input.sourceId);
   if (!input.pointer.trim()) throw new Error("asset pointer is required");
   if (input.bytes.byteLength === 0) throw new Error("asset body is empty");
-  if (input.bytes.byteLength > MAX_ASSET_BYTES) {
-    throw new Error(`asset exceeds ${MAX_ASSET_BYTES} byte limit`);
+  const maxBytes = input.maxBytes ?? MAX_ASSET_BYTES;
+  if (input.bytes.byteLength > maxBytes) {
+    throw new Error(`asset exceeds ${maxBytes} byte limit`);
   }
 
   const sha256 = createHash("sha256").update(input.bytes).digest("hex");
@@ -92,7 +95,7 @@ export function canonicalRelativePath(canonicalDir: string, absPath: string): st
   return relative(canonicalRootFromSessionsDir(canonicalDir), absPath).split(sep).join("/");
 }
 
-function extensionFor(filename?: string | null, contentType?: string | null): string {
+export function extensionFor(filename?: string | null, contentType?: string | null): string {
   const fromName = filename ? extname(filename).toLowerCase() : "";
   if (/^\.[a-z0-9]{1,12}$/.test(fromName)) return fromName;
   const normalized = contentType?.split(";")[0]?.trim().toLowerCase();

@@ -1,5 +1,6 @@
 import type { Block } from "../schema/types";
 import { assetLookupFromRaw, type AssetLookup } from "./assets";
+import { capturedAssetBlocks, mediaKind } from "./captured-assets";
 import { childLocation, mediaBlock, toolCall, unknownBlock, type PartLocation } from "./parts";
 import type { RawClaudeMsg } from "./claude";
 
@@ -38,6 +39,7 @@ export function blocksFromClaude(m: RawClaudeMsg, assets: AssetLookup = assetLoo
         break;
       case "tool_result":
         blocks.push(toolCall(typeof c.name === "string" ? c.name : "tool"));
+        blocks.push(...nestedMedia(c.content, assets));
         break;
       default:
         blocks.push(unknownBlock(c, at));
@@ -54,7 +56,7 @@ export function blocksFromClaude(m: RawClaudeMsg, assets: AssetLookup = assetLoo
   if (!blocks.some(block => ["text", "reasoning", "artifact"].includes(block.type)) && m.text?.trim()) {
     blocks.push({ type: "text", text: m.text });
   }
-  for (const key of ["files", "attachments"] as const) {
+  for (const key of ["files", "files_v2", "generated_files", "attachments"] as const) {
     for (const [i, file] of (m[key] ?? []).entries()) {
       const pointer = file?.file_uuid ?? file?.uuid ?? file?.id ?? file?.attachment_uuid;
       if (typeof pointer !== "string" || !pointer) { blocks.push(unknownBlock(file, childLocation(loc, key, i), key)); continue; }
@@ -65,5 +67,17 @@ export function blocksFromClaude(m: RawClaudeMsg, assets: AssetLookup = assetLoo
       blocks.push(mediaBlock(type, pointer, assets, file.file_name ?? file.filename ?? file.name ?? null, mime ?? null));
     }
   }
+  blocks.push(...capturedAssetBlocks(assets, [m.uuid], blocks));
   return blocks;
+}
+
+/** Tool results can carry file-backed visuals; inline base64 sources have no pointer and link by message_id. */
+function nestedMedia(content: unknown, assets: AssetLookup): Block[] {
+  if (!Array.isArray(content)) return [];
+  return content.flatMap((item: any): Block[] => {
+    const pointer = item?.source?.file_uuid ?? item?.source?.file_id ?? item?.file_uuid;
+    if (typeof pointer !== "string" || !pointer || !["image", "document", "file"].includes(item?.type)) return [];
+    const mime = item.source?.media_type ?? item.mime_type ?? assets.byPointer(pointer)?.content_type ?? null;
+    return [mediaBlock(mediaKind(mime), pointer, assets, item.file_name ?? null, mime)];
+  });
 }

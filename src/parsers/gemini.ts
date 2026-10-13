@@ -34,8 +34,9 @@
 import type { Session, Message } from "../schema/types";
 import { SCHEMA_VERSION, makeSessionId } from "../schema/types";
 import { assetLookupFromRaw } from "./assets";
+import { addCapturedAssets, capturedAssetBlocks } from "./captured-assets";
 import { renderText } from "./render";
-import { childLocation, mediaBlock, limitUnknownJson, type ParserContext } from "./parts";
+import { childLocation, limitUnknownJson, type ParserContext } from "./parts";
 import { geminiTextParts, geminiOpaqueSlots, geminiCandidates } from "./gemini-parts";
 
 // Epoch seconds + nanoseconds [s, ns] array -- the timestamp type Gemini uses.
@@ -118,7 +119,7 @@ export function parseGemini(raw: unknown, context: ParserContext = {}): Session[
 
   const messages: Message[] = [];
   const assetLookup = assetLookupFromRaw(raw);
-  const assets = assetLookup.all();
+  const hasAsset = (id: string) => assetLookup.all().some(asset => asset.message_id === id);
   const loc = { raw_ref: context.raw_ref ?? `raw/api/gemini:${sourceId}`, raw_path: "/payload" };
   let firstTimestamp: string | null = null;
   let lastTimestamp: string | null = null;
@@ -141,6 +142,7 @@ export function parseGemini(raw: unknown, context: ParserContext = {}): Session[
     const userBlocks = [...geminiTextParts(userMeta[0], childLocation(at, 2, 0)),
       ...geminiOpaqueSlots(userMeta, [0], childLocation(at, 2), "gemini.user")];
     const userMsgId = extractUserMsgId(turn);
+    if (userMsgId) userBlocks.push(...capturedAssetBlocks(assetLookup, [userMsgId], userBlocks));
     if (userBlocks.length && userMsgId) {
       const userMsg: Message = {
         id: userMsgId,
@@ -156,13 +158,14 @@ export function parseGemini(raw: unknown, context: ParserContext = {}): Session[
     }
 
     // --- Assistant messages: all candidates ---
-    const candidates = geminiCandidates(turn, at);
+    const candidates = geminiCandidates(turn, at, hasAsset);
     const emittedCandidateIds = new Set<string>(candidates.map((c) => c.id));
     const assistantTs = extractAssistantTimestamp(turn);
     const selectedId = extractSelectedCandidateId(turn, emittedCandidateIds);
 
     for (const cand of candidates) {
       const assistantBlocks = cand.blocks;
+      assistantBlocks.push(...capturedAssetBlocks(assetLookup, [cand.id], assistantBlocks));
       if (cand.id === selectedId) {
         if (Array.isArray(turn[3])) assistantBlocks.push(...geminiOpaqueSlots(turn[3], [0, 3, 21], childLocation(at, 3), "gemini.response"));
         assistantBlocks.push(...geminiOpaqueSlots(turn, [0, 1, 2, 3, 4], at, "gemini.turn"));
@@ -190,20 +193,7 @@ export function parseGemini(raw: unknown, context: ParserContext = {}): Session[
     }
   }
 
-  if (assets.length > 0 && messages.length > 0) {
-    const byId = new Map(messages.map((message) => [message.id, message]));
-    for (const asset of assets) {
-      const target = (asset.message_id ? byId.get(asset.message_id) : null)
-        ?? (lastActiveTipId ? byId.get(lastActiveTipId) : null)
-        ?? messages[messages.length - 1];
-      const mime = asset.content_type;
-      const type = mime?.startsWith("image/") ? "image" : mime?.startsWith("audio/") ? "audio"
-        : mime?.startsWith("video/") ? "video" : "file";
-      const block = mediaBlock(type, asset.pointer, assetLookup, asset.filename ?? null, mime ?? null);
-      target.blocks.push(block);
-      target.text = renderText(target.blocks);
-    }
-  }
+  addCapturedAssets(messages, assetLookup, lastActiveTipId);
 
   // Fallback timestamps: use fetched_at from the envelope if no assistant timestamps.
   const fetchedAt =
