@@ -29,6 +29,14 @@ def cases(video_only=False, eight_only=False):
     return sequence[-1:] if eight_only else sequence[3:] if video_only else sequence
 
 
+def probe_config():
+    # Keep the historical eight-frame experiment explicit as service defaults change.
+    return replace(Config(), idle_seconds=1, max_frames=8,
+                   model_path=SPIKE / 'hf/hub' / ('models--' + MODEL_ID.replace('/', '--'))
+                   / 'snapshots' / MODEL_REVISION / MODEL_FILENAME,
+                   cache_dir=SPIKE / 'litert-cache', allowed_roots=(SPIKE / 'inputs',))
+
+
 def child(video_only=False, eight_only=False):
     ensure_low_load()
     directory, limits = cgroup_limits()
@@ -41,10 +49,7 @@ def child(video_only=False, eight_only=False):
                                   'rss_kib': current_rss_kib()}), flush=True)
                 os._exit(75)
     threading.Thread(target=guard, daemon=True).start()
-    config = replace(Config(), idle_seconds=1,
-                     model_path=SPIKE / 'hf/hub' / ('models--' + MODEL_ID.replace('/', '--'))
-                     / 'snapshots' / MODEL_REVISION / MODEL_FILENAME,
-                     cache_dir=SPIKE / 'litert-cache', allowed_roots=(SPIKE / 'inputs',))
+    config = probe_config()
     service = Embedder(config)
     def sample(stage, **extra):
         print(json.dumps({'stage': stage, 'rss_kib': current_rss_kib(),

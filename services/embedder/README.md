@@ -93,13 +93,18 @@ reports filesystem readiness, not a successful native load. RSS is current
 | Source width or height / source pixels | 8192 / 32 Mi pixels |
 | Decoded image or video frame longest side | 768, aspect ratio preserved |
 | Audio | At most 30 seconds, converted to 16 kHz mono PCM16 WAV |
-| Video | At most 300 seconds, at most 8 frames |
+| Video | At most 300 seconds, at most 4 frames |
 | Decode deadline per media item | 30 seconds across probe and all conversions |
 | Idle unload | 300 seconds |
 
-Video selects up to one frame per second for short clips, capped at eight, evenly
+Video selects up to one frame per second for short clips, capped at four, evenly
 spaced from the beginning into the final tenth of the full duration. It embeds
 those images together in one native call; it does not extract video audio.
+The lower default trades temporal detail for more room within the unchanged
+120-second adapter deadline and native watchdog. The historical four-frame
+parity call took 41.9 seconds; the eight-frame decode/inference call took 91.8
+seconds. These different probes inform the budget, but do not measure the new
+default decoder's native latency or guarantee completion under queue contention.
 Audio/video with unknown, nonfinite, or excessive duration are rejected. Audio is
 also checked after conversion so misleading metadata cannot exceed the cap.
 
@@ -246,14 +251,30 @@ during native work. It uses only synthetic spike fixtures, not archive data.
 JSON lines report current RSS, process peak RSS, cgroup memory, load and elapsed
 time: before native import/load, after native load and text, first idle close,
 immediate RSS and 1/5/15 seconds after unload, reload and text, then image, audio,
-eight-frame video, a second idle unload with the same settled samples, and final
-close. The first unload deliberately precedes all media work. It attempts no
+video with the default four-frame cap, a second idle unload with the same settled
+samples, and final close. The first unload deliberately precedes all media work. It attempts no
 trim operation that would hide allocator retention. OOM, high-load abort, timeout,
 or ineffective user cgroup caps mean the experiment is incomplete.
 
-## Current verification, 2026-10-13
+## Round 2 default-cap verification, 2026-10-13
 
-The local Python 3.12 suite passes **42 tests, zero failures, zero skips** in
+The focused configuration, media, service, and HTTP tests pass **36 tests, zero
+failures, zero skips** in 6.972 seconds:
+
+```sh
+PYTHONPATH=services/embedder/tests python3 -B -m unittest -v test_config test_media test_service test_http
+```
+
+The new synthetic ten-second clip test first failed with eight decoded frames,
+then passed with four through both the decoder and embedding API. Constructor
+and environment defaults agree on four frames and the 120-second watchdog. The
+native probe configuration is tested separately to retain an explicit eight-frame
+budget. These checks use fake engines and synthetic media; native inference,
+image builds, deployment, and production data were not part of this change.
+
+## Historical review verification, 2026-10-13
+
+The earlier local Python 3.12 suite passed **42 tests, zero failures, zero skips** in
 6.804 seconds. Docker Compose v5.0.2 is available locally; the main deployment
 plan is tested with its profile disabled, enabled, and with explicit Coolify
 provider/model overrides. Native load/inference watchdog, a hung idle close in
@@ -264,7 +285,7 @@ ffmpeg inputs, never the model. In environments without Docker the two rendered
 Compose tests skip. See [Python receipt](verification/python-review-2026-10-13.json)
 and [native API audit](verification/native-api-review-2026-10-13.json).
 
-### Native parity and eight frames
+### Historical native parity and eight frames
 
 The finite probe reuses the exact existing spike model revision, Python runtime,
 compilation cache, synthetic fixtures, and NPZ references. No model download or
@@ -278,6 +299,9 @@ It uses the same transient `MemoryMax=2G`, `MemorySwapMax=0`, `CPUQuota=200%`,
 `Nice=19`, `RuntimeMaxSec=300` and effective-cap checks as `measure`. A watchdog
 exits 75 if one-minute load exceeds 8. `--video-only` and `--eight-only` resume
 unfinished cases without repeating completed parity calls after a guarded abort.
+This historical probe explicitly sets `max_frames=8`, including `--eight-only`;
+it does not use or verify the current four-frame service default. Its receipts
+remain unchanged. No native inference was rerun for the default-cap change.
 
 Each completed case ran once. Three attempts were stopped by the load guard,
 then the remaining case completed in a quiet window. Text/image/audio and the
@@ -312,9 +336,10 @@ a peak after a completed text/image/audio workload in the same process.
 | Transient unit runtime / CPU time | 108.604 s / 178.372 s |
 | Swap / exit status | 0 bytes / 0 |
 
-Retain the maximum of eight frames: RSS and cgroup peaks are below the 1.8 GiB
-"near limit" threshold. Idle close released 1,260,800 KiB relative to the
-post-inference sample, while retaining memory above baseline. One clip and one
+The earlier decision retained eight frames because RSS and cgroup peaks were
+below the 1.8 GiB "near limit" threshold. That decision is historical; the service
+now defaults to four for deadline margin. Idle close released 1,260,800 KiB
+relative to the post-inference sample, while retaining memory above baseline. One clip and one
 close do not establish worst-case asset memory or long-term allocator growth.
 Latency is measured on a contended, page-cache-warm host, not a promise.
 

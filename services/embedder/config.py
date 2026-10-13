@@ -31,7 +31,7 @@ class Config:
     max_input_length: int = 2048
     max_audio_seconds: float = 30
     max_video_seconds: float = 300
-    max_frames: int = 8
+    max_frames: int = 4
     max_image_side: int = 768
     max_source_side: int = 8192
     max_source_pixels: int = 32 * 1024 * 1024

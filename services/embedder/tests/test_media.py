@@ -11,6 +11,8 @@ from pathlib import Path
 from services.embedder.config import Config
 from services.embedder.errors import RequestError
 from services.embedder.media import Decoder, sample_times
+from services.embedder.service import Embedder
+from test_service import FakeEngine
 
 
 class MediaTests(unittest.TestCase):
@@ -74,6 +76,28 @@ class MediaTests(unittest.TestCase):
         subprocess.run(['ffmpeg', '-nostdin', '-v', 'error', '-threads', '1',
                         '-filter_threads', '1', '-y', *args], check=True, timeout=15,
                        stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+
+    @unittest.skipUnless(shutil.which('ffmpeg') and shutil.which('ffprobe'), 'ffmpeg required')
+    def test_default_ten_second_video_caps_decoder_and_api_at_four_frames(self):
+        video = self.allowed / 'ten-seconds.mkv'
+        self.ffmpeg('-f', 'lavfi', '-i', 'testsrc2=s=96x64:r=10:d=10', '-c:v', 'ffv1',
+                    '-threads', '1', str(video))
+        item = {'type': 'video', 'path': str(video)}
+        parts = self.decoder.prepare(item, self.work)
+        self.assertEqual(len(parts), 4)
+        self.assertTrue(all(p.kind == 'image' and p.path.is_file() for p in parts))
+        self.assertNotEqual(parts[0].path.read_bytes(), parts[-1].path.read_bytes())
+
+        engine = FakeEngine()
+        service = Embedder(self.decoder.config, lambda: engine)
+        try:
+            result = service.embeddings({'input': item})
+            self.assertEqual(len(result['data'][0]['embedding']), 768)
+            self.assertEqual(len(engine.calls), 1)
+            self.assertEqual(len(engine.calls[0]), 4)
+            self.assertTrue(all(part.kind == 'image' for part in engine.calls[0]))
+        finally:
+            service.close()
 
     @unittest.skipUnless(shutil.which('ffmpeg') and shutil.which('ffprobe'), 'ffmpeg required')
     def test_synthetic_image_audio_video_decode(self):
