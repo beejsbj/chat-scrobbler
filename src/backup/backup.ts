@@ -1,3 +1,4 @@
+import { invalidateReferences } from "../store/asset-reference-store";
 // src/backup/backup.ts
 //
 // Orchestration: createBackup, listBackups, restoreBackup.
@@ -8,7 +9,7 @@ import { join, relative, basename, sep } from "node:path";
 import { tmpdir } from "node:os";
 import { listSessionFiles, sessionFilePath, writeSession } from "../store/sessions";
 import { isSessionDeleted, listTombstones, markSessionDeleted, tombstoneDir } from "../store/tombstones";
-import { deleteSessionArchive } from "../store/delete";
+import { deleteSessionArchives } from "../store/delete";
 import { backupRaw, rawFiles, restoreRaw } from "./raw";
 import { rawDirForCanonicalDir } from "../store/raw";
 import { assetsDirForCanonicalDir } from "../store/assets";
@@ -253,8 +254,10 @@ export async function restoreBackup(opts: RestoreBackupOptions): Promise<Restore
     await target.getFile(snapshot, relPath, destAbs);
   }
 
+  // Reference records are derived. Restored legacy aliases require one fresh ownership pass.
+  invalidateReferences(assetsDir);
   const restored_raw_count = await restoreRaw(opts.rawDir ?? rawDirForCanonicalDir(canonicalDir), target, snapshot, (source, id) => isSessionDeleted(canonicalDir, source, id));
-  for (const record of listTombstones(canonicalDir)) deleteSessionArchive(canonicalDir, record.source, record.source_id, opts.rawDir);
+  deleteSessionArchives(canonicalDir, listTombstones(canonicalDir), opts.rawDir);
   return { restored_count: restoredCount, restored_asset_count: assetRelPaths.length, restored_raw_count };
 }
 

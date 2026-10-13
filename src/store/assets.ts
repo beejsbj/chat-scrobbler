@@ -1,3 +1,4 @@
+import { recordAssetReferences } from "./asset-reference-store";
 import { assertSessionNotDeleted } from "./tombstones";
 import { writeImmutableFile } from "./immutable-file";
 import { createHash } from "node:crypto";
@@ -51,6 +52,7 @@ export function storeCanonicalAsset(input: StoreAssetInput): StoredAsset {
   }
 
   const sha256 = createHash("sha256").update(input.bytes).digest("hex");
+  recordAssetReferences(assetsDirForCanonicalDir(input.canonicalDir), input.source, input.sourceId, new Set([sha256]));
   const ext = extensionFor(input.filename, input.contentType);
   const relPath = [
     "assets",

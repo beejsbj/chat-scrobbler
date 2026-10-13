@@ -1,4 +1,6 @@
 // src/store/sessions.ts
+import { assetHashes } from "./asset-hashes";
+import { recordAssetReferences } from "./asset-reference-store";
 import { assertSessionNotDeleted, isSessionDeleted } from "./tombstones";
 import { syncDirectory, writeAtomicFile } from "./atomic-file";
 import { readFileSync, existsSync, readdirSync, rmSync } from "node:fs";
@@ -16,6 +18,8 @@ export interface DeleteSessionResult {
 export function writeSession(baseDir: string, session: Session): string {
   const file = sessionFilePath(baseDir, session.source, session.source_id);
   assertSessionNotDeleted(baseDir, session.source, session.source_id);
+  const hashes = assetHashes(session);
+  recordAssetReferences(baseDir, session.source, session.source_id, hashes);
   writeAtomicFile(file, JSON.stringify(session, null, 2));
   return file;
 }

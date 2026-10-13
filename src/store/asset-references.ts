@@ -1,34 +1,48 @@
-import { existsSync, readFileSync } from "node:fs";
-import { basename } from "node:path";
+import { basename, join, relative } from "node:path";
 import { assetsDirForCanonicalDir } from "./assets";
+import { isSessionDeleted } from "./tombstones";
 import { listSessionFiles } from "./sessions";
+import { assetHashes, filesUnder, readArchiveJson } from "./asset-hashes";
+import { hasAssetOwners, markReferencesReady, recordAssetReferences, referenceStoreReady } from "./asset-reference-store";
+export { captureHashes, collectAssetHashes, filesUnder } from "./asset-hashes";
 
-export function filesUnder(dir: string, pattern = "**/*"): string[] {
-  return existsSync(dir) ? [...new Bun.Glob(pattern).scanSync({ cwd: dir, absolute: true, onlyFiles: true })] : [];
-}
-export function collectAssetHashes(value: unknown, hashes: Set<string>): void {
-  if (typeof value === "string") {
-    // Covers sha256 fields as well as legacy local_path values.
-    for (const match of value.matchAll(/(?:^|\/)([a-f0-9]{64})(?:\.[a-z0-9]+)?$/g)) hashes.add(match[1]);
-  } else if (Array.isArray(value)) value.forEach(item => collectAssetHashes(item, hashes));
-  else if (value && typeof value === "object") Object.values(value).forEach(item => collectAssetHashes(item, hashes));
-}
-export function captureHashes(file: string, hashes: Set<string>): void {
-  const bytes = readFileSync(file);
-  collectAssetHashes(JSON.parse(file.endsWith(".gz") ? Buffer.from(Bun.gunzipSync(bytes)).toString("utf8") : bytes.toString("utf8")), hashes);
-}
-/** Deletion is uncommon; scan historical references rather than infer ownership from first_seen. */
-export function survivingAssetHashes(canonicalDir: string, rawDir: string): Set<string> | null {
-  const hashes = new Set<string>();
+/** Old archives need one initialization pass; new writes maintain ownership directly. */
+export function unreferencedAssetHashes(canonicalDir: string, rawDir: string, candidates: Set<string>, legacyMetadata?: any[]): Set<string> | null {
+  if (!candidates.size) return new Set();
+  const assetsDir = assetsDirForCanonicalDir(canonicalDir);
   try {
-    for (const file of listSessionFiles(canonicalDir)) captureHashes(file, hashes);
-    for (const file of filesUnder(rawDir, "**/*.json.gz")) captureHashes(file, hashes);
-    for (const file of filesUnder(assetsDirForCanonicalDir(canonicalDir))) {
-      if (!file.includes("/sha256/")) collectAssetHashes(basename(file), hashes);
+    if (!referenceStoreReady(canonicalDir)) {
+      for (const file of listSessionFiles(canonicalDir)) {
+        const session = readArchiveJson(file);
+        recordAssetReferences(canonicalDir, session.source, session.source_id, assetHashes(session));
+      }
+      markReferencesReady(canonicalDir);
     }
-    return hashes;
+    if (!referenceStoreReady(rawDir)) {
+      for (const file of filesUnder(rawDir, "**/*.json.gz")) {
+        const capture = readArchiveJson(file);
+        recordAssetReferences(rawDir, capture.source, capture.source_id, assetHashes(capture));
+      }
+      markReferencesReady(rawDir);
+    }
+    if (!referenceStoreReady(assetsDir)) {
+      const metadata = legacyMetadata ?? filesUnder(join(assetsDir, "sha256"), "**/*.json").map(readArchiveJson);
+      for (const record of metadata) {
+        const owner = record.first_seen?.session_id;
+        if (typeof owner !== "string") continue;
+        const colon = owner.indexOf(":");
+        const source = owner.slice(0, colon), id = owner.slice(colon + 1);
+        if (!isSessionDeleted(canonicalDir, source, id)) recordAssetReferences(assetsDir, source, id, assetHashes(record.sha256));
+      }
+      for (const file of filesUnder(assetsDir)) {
+        const [source, id] = relative(assetsDir, file).split(/[\/\\]/);
+        if (source === "sha256" || source.startsWith(".")) continue;
+        recordAssetReferences(assetsDir, source, id, assetHashes(basename(file)));
+      }
+      markReferencesReady(assetsDir);
+    }
+    return new Set([...candidates].filter(hash => ![canonicalDir, rawDir, assetsDir].some(root => hasAssetOwners(root, hash))));
   } catch {
-    // An unreadable survivor may own a candidate; retain uncertain blobs.
     console.error(JSON.stringify({ event: "asset_cleanup_deferred", reason: "unreadable_surviving_reference" }));
     return null;
   }

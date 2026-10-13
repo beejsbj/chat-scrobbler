@@ -1,3 +1,5 @@
+import { assetHashes } from "./asset-hashes";
+import { recordAssetReferences } from "./asset-reference-store";
 import { latestRaw, rawContentHash, writeLatestRaw } from "./raw-latest";
 import { writeImmutableFile } from "./immutable-file";
 import { createHash } from "node:crypto";
@@ -27,6 +29,7 @@ export function listRawCaptures(rawDir: string, source: string, sourceId: string
 export function storeRawCapture(rawDir: string, capture: RawCapture, serialized = JSON.stringify(capture)): string {
   const sessionDir = join(segment(capture.source), segment(capture.source_id));
   const dir = join(rawDir, sessionDir);
+  recordAssetReferences(rawDir, capture.source, capture.source_id, assetHashes(capture));
   const contentHash = rawContentHash(capture);
   const latest = latestRaw(dir);
   if (latest?.content_hash === contentHash) return join(sessionDir, latest.file);

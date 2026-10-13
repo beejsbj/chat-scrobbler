@@ -1,3 +1,5 @@
+import { assetHashes } from "../store/asset-hashes";
+import { recordAssetReferences } from "../store/asset-reference-store";
 import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, relative, resolve } from "node:path";
@@ -33,6 +35,7 @@ export async function restoreRaw(rawDir: string, target: BackupTarget, snapshot:
       const bytes = readFileSync(downloaded);
       const capture = JSON.parse(Buffer.from(Bun.gunzipSync(bytes)).toString("utf8"));
       if (isDeleted(capture.source, capture.source_id)) continue;
+      recordAssetReferences(rawDir, capture.source, capture.source_id, assetHashes(capture));
       writeImmutableFile(dest, bytes);
       count++;
     }

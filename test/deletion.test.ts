@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { handleIngestRequest } from "../packages/ingest/src/server";
@@ -103,7 +103,7 @@ test("mixed capture batches archive and index live entries while acknowledging d
 test("corrupt canonical, raw or asset metadata cannot prevent deleting projections and archive files", async () => {
   const logs = (await import("bun:test")).spyOn(console, "error").mockImplementation(() => {});
   try {
-    for (const broken of ["canonical", "raw-gzip", "raw-json", "metadata"]) {
+    for (const broken of ["canonical", "raw-gzip", "raw-json", "metadata", "ownership"]) {
       const opts = setup();
       const file = writeSession(opts.canonicalDir, session("gone"));
       const db = openIndex(opts.indexPath);
@@ -115,7 +115,12 @@ test("corrupt canonical, raw or asset metadata cannot prevent deleting projectio
         if (broken === "canonical") writeFileSync(file, '{"private-token');
         if (broken === "raw-gzip") writeFileSync(join(opts.rawDir, ref), "invalid gzip private-token");
         if (broken === "raw-json") writeFileSync(join(opts.rawDir, ref), Bun.gzipSync(Buffer.from('{"private-token')));
-        if (broken === "metadata") writeFileSync(`${blob}.json`, '{"private-token');
+        if (broken === "metadata") {
+          // Reproduce a legacy upload with no write-time ownership catalogue.
+          rmSync(join(opts.root, "canonical", "assets", ".asset-refs"), { recursive: true, force: true });
+          writeFileSync(`${blob}.json`, '{"private-token');
+        }
+        if (broken === "ownership") writeFileSync(join(opts.root, "canonical", "assets", ".asset-refs", "owners", "chatgpt", "gone.json"), '{"private-token');
         for (let attempt = 0; attempt < 2; attempt++) {
           const response = await handleIngestRequest(new Request("http://local/captures?source=chatgpt&source_id=gone", { method: "DELETE" }), opts);
           expect(response.status).toBe(200);
@@ -131,4 +136,88 @@ test("corrupt canonical, raw or asset metadata cannot prevent deleting projectio
     expect(JSON.stringify(logs.mock.calls)).toContain("asset_cleanup_deferred");
     expect(JSON.stringify(logs.mock.calls)).not.toContain("private-token");
   } finally { logs.mockRestore(); }
+});
+
+test("asset-free deletion never gunzips the surviving archive", async () => {
+  const opts = setup();
+  writeSession(opts.canonicalDir, session("gone"));
+  storeRawCapture(opts.rawDir, buildRawCapture({ source: "chatgpt", sourceId: "remaining", endpoint: "/detail", payload: {} }));
+  const unzip = (await import("bun:test")).spyOn(Bun, "gunzipSync");
+  try {
+    const response = await handleIngestRequest(new Request("http://local/captures?source=chatgpt&source_id=gone", { method: "DELETE" }), opts);
+    expect(response.status).toBe(200);
+    expect(unzip).not.toHaveBeenCalled();
+  } finally { unzip.mockRestore(); }
+});
+
+test("write-time asset ownership avoids scanning other captures during blob cleanup", async () => {
+  const opts = setup();
+  const shared = storeCanonicalAsset({ canonicalDir: opts.canonicalDir, source: "chatgpt", sourceId: "gone", pointer: "p", bytes: Buffer.from("shared") });
+  const privateAsset = storeCanonicalAsset({ canonicalDir: opts.canonicalDir, source: "chatgpt", sourceId: "gone", pointer: "q", bytes: Buffer.from("private") });
+  storeRawCapture(opts.rawDir, buildRawCapture({ source: "chatgpt", sourceId: "remaining", endpoint: "/detail", payload: {}, assets: [{ pointer: "p", local_path: "", sha256: shared.sha256 }] }));
+  const unzip = (await import("bun:test")).spyOn(Bun, "gunzipSync");
+  try {
+    const response = await handleIngestRequest(new Request("http://local/captures?source=chatgpt&source_id=gone", { method: "DELETE" }), opts);
+    expect(response.status).toBe(200);
+    expect(existsSync(assetBlobPath(opts.canonicalDir, shared.sha256))).toBe(true);
+    expect(existsSync(assetBlobPath(opts.canonicalDir, privateAsset.sha256))).toBe(false);
+    expect(unzip).not.toHaveBeenCalled();
+  } finally { unzip.mockRestore(); }
+});
+
+test("restore cleans many tombstones with at most one surviving archive scan", async () => {
+  const opts = setup();
+  const { markSessionDeleted } = await import("../src/store/tombstones");
+  const privateHashes: string[] = [];
+  for (const id of ["gone-a", "gone-b", "gone-c"]) {
+    const asset = storeCanonicalAsset({ canonicalDir: opts.canonicalDir, source: "chatgpt", sourceId: id, pointer: id, bytes: Buffer.from(id) });
+    privateHashes.push(asset.sha256);
+    markSessionDeleted(opts.canonicalDir, { source: "chatgpt", source_id: id, deleted_at: "2026-01-01T00:00:00Z" });
+  }
+  storeRawCapture(opts.rawDir, buildRawCapture({ source: "chatgpt", sourceId: "remaining", endpoint: "/detail", payload: {} }));
+  const target = new LocalDirTarget(join(opts.root, "backups"));
+  const { snapshot } = await createBackup({ ...opts, target });
+  const restored = setup();
+  const unzip = (await import("bun:test")).spyOn(Bun, "gunzipSync");
+  try {
+    await restoreBackup({ ...restored, target, snapshot });
+    for (const hash of privateHashes) expect(existsSync(assetBlobPath(restored.canonicalDir, hash))).toBe(false);
+    // One read to restore the capture, plus at most one read to initialize legacy ownership.
+    expect(unzip.mock.calls.length).toBeLessThanOrEqual(2);
+  } finally { unzip.mockRestore(); }
+});
+
+
+test("legacy ownership is initialized once and subsequent deletion uses reference records", async () => {
+  const opts = setup();
+  const shared = storeCanonicalAsset({ canonicalDir: opts.canonicalDir, source: "chatgpt", sourceId: "gone", pointer: "p", bytes: Buffer.from("shared") });
+  const legacy = buildRawCapture({ source: "chatgpt", sourceId: "remaining", endpoint: "/detail", payload: {}, assets: [{ pointer: "p", local_path: "", sha256: shared.sha256 }] });
+  const legacyDir = join(opts.rawDir, "chatgpt", "remaining");
+  mkdirSync(legacyDir, { recursive: true });
+  writeFileSync(join(legacyDir, `old-${"a".repeat(64)}.json.gz`), Bun.gzipSync(Buffer.from(JSON.stringify(legacy))));
+  const unzip = (await import("bun:test")).spyOn(Bun, "gunzipSync");
+  try {
+    const remove = (id: string) => handleIngestRequest(new Request(`http://local/captures?source=chatgpt&source_id=${id}`, { method: "DELETE" }), opts);
+    expect((await remove("gone")).status).toBe(200);
+    expect(existsSync(assetBlobPath(opts.canonicalDir, shared.sha256))).toBe(true);
+    expect(unzip.mock.calls.length).toBe(1);
+    const later = storeCanonicalAsset({ canonicalDir: opts.canonicalDir, source: "chatgpt", sourceId: "later", pointer: "q", bytes: Buffer.from("private") });
+    expect((await remove("later")).status).toBe(200);
+    expect(existsSync(assetBlobPath(opts.canonicalDir, later.sha256))).toBe(false);
+    expect(unzip.mock.calls.length).toBe(1);
+  } finally { unzip.mockRestore(); }
+});
+
+test("session ownership keeps historical asset links collectable after canonical replacement", async () => {
+  const opts = setup();
+  const asset = storeCanonicalAsset({ canonicalDir: opts.canonicalDir, source: "chatgpt", sourceId: "gone", pointer: "p", bytes: Buffer.from("historical") });
+  const linked = session("remaining");
+  linked.messages = [{ id: "m", role: "user", parent_id: null, model: null, created_at: null, text: "", blocks: [{ type: "attachment", kind: "file", filename: null, pointer: "p", sha256: asset.sha256, local_path: null }] }];
+  writeSession(opts.canonicalDir, linked);
+  const remove = (id: string) => handleIngestRequest(new Request(`http://local/captures?source=chatgpt&source_id=${id}`, { method: "DELETE" }), opts);
+  await remove("gone");
+  expect(existsSync(assetBlobPath(opts.canonicalDir, asset.sha256))).toBe(true);
+  writeSession(opts.canonicalDir, session("remaining"));
+  await remove("remaining");
+  expect(existsSync(assetBlobPath(opts.canonicalDir, asset.sha256))).toBe(false);
 });
