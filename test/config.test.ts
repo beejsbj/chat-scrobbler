@@ -203,3 +203,20 @@ test("config file embeddingProvider is validated before being applied", () => {
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("monitor thresholds merge provider overrides and reject malformed values", () => {
+  const root = mkdtempSync(join(tmpdir(), "monitor-config-"));
+  const path = join(root, "config.json");
+  try {
+    writeFileSync(path, JSON.stringify({ monitorStaleDays: { claude: 14, gemini: null }, monitorCoverageThreshold: 0.8, monitorRecentHours: 72 }));
+    const cfg = loadConfig({ configPath: path, env: { CHAT_SCROBBLER_MONITOR_STALE_DAYS_CHATGPT: "3", CHAT_SCROBBLER_MONITOR_COVERAGE_THRESHOLD: "0.9" } });
+    expect(cfg.monitorStaleDays).toEqual({ chatgpt: 3, claude: 14, gemini: null });
+    expect(cfg.monitorCoverageThreshold).toBe(0.9);
+    expect(cfg.monitorRecentHours).toBe(72);
+    writeFileSync(path, JSON.stringify({ monitorStaleDays: { claude: -1 }, monitorCoverageThreshold: 5, monitorRecentHours: "secret" }));
+    const fallback = loadConfig({ configPath: path, env: {} });
+    expect(fallback.monitorStaleDays).toEqual({ chatgpt: 7, claude: 7, gemini: 7 });
+    expect(fallback.monitorCoverageThreshold).toBe(0.95);
+    expect(fallback.monitorRecentHours).toBe(48);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
