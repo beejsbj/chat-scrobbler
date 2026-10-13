@@ -25,7 +25,12 @@ export function messageLookupBatch(db: Database, limit=500): boolean {
   const state=db.query("SELECT cursor,ready FROM message_lookup_state WHERE id=1").get() as {cursor:number;ready:number};
   if(!state.ready) {
     db.transaction(()=> {
-      if(state.cursor===0) db.run("DELETE FROM message_lookup");
+      if(state.cursor===0) {
+        db.run("DELETE FROM message_lookup");
+        // The initial rowid sweep covers every existing edit. Only changes
+        // arriving after this transaction need per-session catch-up scans.
+        db.run("DELETE FROM message_lookup_dirty");
+      }
       const rows=db.query("SELECT rowid,session_id,message_id FROM messages_fts WHERE rowid>? ORDER BY rowid LIMIT ?").all(state.cursor,limit) as Array<{rowid:number;session_id:string;message_id:string}>;
       for(const row of rows) db.run("INSERT OR REPLACE INTO message_lookup VALUES (?,?,?)",[row.session_id,row.message_id,row.rowid]);
       db.run("UPDATE message_lookup_state SET cursor=?,ready=? WHERE id=1",[rows.at(-1)?.rowid ?? state.cursor,rows.length<limit ? 1 : 0]);

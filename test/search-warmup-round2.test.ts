@@ -34,3 +34,18 @@ test('warmup yields across batches and includes captures made while warming',asy
   expect((await searchMessagesReport(db,'during warmup')).hits.map(h=>h.message_id)).toEqual(['new']);
  }finally{db.close();}
 });
+
+test('initial lookup warmup covers existing dirty sessions without rescanning FTS per session',async()=> {
+ const db=openIndex(':memory:');
+ try {
+  // Simulate an older executable writing before the lookup has ever been built.
+  for(let i=0;i<50;i++) {
+   db.run('INSERT INTO sessions(id,source) VALUES (?,?)',[`chatgpt:${i}`,'chatgpt']);
+   db.run('INSERT INTO messages_fts(session_id,message_id,text,source) VALUES (?,?,?,?)',[`chatgpt:${i}`,'m',`old writer ${i}`,'chatgpt']);
+  }
+  let yields=0;
+  await warmSearchCaches(db,null,{batchSize:10,yield:async()=>{yields++;await Bun.sleep(0);}});
+  expect(yields).toBeLessThan(20);
+  expect((await searchMessagesReport(db,'writer')).hits).toHaveLength(20);
+ }finally{db.close();}
+});
