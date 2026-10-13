@@ -19,6 +19,7 @@ them through a CLI and a read-only MCP connector.
 | `src/parsers/render.ts` | `renderText(blocks)` -- derives `Message.text` |
 | `src/store/raw.ts` | Append-only gzip captures; list/read versions for future reparse |
 | `src/store/assets.ts` | SHA-256 blobs, provenance metadata, compatible session aliases |
+| `src/store/delete.ts`, `tombstones.ts` | Archive deletion, private blob cleanup, resurrection guards |
 | `src/store/sessions.ts` | File I/O for canonical sessions; `activePath()` |
 | `src/indexer/sqlite.ts` | FTS5 build, `searchMessages`, `listSessions` |
 | `src/mcp/server.ts` | Read-only MCP tools (`search`, `get_session`, `list_sessions`) |
@@ -64,6 +65,7 @@ Config resolution: defaults < JSON config file (`CHAT_SCROBBLER_CONFIG`,
 - No em dashes in prose.
 - Raw captures and content-addressed assets are the source of truth. Persist raw
   before parsing; canonical JSON, FTS, and embeddings are derived. Retain legacy
-  canonical sessions that have no archived raw capture.
+  canonical sessions that have no archived raw capture. Explicit session deletion
+  erases archived data and writes a minimal tombstone; reparse must respect it.
 - User data lives in `~/.local/share/chat-scrobbler/` by default, never inside the
   repo. `raw/`, `canonical/`, `index/`, `backups/`, and `dist/` are gitignored.
