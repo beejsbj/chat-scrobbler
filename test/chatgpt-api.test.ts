@@ -113,8 +113,8 @@ test("keeps undocumented references and unknown content even when it has string 
   message.metadata.citations = [{ source: "paper" }];
   const [s] = parseChatgpt(capture);
   expect(s.schema_version).toBe(2);
-  expect(s.messages[2].blocks.map(b => b.type)).toEqual(["unknown", "unknown", "unknown"]);
-  expect(s.messages[2].blocks[0]).toMatchObject({ raw_json: message.content });
+  expect(s.messages[2].blocks.map(b => b.type)).toEqual(["text", "unknown", "unknown", "unknown"]);
+  expect(s.messages[2].blocks[1]).toMatchObject({ raw_json: message.content });
 });
 
 test("unknown content in disconnected mapping nodes survives with an escaped raw pointer", () => {
@@ -156,4 +156,26 @@ test("tool-role and recipient messages retain hydrated media and opaque parts wi
     expect(msg.text).toContain("[image");
     expect(msg.text).not.toContain("tool prose noise");
   }
+});
+
+test("unfamiliar ChatGPT content keeps searchable prose and its original unknown fragment", () => {
+  const capture = structuredClone(sample) as any;
+  const message = capture.payload.mapping.n3.message;
+  message.content = { content_type: "tether_quote", text: "quoted prose here", parts: ["first line", { type: "future", data: 42 }, "second line"] };
+  const parsed = parseChatgpt(capture)[0].messages[2];
+  expect(parsed.text).toContain("quoted prose here");
+  expect(parsed.text).toContain("first line\nsecond line");
+  expect(parsed.blocks).toContainEqual(expect.objectContaining({ type: "unknown", provider_type: "tether_quote", raw_json: message.content }));
+  message.author = { role: "tool", name: "web.run" };
+  const tool = parseChatgpt(capture)[0].messages[2];
+  expect(tool.text).not.toContain("quoted prose here");
+  expect(tool.text).not.toContain("first line");
+});
+
+test("ordinary ChatGPT multipart text keeps single newline separators alongside opaque parts", () => {
+  const capture = structuredClone(sample) as any;
+  capture.payload.mapping.n3.message.content = { content_type: "text", parts: ["first line", { type: "future", data: 42 }, "second line"] };
+  const message = parseChatgpt(capture)[0].messages[2];
+  expect(message.text).toBe("first line\nsecond line");
+  expect(message.blocks.filter((b: any) => b.type === "unknown")).toHaveLength(1);
 });

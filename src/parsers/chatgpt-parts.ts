@@ -7,10 +7,11 @@ export function blocksFromContent(content: any, assets: AssetLookup = assetLooku
   if (content == null) return [];
   const ct = content.content_type;
   if (ct === "text" || ct === "multimodal_text") {
-    if (!Array.isArray(content.parts)) return [unknownBlock(content, loc)];
-    return content.parts.flatMap((part: any, i: number): Block[] => {
+    if (!Array.isArray(content.parts)) return [...proseBlocks(content), unknownBlock(content, loc)];
+    const blocks: Block[] = ct === "text" ? proseBlocks(content) : [];
+    return [...blocks, ...content.parts.flatMap((part: any, i: number): Block[] => {
       const at = childLocation(loc, "parts", i);
-      if (typeof part === "string") return part.trim() ? [{ type: "text", text: part }] : [];
+      if (typeof part === "string") return ct === "text" ? [] : part.trim() ? [{ type: "text", text: part }] : [];
       if (part?.content_type === "audio_transcription" && typeof part.text === "string") return [{ type: "text", text: part.text }];
       if (part?.content_type === "image_asset_pointer" && typeof part.asset_pointer === "string") {
         return [mediaBlock("image", part.asset_pointer, assets)];
@@ -20,8 +21,8 @@ export function blocksFromContent(content: any, assets: AssetLookup = assetLooku
         const pointer = part.asset_pointer ?? part.audio_asset_pointer?.asset_pointer;
         if (typeof pointer === "string") return [mediaBlock("audio", pointer, assets)];
       }
-      return [unknownBlock(part, at)];
-    });
+      return [...proseBlocks(part), unknownBlock(part, at)];
+    })];
   }
   if (ct === "thoughts" && Array.isArray(content.thoughts)) {
     return content.thoughts.flatMap((thought: any, i: number): Block[] => typeof thought?.content === "string"
@@ -37,5 +38,11 @@ export function blocksFromContent(content: any, assets: AssetLookup = assetLooku
       .filter((s: any) => typeof s === "string" && s.trim()).join("\n\n");
     if (text) return [{ type: "reasoning", text }];
   }
-  return [unknownBlock(content, loc)];
+  return [...proseBlocks(content), unknownBlock(content, loc)];
+}
+
+function proseBlocks(content: any): Block[] {
+  const strings = Array.isArray(content?.parts) ? content.parts.filter((part: unknown) => typeof part === "string") : [];
+  const text = [typeof content?.text === "string" ? content.text : "", ...strings].filter(Boolean).join("\n").trim();
+  return text ? [{ type: "text", text }] : [];
 }
