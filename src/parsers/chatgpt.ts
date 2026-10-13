@@ -7,6 +7,7 @@ import { SCHEMA_VERSION, makeSessionId } from "../schema/types";
 import { assetLookupFromRaw, type AssetLookup } from "./assets";
 import { renderText } from "./render";
 import { blocksFromContent } from "./chatgpt-parts";
+import { blocksFromCanvas } from "./chatgpt-artifacts";
 export { blocksFromContent } from "./chatgpt-parts";
 import { childLocation, limitUnknownJson, toolCall, unknownBlock, type ParserContext } from "./parts";
 
@@ -103,6 +104,7 @@ export function sessionFromChatgptConversation(conv: RawConversation, opts: Chat
     const blocks = recipient || role === "tool"
       ? [toolCall(name), ...contentBlocks.filter(block => !["text", "reasoning", "tool_call", "tool_result"].includes(block.type))]
       : contentBlocks;
+    if (role === "assistant") blocks.push(...blocksFromCanvas(recipient, m.content, m.id ?? node.id, childLocation(location, "content")));
     for (const key of ["citations", "content_references", "attachments"]) {
       const entries = m.metadata?.[key];
       if (Array.isArray(entries)) entries.forEach((entry: unknown, i: number) =>

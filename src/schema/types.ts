@@ -21,7 +21,8 @@ export type Block =
   | { type: "tool_call"; name: string; tool_type?: string; input?: unknown }
   | { type: "tool_result"; name: string; output?: unknown }
   | { type: "artifact"; artifact_id: string; kind: string; title: string | null; version: string | null; content: string;
-      operation?: string; previous_version?: string | null; edits?: Array<{ old_str: string; new_str: string }> }
+      language?: string | null; operation?: string; previous_version?: string | null;
+      edits?: Array<{ old_str: string; new_str: string }> }
   | ({ type: "attachment"; kind: "image" | "audio" | "file" } & MediaReference)
   | ({ type: "image" | "audio" | "video" | "file" } & MediaReference)
   | { type: "citation"; provider_type: string; url: string | null; title: string | null; text: string | null }
