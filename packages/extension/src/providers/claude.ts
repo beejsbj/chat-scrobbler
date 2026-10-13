@@ -1,7 +1,7 @@
 import { logSyncFailure, SyncFailureTracker } from "./sync-failures";
 import { buildRawCapture } from "../../../shared/src";
 import { assetReferences, uploadProviderAssets } from "./assets";
-import { claudeAssetCandidates, claudeSandboxDownloadEndpoint } from "./claude-assets";
+import { claudeAssetCandidates, claudeSandboxDownloadEndpoint, claudeUnverifiedFileDownloadEndpoint } from "./claude-assets";
 import {
   asArray,
   asObject,
@@ -23,14 +23,19 @@ export function createClaudeAdapter(fetcher: FetchLike = fetch.bind(globalThis))
     source: "claude",
     backfillAssets: async (id, references, options) => {
       const org = await getOrganization(fetcher);
+      await options.beforeFetch();
+      const endpoint = `/api/organizations/${encodeURIComponent(org.uuid)}/chat_conversations/${encodeURIComponent(id)}?tree=True&rendering_mode=messages&render_all_tools=true`;
+      let refreshed = new Map<string, ReturnType<typeof claudeAssetCandidates>[number]>();
+      try { refreshed = new Map(claudeAssetCandidates(await fetchJson(fetcher, endpoint), id, org.uuid).map(candidate => [candidate.pointer, candidate])); }
+      catch { /* Existing pointers still get their own bounded download attempt and failure report. */ }
       return uploadProviderAssets(fetcher, options.uploadAsset, references.map(ref => ({
         source: "claude", sourceId: id, pointer: ref.pointer, messageId: ref.message_id,
         filename: ref.filename, contentType: ref.content_type,
-        url: ref.pointer.startsWith("claude-inline:") ? null
+        url: refreshed.get(ref.pointer)?.url ?? (ref.pointer.startsWith("claude-inline:") ? null
           : ref.pointer.startsWith("sandbox:") ? claudeSandboxDownloadEndpoint(org.uuid, id, ref.pointer.slice(8))
           : ref.pointer.startsWith("/mnt/") ? claudeSandboxDownloadEndpoint(org.uuid, id, ref.pointer)
           : /^(https?:|data:|blob:|\/)/.test(ref.pointer) ? ref.pointer
-          : `/api/organizations/${encodeURIComponent(org.uuid)}/files/${encodeURIComponent(ref.pointer)}/download`,
+          : claudeUnverifiedFileDownloadEndpoint(org.uuid, ref.pointer)),
       })), { beforeFetch: options.beforeFetch });
     },
     sync: (options) => syncClaude(fetcher, options),

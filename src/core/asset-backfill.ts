@@ -144,7 +144,7 @@ export function commitBackfill(input: CommitBackfillInput): { linked: number; ra
   if (latest) {
     const capture = readRawCapture(rawDir, latest);
     const kept = (capture.assets ?? []).filter(asset => !matched.has(assetKey(asset)));
-    const merged = { ...capture, assets: [...kept, ...matched.values()], fetched_at: new Date().toISOString() };
+    const merged = { ...capture, assets: [...kept, ...matched.values()], asset_backfilled_at: new Date().toISOString() };
     rawRef = storeRawCapture(rawDir, merged);
     session.raw_ref = rawRef;
   }

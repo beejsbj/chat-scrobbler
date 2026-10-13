@@ -23,3 +23,14 @@ test("Claude captures generated files, inline visuals and downloadable sandbox f
   expect(uploads.every(a => a.messageId === "m")).toBe(true);
   expect(Array.from(uploads[1].bytes)).toEqual([1, 2, 3]);
 });
+
+test("Claude uses exposed file preview URLs before the unverified UUID fallback", async () => {
+  let uploaded = false;
+  await createClaudeAdapter(async input => {
+    if (input === "/api/organizations") return Response.json([{ uuid: "org" }]);
+    if (input.includes("chat_conversations/c?")) return Response.json({ uuid: "c", chat_messages: [{ uuid: "m", files_v2: [{ id: "img", preview_url: "/api/preview/img", mime_type: "image/webp" }] }] });
+    expect(input).toBe("/api/preview/img");
+    return new Response(new Uint8Array([1]), { headers: { "content-type": "image/webp" } });
+  }).captureOne!("c", null, { emitCapture: async () => {}, uploadAsset: async a => { uploaded = true; return { pointer: a.pointer, local_path: "assets/claude/c/hash.webp" }; } });
+  expect(uploaded).toBe(true);
+});

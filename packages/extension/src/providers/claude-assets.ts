@@ -13,9 +13,9 @@ export function claudeAssetCandidates(payload: unknown, sourceId: string, orgId:
     const messageId = str(message.uuid);
     const add = (pointer: string, file: Record<string, unknown>, explicitUrl?: string | null) => {
       const path = str(file.path ?? file.file_path) ?? (pointer.startsWith("sandbox:") ? pointer.slice(8) : null);
-      const url = explicitUrl ?? str(file.download_url ?? file.url)
+      const url = explicitUrl ?? str(file.download_url ?? file.preview_url ?? file.url ?? file.document_asset) ?? str(asObject(file.document_asset).url)
         ?? (path ? claudeSandboxDownloadEndpoint(orgId, sourceId, path)
-          : `/api/organizations/${encodeURIComponent(orgId)}/files/${encodeURIComponent(pointer)}/download`);
+          : claudeUnverifiedFileDownloadEndpoint(orgId, pointer));
       out.push({ source: "claude", sourceId, messageId, pointer, url,
         filename: str(file.file_name ?? file.filename ?? file.name) ?? path?.split("/").at(-1),
         contentType: str(file.mime_type ?? file.content_type ?? file.media_type),
@@ -28,6 +28,7 @@ export function claudeAssetCandidates(payload: unknown, sourceId: string, orgId:
     }
     const visit = (value: unknown, path: string): void => {
       if (typeof value === "string") {
+        if (/^\/mnt\/user-data\/(uploads|outputs)\/[^\s]+$/.test(value)) add(`sandbox:${value}`, {});
         for (const match of value.matchAll(/sandbox:\/[^\s)\]<>"']+/g)) add(match[0], {});
         return;
       }
@@ -50,3 +51,8 @@ export function claudeAssetCandidates(payload: unknown, sourceId: string, orgId:
   return out;
 }
 function str(value: unknown): string | null { return typeof value === "string" && value ? value : null; }
+
+/** UNVERIFIED legacy fallback. Prefer URLs supplied in files_v2/document_asset or sandbox paths. */
+export function claudeUnverifiedFileDownloadEndpoint(orgId: string, pointer: string): string {
+  return `/api/organizations/${encodeURIComponent(orgId)}/files/${encodeURIComponent(pointer)}/download`;
+}

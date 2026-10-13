@@ -156,7 +156,8 @@ test("POST appends an immutable merged raw capture that reparses with the SHA", 
   expect(merged.payload).toEqual(original.payload);
   expect(merged.endpoint).toBe(original.endpoint);
   expect(merged.conversation_updated_at).toBe(original.conversation_updated_at);
-  expect(merged.fetched_at).not.toBe(original.fetched_at);
+  expect(merged.fetched_at).toBe(original.fetched_at);
+  expect(merged.asset_backfilled_at).toBeDefined();
   expect(merged.assets).toEqual([expect.objectContaining({ pointer: "file-service://file-EXP", message_id: "a1", filename: "gen.png",
     content_type: "image/png", sha256: stored.sha256, local_path: `assets/chatgpt/conv-r/${stored.sha256}.png` })]);
 

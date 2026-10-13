@@ -19,6 +19,8 @@ export interface RawCapture<TPayload = unknown> {
   raw_url?: string | null;
   assets?: UploadedAsset[];
   asset_references?: AssetBackfillReference[];
+  /** Asset enrichment time; fetched_at remains the provider payload fetch time. */
+  asset_backfilled_at?: string;
 }
 
 export interface UploadedAsset {
