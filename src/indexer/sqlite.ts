@@ -459,21 +459,25 @@ function semanticCandidates(db: Database, queryEmbedding: number[], metadata: Em
     clauses.push("source = ?");
     params.push(source);
   }
-  const rows = db.query(
-    `SELECT session_id, message_id, embedding, text, role, created_at, source, title
-     FROM message_embeddings WHERE ${clauses.join(" AND ")}`,
-  ).all(...params) as any[];
-  // FTS metadata columns are unindexed. A correlated SQL check scans FTS once
-  // per vector; build the current-text lookup in one scan instead.
-  const currentRows = db.query(`SELECT session_id, message_id, text FROM messages_fts ${source ? "WHERE source = ?" : ""}`)
-    .all(...(source ? [source] : [])) as Array<{ session_id: string; message_id: string; text: string }>;
+  const ranked: SemanticRow[] = [];
+  const query = db.query(`SELECT session_id, message_id, embedding, text, role, created_at, source, title
+     FROM message_embeddings WHERE ${clauses.join(" AND ")}`);
+  // Stream vectors so query memory is bounded by the candidate window, not the archive.
+  for (const row of query.iterate(...params) as Iterable<any>) {
+    const similarity = cosine(queryEmbedding, parseEmbedding(row.embedding));
+    if (similarity <= 0 || (ranked.length >= limit && similarity <= ranked[ranked.length - 1].similarity)) continue;
+    ranked.push({ ...row, similarity });
+    ranked.sort((a, b) => b.similarity - a.similarity);
+    if (ranked.length > limit) ranked.pop();
+  }
+  if (!ranked.length) return [];
+  // FTS metadata is unindexed: one scan returns text only for the top-K identities.
+  const values = ranked.map(() => "(?,?)").join(",");
+  const currentRows = db.query(`SELECT session_id, message_id, text FROM messages_fts
+    WHERE (session_id, message_id) IN (VALUES ${values})`)
+    .all(...ranked.flatMap(row => [row.session_id, row.message_id])) as Array<{ session_id: string; message_id: string; text: string }>;
   const currentText = new Map(currentRows.map(row => [hitKey(row.session_id, row.message_id), row.text]));
-  return rows
-    .filter(row => currentText.get(hitKey(row.session_id, row.message_id)) === row.text)
-    .map((r) => ({ ...r, similarity: cosine(queryEmbedding, parseEmbedding(r.embedding)) }))
-    .filter((r) => r.similarity > 0)
-    .sort((a, b) => b.similarity - a.similarity)
-    .slice(0, limit);
+  return ranked.filter(row => currentText.get(hitKey(row.session_id, row.message_id)) === row.text);
 }
 
 function fusedScore(literalRank?: number, semanticRank?: number): number {

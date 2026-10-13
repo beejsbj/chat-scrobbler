@@ -369,3 +369,18 @@ test("concurrent queries keep their own semantic status when another query recov
     expect(await recovered).toMatchObject({ semantic: "available" });
   } finally { db.close(); }
 });
+
+test("semantic search validates only its ranked candidate window against current text", () => {
+  const db = openIndex(":memory:");
+  const provider: EmbeddingProvider = { kind: "rank-window", embed: () => [1, 0] };
+  try {
+    for (let i = 0; i < 20; i++) {
+      indexSession(db, mk(`stale-${i}`, "chatgpt", "Before", "old content"), { embeddingProvider: provider });
+      indexSession(db, mk(`stale-${i}`, "chatgpt", "After", "current content"));
+    }
+    indexSession(db, mk("outside-window", "chatgpt", "Live", "live content"), { embeddingProvider: provider });
+    expect(searchMessages(db, "unmatched", { embeddingProvider: provider, limit: 1 })).toEqual([]);
+    indexSession(db, mk("stale-0", "chatgpt", "After", "old content"));
+    expect(searchMessages(db, "unmatched", { embeddingProvider: provider, limit: 1 })[0]?.message_id).toBe("stale-0-m1");
+  } finally { db.close(); }
+});
