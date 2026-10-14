@@ -560,3 +560,22 @@ for (const action of ["SCROBBLER_RETRY_FAILED_OPEN_TABS", "SCROBBLER_SYNC_ALL_OP
     expect(requests).toEqual(["chatgpt", "claude", "gemini"]);
   } finally { tabs.query = oldQuery; tabs.sendMessage = oldSend; }
 });
+
+test("open-tab sync selects the active Gemini page so its DOM media can be captured", async () => {
+  const tabs = chrome.tabs as any;
+  const oldQuery = tabs.query, oldSend = tabs.sendMessage;
+  const selected: number[] = [];
+  globalThis.fetch = (async () => Response.json({ ok: true })) as unknown as typeof fetch;
+  tabs.query = (_query: any, done: any) => done([
+    { id: 1, active: false, url: "https://gemini.google.com/app/old" },
+    { id: 2, active: true, url: "https://gemini.google.com/app/media" },
+  ]);
+  tabs.sendMessage = (id: number, request: any, done: any) => {
+    selected.push(id);
+    done({ ok: true, source: request.provider, captureFailures: [], scanned: 0, captured: 0, skipped: 0, account: null, maxConversationUpdatedAt: null });
+  };
+  try {
+    expect(await sendRuntimeMessage({ type: "SCROBBLER_SYNC_ALL_OPEN_TABS" })).toMatchObject({ ok: true });
+    expect(selected).toEqual([2]);
+  } finally { tabs.query = oldQuery; tabs.sendMessage = oldSend; }
+});

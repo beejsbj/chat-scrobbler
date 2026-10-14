@@ -394,15 +394,15 @@ async function syncActiveTab(): Promise<unknown> {
 async function syncAllOpenProviderTabs(reason: "manual" | "periodic" | "retry"): Promise<unknown> {
   const tabs = await queryTabs({});
   const results = [];
-  const synced = new Set<ProviderSource>();
+  const selected = new Map<ProviderSource, any>();
   for (const tab of tabs) {
     const provider = providerFromUrl(tab.url);
     if (tab.id && provider) {
-      if (synced.has(provider)) continue;
-      synced.add(provider);
-      results.push(await syncTab(tab, provider, reason));
+      const previous = selected.get(provider);
+      if (!previous || tab.active && !previous.active) selected.set(provider, tab);
     }
   }
+  for (const [provider, tab] of selected) results.push(await syncTab(tab, provider, reason));
   return { ok: true, results };
 }
 
