@@ -481,3 +481,19 @@ test("a proxy login page returned as a successful capture acknowledgement is env
   expect(await sendRuntimeMessage({ type: "SCROBBLER_CAPTURE_READY", capture: buildRawCapture({ source: "chatgpt", sourceId: "c", endpoint: "/detail", payload: {} }) }))
     .toMatchObject({ ok: false, error_type: "transient" });
 });
+
+for (const body of [{}, null, [], { ok: false, count: 1 }, { ok: true }, { ok: true, count: "1" }, { ok: true, count: 0 }, { ok: true, count: 2 }, { ok: true, count: 0, skipped_deleted: [null] }]) test(`invalid JSON capture acknowledgement ${JSON.stringify(body)} cannot report capture success`, async () => {
+  globalThis.fetch = (async () => Response.json(body)) as typeof fetch;
+  expect(await sendRuntimeMessage({ type: "SCROBBLER_CAPTURE_READY", capture: buildRawCapture({ source: "gemini", sourceId: "c", endpoint: "/detail", payload: [] }) }))
+    .toMatchObject({ ok: false, error_type: "transient" });
+  const status = (await sendRuntimeMessage({ type: "SCROBBLER_GET_STATUS" }) as any).status;
+  expect(status.capturesPosted).toBe(0);
+  expect(status.lastCaptureAt).toBeNull();
+});
+
+test("a valid receiver acknowledgement records the single archived capture", async () => {
+  globalThis.fetch = (async () => Response.json({ ok: true, count: 1 })) as typeof fetch;
+  expect(await sendRuntimeMessage({ type: "SCROBBLER_CAPTURE_READY", capture: buildRawCapture({ source: "gemini", sourceId: "c", endpoint: "/detail", payload: [] }) }))
+    .toMatchObject({ ok: true, captured: true });
+  expect((await sendRuntimeMessage({ type: "SCROBBLER_GET_STATUS" }) as any).status.capturesPosted).toBe(1);
+});

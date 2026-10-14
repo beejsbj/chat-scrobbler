@@ -1,4 +1,5 @@
 import { maxIso } from "./providers/types";
+import { captureAcknowledged } from "./capture-acknowledgement";
 import { fetchAllowedAsset } from "./providers/asset-fetch";
 import "./chrome-api";
 import { assetsUrl, capturesUrl, deleteCaptureUrl, statusUrl, DEFAULT_INGEST_BASE_URL, DEFAULT_SYNC_PERIOD_MINUTES, type ProviderSource, type ConversationCaptureFailure, type AssetBackfillPage } from "../../shared/src";
@@ -326,7 +327,7 @@ async function postCapture(message: CaptureReadyMessage): Promise<unknown> {
     throw new ReceiverSyncError(error instanceof SyntaxError
       ? "Receiver acknowledgement invalid; check the receiver URL and proxy" : "Receiver response interrupted");
   }
-  if (ingest.count === 0 && Array.isArray(ingest.skipped_deleted) && ingest.skipped_deleted.some((item: { source: string; source_id: string }) => item.source === message.capture.source && item.source_id === message.capture.source_id)) return { ok: true, captured: false, ingest };
+  if (!captureAcknowledged(ingest, message.capture)) return { ok: true, captured: false, ingest };
   await mutateStatus((status) => {
     status.lastCaptureAt = new Date().toISOString();
     status.capturesPosted += 1;
