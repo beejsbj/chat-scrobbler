@@ -78,3 +78,28 @@ test("DOM blob bytes still reject a session document disguised as audio", async 
     expect(captured).toBe(true);
   });
 });
+
+test("backfill retries a live Gemini audio blob only when the current chat DOM still owns it", async () => {
+  const blob = `blob:https://gemini.google.com/${uuid}`;
+  const reference = { pointer: blob, message_id: "r_user", filename: "voice.wav", content_type: "audio/wav" };
+  await onPage("https://gemini.google.com", [{ tag: "audio", url: blob, type: "audio/wav" }], async () => {
+    let fetched = 0;
+    const assets = await createGeminiAdapter(async (url, init) => {
+      fetched++;
+      expect(url).toBe(blob);
+      expect(init?.credentials).toBe("omit");
+      expect(init?.headers).toBeUndefined();
+      return new Response(new Uint8Array([1, 2]), { headers: { "content-type": "audio/wav" } });
+    }, createBrowserPageContext()).backfillAssets!(id, [reference], {
+      uploadAsset: async asset => ({ pointer: asset.pointer, local_path: "assets/recovered.wav", sha256: "a".repeat(64) }),
+    });
+    expect(fetched).toBe(1);
+    expect(assets).toMatchObject([{ pointer: blob, message_id: "r_user", sha256: "a".repeat(64) }]);
+  });
+  for (const chatId of [id, "ffff0000bbbb1111"]) await onPage("https://gemini.google.com", chatId === id ? [] : [{ tag: "audio", url: blob, type: "audio/wav" }], async () => {
+    const assets = await createGeminiAdapter(async () => { throw new Error("unverified blob must not be fetched"); }, createBrowserPageContext()).backfillAssets!(chatId, [reference], {
+      uploadAsset: async () => { throw new Error("must not upload"); },
+    });
+    expect(assets).toEqual([]);
+  });
+});

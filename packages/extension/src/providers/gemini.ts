@@ -169,12 +169,17 @@ export function createGeminiAdapter(
 ): ProviderAdapter {
   return {
     source: "gemini",
-    backfillAssets: (id, references, options) => uploadProviderAssets(fetcher, options.uploadAsset, references.map(ref => ({
+    backfillAssets: (id, references, options) => {
+      const liveBlobs = new Set(geminiAssetCandidates(pageCtx, id)
+        .filter(asset => asset.providerPageBlob && asset.url && isGeminiPageBlob(asset.url, id)).map(asset => asset.url));
+      return uploadProviderAssets(fetcher, options.uploadAsset, references.map(ref => ({
       source: "gemini", sourceId: id, pointer: ref.pointer, messageId: ref.message_id,
       url: /^(https?:|data:|blob:|\/)/.test(ref.pointer) ? ref.pointer : null,
       filename: ref.filename, contentType: ref.content_type,
+      providerPageBlob: liveBlobs.has(ref.pointer),
       fetchViaBackground: /^https?:/.test(ref.pointer) && !ref.pointer.startsWith("https://gemini.google.com/"),
-    })), { beforeFetch: options.beforeFetch }),
+      })), { beforeFetch: options.beforeFetch });
+    },
     sync: (options) => syncGemini(fetcher, pageCtx, options),
     listConversations: (pages = 1) => listGemini(pageCtx, pages),
     captureOne: async (id, updatedAt, options) => { await captureGeminiOne(fetcher, pageCtx, id, updatedAt, options); },
