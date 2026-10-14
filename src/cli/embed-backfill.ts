@@ -7,13 +7,14 @@ import { migrateLegacyVectors } from "../indexer/vector-store";
 import { acquireBackfillLock, readBackfillLease } from "../indexer/backfill-lock";
 
 export async function runEmbedBackfill(args: string[], cfg: ChatHistoryConfig, write: (text:string)=>void): Promise<void> {
-  const {values}=parseArgs({args,options:{help:{type:"boolean",short:"h"},model:{type:"string"},provider:{type:"string"},limit:{type:"string"},rate:{type:"string"},"load-threshold":{type:"string"},"migrate-only":{type:"boolean"}}});
+  const {values}=parseArgs({args,options:{help:{type:"boolean",short:"h"},model:{type:"string"},provider:{type:"string"},limit:{type:"string"},rate:{type:"string"},"load-threshold":{type:"string"},"migrate-only":{type:"boolean"},"retry-skipped":{type:"boolean"}}});
   if(values.help) {
     write(`Usage: chat-scrobbler embed-backfill --model <id> [options]
   --provider <kind>       Configured provider override
   --limit <n>             Maximum attempted items
   --rate <requests/s>     Serial request pacing (default 10)
   --load-threshold <n>    Optional host load brake
+  --retry-skipped        Retry exhausted items now (defaults to configured model)
   --migrate-only         Convert legacy vectors without inference or --model
   --help, -h             Show this help
 
@@ -23,16 +24,19 @@ Container-shared indexes also support manual runs via docker exec.
 Serve defaults: batches of 25 when a provider is configured.
 Due backlog continues after 1 second; initial/idle polls wait 10 minutes.
 CHAT_SCROBBLER_EMBED_BACKFILL_ENABLED=false disables the background scheduler.
-CHAT_SCROBBLER_EMBED_BACKFILL_INTERVAL_MS and CHAT_SCROBBLER_EMBED_BACKFILL_BATCH_SIZE override its controls.`);
+CHAT_SCROBBLER_EMBED_BACKFILL_INTERVAL_MS and CHAT_SCROBBLER_EMBED_BACKFILL_BATCH_SIZE override its controls.
+Skipped work retries after 1, 3, then 7 days, behind fresh pending items.
+CHAT_SCROBBLER_EMBED_SKIPPED_RETRY_MS sets the first delay (default 86400000).`);
     return;
   }
   const number=(key:"limit"|"rate"|"load-threshold", fallback:number)=>values[key] === undefined ? fallback : Number(values[key]);
   const limit=number("limit",Infinity), rate=number("rate",10), loadThreshold=values["load-threshold"] === undefined ? undefined : number("load-threshold",0);
   if ((values.limit!==undefined && (!Number.isInteger(limit)||limit<1)) || !Number.isFinite(rate)||rate<=0 || loadThreshold !== undefined && (!Number.isFinite(loadThreshold)||loadThreshold<=0)) throw new Error("invalid backfill controls");
+  if(values["migrate-only"] && values["retry-skipped"])throw new Error("cannot combine --migrate-only and --retry-skipped");
   const providerKind=values.provider ?? cfg.embeddingProvider;
   if (!["none","hash","gemini","ollama","embeddinggemma"].includes(providerKind)) throw new Error("unsupported embedding provider");
-  if (!values["migrate-only"] && !values.model?.trim()) throw new Error("embed-backfill requires --model");
-  const provider=values["migrate-only"] ? null : embeddingProviderFromConfig({...cfg,embeddingProvider:providerKind as ChatHistoryConfig["embeddingProvider"],embeddingModel:values.model ?? null});
+  if (!values["migrate-only"] && !values.model?.trim() && !values["retry-skipped"]) throw new Error("embed-backfill requires --model");
+  const provider=values["migrate-only"] ? null : embeddingProviderFromConfig({...cfg,embeddingProvider:providerKind as ChatHistoryConfig["embeddingProvider"],embeddingModel:values.model ?? (values["retry-skipped"] ? cfg.embeddingModel : null)});
   if (!values["migrate-only"] && !provider) throw new Error("embed-backfill requires an enabled provider (or --provider)");
   const lock=acquireBackfillLock(cfg.indexPath);
   if (!lock) {
@@ -57,7 +61,7 @@ CHAT_SCROBBLER_EMBED_BACKFILL_INTERVAL_MS and CHAT_SCROBBLER_EMBED_BACKFILL_BATC
       }
       write(JSON.stringify({event:"migration_complete",scanned,converted,invalid,lease:lock.status()})); return;
     }
-    const result=await embedBackfill(db,{provider:provider!,canonicalDir:cfg.canonicalDir,limit:values.limit===undefined ? undefined : limit,rate,loadThreshold,signal:AbortSignal.any([abort.signal,lock.signal]),assertLease:()=>lock.assertOwned(db!),leaseStatus:()=>lock.status(),progress:report=>write(JSON.stringify(report))});
+    const result=await embedBackfill(db,{provider:provider!,canonicalDir:cfg.canonicalDir,limit:values.limit===undefined ? undefined : limit,rate,loadThreshold,retrySkipped:values["retry-skipped"],retrySkippedMs:cfg.embeddingSkippedRetryMs,signal:AbortSignal.any([abort.signal,lock.signal]),assertLease:()=>lock.assertOwned(db!),leaseStatus:()=>lock.status(),progress:report=>write(JSON.stringify(report))});
     if(result.failed) throw new Error(`${result.failed} embeddings failed; resume to retry`);
   } catch(error) {
     if(lock.signal.aborted) write(JSON.stringify({event:"lease_lost",lease:lock.status()}));

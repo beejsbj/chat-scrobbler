@@ -105,3 +105,28 @@ test("manual CLI reports recovery and fences a lease stolen during inference", a
     finally {inspect.close();}
   }finally{globalThis.fetch=originalFetch;dead.release();rmSync(root,{recursive:true,force:true});}
 });
+
+test('manual --retry-skipped retries immediately for the configured model without touching other sets or blanks',async()=> {
+ const {initializePendingEmbeddings,pendingEmbeddingRows,deferPendingEmbedding,pendingCoverage}=await import('../src/indexer/pending-embeddings');
+ const {HashEmbeddingProvider}=await import('../src/indexer/embedding-providers');
+ const root=mkdtempSync(join(tmpdir(),'retry-skipped-cli-'));
+ try {
+  const cfg={...DEFAULT_CONFIG,indexPath:join(root,'index.db'),embeddingProvider:'hash' as const,embeddingModel:'hash-v1'};
+  const db=openIndex(cfg.indexPath),p=new HashEmbeddingProvider();
+  const s=fixture();s.messages.push({...s.messages[0],id:'blank',text:'  \n '});indexSession(db,s);
+  for(const provider of [p,{...p,kind:'other',model:'other',embed:()=>[1,0]}]) {
+   await initializePendingEmbeddings(db,provider);
+   const row=pendingEmbeddingRows(db,provider,1)[0];
+   for(let i=0;i<3;i++)deferPendingEmbedding(db,row,{kind:'timeout',reason:'request_timeout'},Date.now());
+  }
+  db.close();
+  const output:string[]=[];
+  await runEmbedBackfill(['--retry-skipped','--rate','1000'],cfg,line=>output.push(line));
+  expect(JSON.parse(output.at(-1)!)).toMatchObject({embedded:1,queue:{skipped:1,empty:1},failed:0});
+  const inspect=openIndex(cfg.indexPath);
+  try {
+   expect(pendingCoverage(inspect,{kind:'other',model:'other',embed:()=>[1,0]})).toMatchObject({skipped:2,embedded:0});
+  }finally{inspect.close();}
+  await expect(runEmbedBackfill(['--migrate-only','--retry-skipped'],cfg,()=>{})).rejects.toThrow('cannot combine');
+ }finally{rmSync(root,{recursive:true,force:true});}
+});
