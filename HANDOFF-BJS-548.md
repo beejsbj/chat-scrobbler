@@ -1,8 +1,76 @@
 # BJS-548 implementation handoff
 
-Branch: `feat/bjs-548-embeddinggemma`. Updated 2026-10-13 (2026-10-14 UTC receipts) for review round 4.
+Branch: `feat/bjs-548-embeddinggemma`. Updated 2026-10-13 (2026-10-14 UTC receipts) for the final skipped-retry fix.
 Production data and services were not changed. Nothing was deployed or pushed.
 The production compose still defaults to Ollama and `nomic-embed-text`.
+
+## Last fix before merge: skipped retries and monitor
+
+Rebased onto `origin/main` at `d56b753`, including PR #13's monitor. The merge
+retains parse outcome tracking and deferred capture embedding. No model calls were
+reintroduced into capture acknowledgement.
+
+Three exhausted item attempts now enter a timed `skipped` state. The durable
+`embedding_pending.retry_cycles` counter spaces subsequent cycles at **1 day,
+3 days, then 7 days**, retaining seven-day spacing indefinitely. Each cycle gets
+three attempts with the existing short per-item backoff. Configure the first delay
+with `embeddingSkippedRetryMs` or `CHAT_SCROBBLER_EMBED_SKIPPED_RETRY_MS`
+(default **86400000**); later delays are three and seven times that value. Compose
+forwards the setting. Timers run on the normal background poll, so eligibility
+can lag the deadline by the idle polling interval or provider backoff.
+
+Existing exhausted rows with `retry_at=0` receive a first deadline when the next
+backfill runs. That timestamp is written once and survives process restarts.
+Unchanged provider polls retain cycle history; new text/title and successful
+embedding reset it. Whitespace-only `empty_text` rows never dispatch to a model.
+Only connection failures across different items can trigger provider-wide backoff.
+
+Requeued items use a separate indexed priority lane below fresh pending/deferred
+items, then newest first within each lane. `EXPLAIN QUERY PLAN` confirms the
+`embedding_pending_retry_lane` index serves selection without a temporary sort.
+Scheduling and requeue writes use the same short, fenced lease transactions as
+vector commits. A regression verifies ownership loss rolls back requeue markers
+before any inference. The **60-second lease expiry remains unchanged**; the
+stored token cannot prove a previous container is dead.
+
+```sh
+# Retry exhausted rows immediately for the configured provider/model.
+chat-scrobbler embed-backfill --retry-skipped --limit 25
+
+# Or rebuild coverage for an explicit model set without changing active config.
+chat-scrobbler embed-backfill --provider ollama --model nomic-embed-text --retry-skipped
+```
+
+The override resets cycle attempt counts and bypasses the long timer once for
+existing exhausted rows. It retains lower priority, cycle history, model scoping,
+and the server/CLI shared lease. It excludes whitespace and cannot combine with
+`--migrate-only`. Per-run JSON reports use `retry_scheduled` instead of the old
+`permanently_skipped` field.
+
+`chat-scrobbler monitor` emits the stable categorical line
+`FAILED embeddings skipped=<n> reason=<top reason>` for eligible skipped rows in
+the active model set, including rows waiting for their next timer. Whitespace-only
+rows are excluded. The top reason is chosen by count, then lexical order for ties.
+The monitor also understands binary vectors and retained JSON without opening a
+write connection or migrating the index. Authenticated `/status/report` now
+exists after PR #13; it exposes skipped status and live backfill progress alongside
+`/health/deep`.
+
+Final gates at `4bf23f2`: **647 Bun tests**, zero failures, 75 files and 2,730
+assertions in 20.51 s; **TypeScript passes**; **45 local Python tests pass**, zero
+skips, in 7.057 s; **compile succeeds** (305 modules) and the compiled binary runs
+`embed-backfill --help` with exit zero, including the new flag. Disposable compute
+job `dr-20261014-020929-577aee88` exited zero and verified sandbox deletion. Cloud
+Python passed 43 tests with two Docker Compose skips; local verification covers
+both deployment checks. The earlier full run caught one obsolete assertion that
+`/status/report` did not exist. It now checks authentication and live progress;
+the complete rerun is green. Both compute sandboxes were deleted.
+
+Receipt: `services/embedder/verification/test-results-last-fix-2026-10-14.json`.
+No native inference or real-index throughput measurement was repeated; the
+round-4 measurements and independent review remain the evidence for those
+properties. Production data/services and the active provider were unchanged;
+nothing was deployed or pushed.
 
 ## Review fixes, round 4
 
@@ -143,7 +211,8 @@ batch, so a stale lease is visible during startup. Its `backfill.lease` and
 whether the run recovered an owner; lost ownership has outcome `lease_lost`.
 Probe errors surface as `lease_probe: unavailable`. CLI acquisition/progress,
 migration completion and lease-loss events carry the same metadata. Owner tokens
-are not emitted. `/status/report` remains absent on this base.
+are not emitted. `/status/report` was absent at that checkpoint; PR #13 now
+provides it, including the live backfill snapshot.
 
 Lease writes advance the general search revision without marking any session or
 model dirty. A regression using independent SQLite connections verifies that
@@ -220,8 +289,8 @@ per-batch counts are live. Manual CLI runs retain full coverage and ETA reports.
 Authenticated `GET /health/deep` includes `backfill`: enabled/running state,
 interval/batch size, next run, consecutive failures, live progress and the last
 run's timestamps, outcome and report. This snapshot is read on each request,
-independent of the cached filesystem/provider health probe. `/status/report` does
-not exist on the rebased main and remains absent.
+independent of the cached filesystem/provider health probe. PR #13 now supplies
+`/status/report`, which also exposes the live backfill snapshot.
 
 The CLI, migration-only jobs and scheduler share a SQLite heartbeat lease in the
 index's `locks` table. A short transaction acquires a unique owner token; expired
@@ -546,15 +615,16 @@ There is no destructive JSON conversion. Chunk-policy changes under the same mod
 identity require an explicit rebuild to replace already-complete vectors.
 
 Timeouts and item errors are durable `deferred` work with individual 2-minute
-exponential retries capped at one hour. Three non-connection failures permanently
-skip the unchanged input with a reason. HTTP 5xx/429 and connection failures keep
-retrying. Only consecutive connection failures on different items trigger global
+exponential retries capped at one hour. Three non-connection failures mark the
+unchanged input skipped with a reason and schedule a new cycle after 1, 3, then
+7 days. The first delay is configurable. HTTP 5xx/429 and connection failures keep
+retrying with short backoff. Only consecutive connection failures on different items trigger global
 provider backoff. Successful work, skipped empty text, and item errors reset that
 sequence. Late failures cannot demote a completed or newly recaptured generation.
 Changed text/title resets the item's retry state. Whitespace counts as skipped,
 not failed; delete/recapture cannot resurrect stale vectors.
 
-Reports include embedded, deferred, permanently skipped, truncated, stale,
+Reports include embedded, deferred, scheduled retry cycles, truncated, stale,
 attempted, outage state, current queue coverage, requests, elapsed time and ETA.
 Coverage/ETA use small metadata records rather than repeated archive scans. ETA
 assumes two seconds per chunk initially and then observed successful request time;
