@@ -93,8 +93,8 @@ async function runBackfill(db:Database,opts:BackfillOptions):Promise<BackfillRep
  };
  const current=(row:PendingEmbeddingRow)=>db.query('SELECT text,title FROM messages_fts WHERE rowid=? AND session_id=? AND message_id=?')
   .get(row.fts_rowid,row.session_id,row.message_id) as {text:string;title:string|null}|null;
- const discard=(row:PendingEmbeddingRow)=>db.run(`DELETE FROM embedding_pending WHERE session_id=? AND message_id=? AND provider_kind=? AND provider_model=? AND input_hash=? AND title IS ?`,
-  [row.session_id,row.message_id,row.provider_kind,row.provider_model,row.input_hash,row.title]);
+ const discard=(row:PendingEmbeddingRow)=>db.run(`DELETE FROM embedding_pending WHERE session_id=? AND message_id=? AND provider_kind=? AND provider_model=? AND input_hash=? AND title IS ? AND fts_rowid=?`,
+  [row.session_id,row.message_id,row.provider_kind,row.provider_model,row.input_hash,row.title,row.fts_rowid]);
  while(attempted<limit && !provider_outage) {
   guard();const rows=pendingEmbeddingRows(db,provider,Math.min(25,limit-attempted),wallNow());if(!rows.length)break;
   for(const row of rows) {
@@ -104,12 +104,13 @@ async function runBackfill(db:Database,opts:BackfillOptions):Promise<BackfillRep
     const live=current(row);if(!live || textVectorHash(live.text)!==row.input_hash || live.title!==row.title)throw new StaleEmbeddingInput();
    };
    if(row.type!=='text' && (!provider.embedAsset || !opts.canonicalDir)){skipped++;discard(row);continue;}
-   if(row.type==='text' && reusableTextVector(db,row.session_id,row.message_id,row.text,row.title,provider)) {
-    db.transaction(()=>{guard();check();completePendingEmbedding(db,row);guard();}).immediate();skipped++;continue;
-   }
-   attempted++;const requestsBefore=requests;
+   const requestsBefore=requests;
    try {
     check();
+    if(row.type==='text' && reusableTextVector(db,row.session_id,row.message_id,row.text,row.title,provider)) {
+     db.transaction(()=>{guard();check();completePendingEmbedding(db,row);guard();}).immediate();skipped++;continue;
+    }
+    attempted++;
     if(row.type==='text') {
      const chunks=documentChunks(row.text,provider),vectors:number[][]=[];
      for(const chunk of chunks.chunks)vectors.push(await infer(context=>provider.embed(chunk,context),check,row.title));
@@ -128,7 +129,8 @@ async function runBackfill(db:Database,opts:BackfillOptions):Promise<BackfillRep
     if(error instanceof StaleEmbeddingInput){stale++;discard(row);continue;}
     const failure=classifyEmbeddingFailure(error);
     const result=db.transaction(()=>{guard();const result=deferPendingEmbedding(db,row,failure,wallNow());guard();return result;}).immediate();
-    if(result?.state==='skipped'){skipped++;permanently_skipped++;}else deferred++;
+    if(!result){stale++;continue;}
+    if(result.state==='skipped'){skipped++;permanently_skipped++;}else deferred++;
     provider_outage=recordFailure(sequence,`${row.session_id}\0${row.message_id}`,failure);
    }
    opts.progress?.(report('progress'));await pause();

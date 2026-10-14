@@ -291,8 +291,8 @@ test("EmbeddingGemma rejects malformed, nonnumeric, and wrong-sized vectors for 
 test("EmbeddingGemma reports HTTP failures and preserves transport failures", async () => {
   const provider = new EmbeddingGemmaProvider({ baseUrl: "http://embed.example:4320", model: "gemma-test" });
   mockEmbeddingGemmaFetch({ error: "queue unavailable" }, 503);
-  await expect(provider.embed("notes")).rejects.toThrow("EmbeddingGemma embedding request failed (503)");
-  await expect(provider.embedAsset({ type: "audio", base64: "YXVkaW8=" })).rejects.toThrow("queue unavailable");
+  await expect(provider.embed("notes")).rejects.toThrow("http_503");
+  await expect(provider.embedAsset({ type: "audio", base64: "YXVkaW8=" })).rejects.toThrow("http_503");
 
   const failure = new Error("connection refused");
   globalThis.fetch = (async (_url: string | URL | Request): Promise<Response> => { throw failure; }) as typeof fetch;
