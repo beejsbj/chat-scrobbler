@@ -81,6 +81,7 @@ test("embed-backfill --help describes controls without opening an index or requi
   expect(output.join("\n")).toContain("--migrate-only");
   expect(output.join("\n")).toContain("--model");
   expect(output.join("\n")).toContain("docker exec");
+  expect(output.join("\n")).toContain("Due backlog continues after 1 second");
 });
 
 test("manual CLI reports recovery and fences a lease stolen during inference", async () => {

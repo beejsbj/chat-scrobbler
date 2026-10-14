@@ -20,7 +20,8 @@ export async function runEmbedBackfill(args: string[], cfg: ChatHistoryConfig, w
 Shares a SQLite heartbeat lease with serve background backfill and migration.
 Heartbeats renew every 15 seconds; a crashed holder expires after 60 seconds.
 Container-shared indexes also support manual runs via docker exec.
-Serve defaults: 25 attempts every 10 minutes when a provider is configured.
+Serve defaults: batches of 25 when a provider is configured.
+Due backlog continues after 1 second; initial/idle polls wait 10 minutes.
 CHAT_SCROBBLER_EMBED_BACKFILL_ENABLED=false disables the background scheduler.
 CHAT_SCROBBLER_EMBED_BACKFILL_INTERVAL_MS and CHAT_SCROBBLER_EMBED_BACKFILL_BATCH_SIZE override its controls.`);
     return;
