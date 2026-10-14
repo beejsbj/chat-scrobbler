@@ -1,3 +1,7 @@
+import { textCoverage } from "../indexer/embed-backfill";
+import { assetCoverage } from "../indexer/asset-embeddings";
+import { startEmbeddingBackfillScheduler, type BackfillScheduler } from "../indexer/backfill-scheduler";
+import { queryPriorityProvider } from "../indexer/query-priority-provider";
 // src/cli/commands.ts
 // Command implementations for the chat-scrobbler CLI.
 // All commands accept an injected cfg and a write() function for testability.
@@ -384,7 +388,7 @@ type DoctorLineKind = "PASS" | "FAIL" | "WARN";
 export async function runDoctor(opts: DoctorCmdOpts): Promise<DoctorResult> {
   const fetcher = opts.fetch ?? fetch;
   const fsExists = opts.existsSync ?? existsSync;
-  const inspectIndex = opts.inspectIndex ?? defaultInspectIndex;
+  const inspectIndex = opts.inspectIndex ?? ((path: string) => defaultInspectIndex(path, opts.cfg));
   let failed = false;
 
   const line = (kind: DoctorLineKind, label: string, detail: string): void => {
@@ -460,17 +464,19 @@ export async function runDoctor(opts: DoctorCmdOpts): Promise<DoctorResult> {
   return { ok: !failed, exitCode: failed ? 1 : 0 };
 }
 
-async function defaultInspectIndex(path: string): Promise<DoctorInspectIndexResult> {
+async function defaultInspectIndex(path: string, cfg: ChatHistoryConfig): Promise<DoctorInspectIndexResult> {
   if (!existsSync(path)) return { exists: false, sessionCount: 0, embeddingCount: 0 };
   try {
     const db = openIndex(path);
     try {
       const sessions = db.query(`SELECT COUNT(*) AS count FROM sessions`).get() as { count: number };
-      const embeddings = db.query(`SELECT COUNT(*) AS count FROM message_embeddings`).get() as { count: number };
+      let provider = null;
+      try { provider = embeddingProviderFromConfig(cfg); } catch { /* Provider config failure is reported by the provider probe. */ }
+      const count = provider ? textCoverage(db,provider).embedded + (provider.embedAsset ? assetCoverage(db,provider).embedded : 0) : 0;
       return {
         exists: true,
         sessionCount: Number(sessions.count ?? 0),
-        embeddingCount: Number(embeddings.count ?? 0),
+        embeddingCount: count,
       };
     } finally {
       db.close();
@@ -527,6 +533,17 @@ async function checkEmbeddingProvider(
   }
   if (cfg.embeddingProvider === "gemini") {
     line(cfg.geminiApiKey ? "PASS" : "FAIL", "embedding provider", cfg.geminiApiKey ? "gemini API key present" : "gemini API key missing");
+    return;
+  }
+  if (cfg.embeddingProvider === "embeddinggemma") {
+    try {
+      const res = await fetcher(withPath(cfg.embeddingBaseUrl, "/health"), doctorFetchInit("GET"));
+      if (!res.ok) { line("FAIL", "embedding provider", `embeddinggemma health responded ${res.status}`); return; }
+      const health = await res.json() as { status?: string; model?: string; model_available?: boolean };
+      const model = cfg.embeddingModel ?? "litert-community/embeddinggemma-2-740m-litert-lm";
+      const ok = health.status === "ok" && health.model === model && health.model_available === true;
+      line(ok ? "PASS" : "FAIL", "embedding provider", ok ? "embeddinggemma reachable, local model available" : "embeddinggemma model unavailable or health mismatch");
+    } catch { line("FAIL", "embedding provider", "embeddinggemma unreachable"); }
     return;
   }
   if (cfg.embeddingProvider === "ollama") {
@@ -679,6 +696,9 @@ export async function runRestore(opts: RestoreCmdOpts): Promise<void> {
 export interface ServeHandles {
   ingestServer: ReturnType<typeof Bun.serve>;
   mcpServer: Awaited<ReturnType<typeof startHttpServer>>;
+  backfillScheduler?: BackfillScheduler;
+  /** Abort background work, release its lock, and close both listeners. */
+  stop?: () => Promise<void>;
 }
 
 export async function startServe(cfg: ChatHistoryConfig): Promise<ServeHandles> {
@@ -688,7 +708,9 @@ export async function startServe(cfg: ChatHistoryConfig): Promise<ServeHandles> 
     envVarName: "INGEST_TOKEN",
     serviceName: "ingest server",
   });
-  const embeddingProvider = embeddingProviderFromConfig(cfg);
+  const configuredProvider = embeddingProviderFromConfig(cfg);
+  const embeddingProvider = configuredProvider ? queryPriorityProvider(configuredProvider) : null;
+  let backfillScheduler: BackfillScheduler | undefined;
   const ingestServer = Bun.serve({
     hostname: cfg.bindHost,
     port: cfg.ingestPort,
@@ -704,20 +726,35 @@ export async function startServe(cfg: ChatHistoryConfig): Promise<ServeHandles> 
         monitorRecentHours: cfg.monitorRecentHours,
         monitorStatePath: cfg.monitorStatePath,
         embeddingProvider,
+        backfillStatus: backfillScheduler ? () => backfillScheduler!.status() : undefined,
       });
     },
   });
 
-  const mcpServer = await startHttpServer({
+  let mcpServer: ServeHandles["mcpServer"];
+  try { mcpServer = await startHttpServer({
     port: cfg.mcpHttpPort,
     bindHost: cfg.bindHost,
     indexPath: cfg.indexPath,
     canonicalDir: cfg.canonicalDir,
     embeddingProvider,
     mcpAuthToken: cfg.mcpAuthToken,
-  });
+    warmSearchCaches: true,
+  }); } catch(error) {ingestServer.stop(true);throw error;}
 
-  return { ingestServer, mcpServer };
+  backfillScheduler=startEmbeddingBackfillScheduler({cfg,provider:embeddingProvider,startupMaintenance:true});
+  const stopIngest=ingestServer.stop.bind(ingestServer);
+  ingestServer.stop=(closeActiveConnections?: boolean)=> {
+    void backfillScheduler!.stop();
+    return stopIngest(closeActiveConnections);
+  };
+
+  let stopping: Promise<void> | undefined;
+  const stop=()=>stopping ??= (async()=> {
+    try {await backfillScheduler!.stop();}
+    finally {await Promise.all([ingestServer.stop(true),mcpServer.stop(true)]);}
+  })();
+  return { ingestServer, mcpServer, backfillScheduler, stop };
 }
 
 export function printServeInfo(cfg: ChatHistoryConfig, handles: ServeHandles): void {

@@ -3,7 +3,7 @@ import { incrementMonitorCounter, readMonitorCounter } from "../monitor/state";
 import type { EmbeddingProvider } from "./sqlite";
 
 export interface SemanticStatus {
-  semantic: "available" | "unavailable" | "disabled";
+  semantic: "available" | "unavailable" | "disabled" | "warming";
   reason?: string;
   embedding_failures: number;
 }

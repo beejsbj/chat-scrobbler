@@ -1,0 +1,3 @@
+# Self-contained production runtime; native verification reuses the spike venv.
+litert-lm==0.18.0
+# ffmpeg + ffprobe are required executables, not Python packages.

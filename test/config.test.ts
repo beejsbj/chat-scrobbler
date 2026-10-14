@@ -233,3 +233,76 @@ test("bjslab compose supplies tunable provider freshness defaults", () => {
   expect(compose).toContain('${CHAT_SCROBBLER_MONITOR_STALE_DAYS_CLAUDE:-14}');
   expect(compose).toContain('${CHAT_SCROBBLER_MONITOR_STALE_DAYS_GEMINI:-21}');
 });
+
+test("EmbeddingGemma config resolves defaults, file values, and env overrides", () => {
+  const defaults = loadConfig({ env: {}, configPath: null });
+  expect(defaults.embeddingBaseUrl).toBe("http://127.0.0.1:4320");
+  expect(loadConfig({
+    env: { CHAT_SCROBBLER_EMBED_PROVIDER: "embeddinggemma" },
+    configPath: null,
+  }).embeddingProvider).toBe("embeddinggemma");
+
+  const dir = mkdtempSync(join(tmpdir(), "ch-config-"));
+  try {
+    const file = join(dir, "embeddinggemma.json");
+    writeFileSync(file, JSON.stringify({
+      embeddingProvider: "embeddinggemma",
+      embeddingBaseUrl: "http://file.example:4320",
+      embeddingModel: "file-model",
+    }));
+    const fromFile = loadConfig({ env: {}, configPath: file });
+    expect(fromFile.embeddingProvider).toBe("embeddinggemma");
+    expect(fromFile.embeddingBaseUrl).toBe("http://file.example:4320");
+    expect(fromFile.embeddingModel).toBe("file-model");
+
+    const fromEnv = loadConfig({
+      env: {
+        CHAT_SCROBBLER_EMBED_PROVIDER: "hash",
+        CHAT_SCROBBLER_EMBED_BASE_URL: "http://env.example:4321",
+        CHAT_SCROBBLER_EMBED_MODEL: "env-model",
+      },
+      configPath: file,
+    });
+    expect(fromEnv.embeddingProvider).toBe("hash");
+    expect(fromEnv.embeddingBaseUrl).toBe("http://env.example:4321");
+    expect(fromEnv.embeddingModel).toBe("env-model");
+    expect(loadConfig({
+      env: { CHAT_SCROBBLER_EMBED_BASE_URL: "" }, configPath: file,
+    }).embeddingBaseUrl).toBe("http://file.example:4320");
+    expect(loadConfig({
+      env: { CHAT_SCROBBLER_EMBED_BASE_URL: "" }, configPath: null,
+    }).embeddingBaseUrl).toBe("http://127.0.0.1:4320");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("background backfill defaults and validated file/env controls", () => {
+  const defaults=loadConfig({env:{},configPath:null});
+  expect(defaults.embeddingBackfillEnabled).toBe(true);
+  expect(defaults.embeddingBackfillIntervalMs).toBe(600_000);
+  expect(defaults.embeddingBackfillBatchSize).toBe(25);
+  const root=mkdtempSync(join(tmpdir(),"backfill-config-"));
+  try {
+    const file=join(root,"config.json");
+    writeFileSync(file,JSON.stringify({embeddingBackfillEnabled:false,embeddingBackfillIntervalMs:2000,embeddingBackfillBatchSize:3}));
+    const cfg=loadConfig({configPath:file,env:{CHAT_SCROBBLER_EMBED_BACKFILL_ENABLED:"true",CHAT_SCROBBLER_EMBED_BACKFILL_INTERVAL_MS:"4000",CHAT_SCROBBLER_EMBED_BACKFILL_BATCH_SIZE:"5"}});
+    expect(cfg).toMatchObject({embeddingBackfillEnabled:true,embeddingBackfillIntervalMs:4000,embeddingBackfillBatchSize:5});
+    expect(loadConfig({configPath:file,env:{CHAT_SCROBBLER_EMBED_BACKFILL_ENABLED:"false",CHAT_SCROBBLER_EMBED_BACKFILL_INTERVAL_MS:"0",CHAT_SCROBBLER_EMBED_BACKFILL_BATCH_SIZE:"1.5"}})).toMatchObject({embeddingBackfillEnabled:false,embeddingBackfillIntervalMs:2000,embeddingBackfillBatchSize:3});
+    writeFileSync(file,JSON.stringify({embeddingBackfillEnabled:"yes",embeddingBackfillIntervalMs:-1,embeddingBackfillBatchSize:0}));
+    expect(loadConfig({configPath:file,env:{}})).toMatchObject({embeddingBackfillEnabled:true,embeddingBackfillIntervalMs:600_000,embeddingBackfillBatchSize:25});
+  } finally {rmSync(root,{recursive:true,force:true});}
+});
+
+test('skipped embedding retry timer defaults to a day and honors file and env controls', () => {
+  expect(loadConfig({env:{},configPath:null}).embeddingSkippedRetryMs).toBe(86_400_000);
+  const root=mkdtempSync(join(tmpdir(),'retry-config-'));
+  try {
+    const path=join(root,'config.json');writeFileSync(path,JSON.stringify({embeddingSkippedRetryMs:1000}));
+    expect(loadConfig({env:{},configPath:path}).embeddingSkippedRetryMs).toBe(1000);
+    expect(loadConfig({env:{CHAT_SCROBBLER_EMBED_SKIPPED_RETRY_MS:'2000'},configPath:path}).embeddingSkippedRetryMs).toBe(2000);
+    expect(loadConfig({env:{CHAT_SCROBBLER_EMBED_SKIPPED_RETRY_MS:'0'},configPath:path}).embeddingSkippedRetryMs).toBe(1000);
+    writeFileSync(path,JSON.stringify({embeddingSkippedRetryMs:-1}));
+    expect(loadConfig({env:{},configPath:path}).embeddingSkippedRetryMs).toBe(86_400_000);
+  }finally{rmSync(root,{recursive:true,force:true});}
+});

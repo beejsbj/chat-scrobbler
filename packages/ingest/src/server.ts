@@ -5,11 +5,12 @@ import { persistEmbeddingStatus } from "../../../src/indexer/embedding-status";
 import { monitorStatePath, recordCaptureReceipt } from "../../../src/monitor/state";
 import { cachedLiveMonitorReport } from "../../../src/monitor/live-report";
 import type { MonitorConfig } from "../../../src/monitor/config";
-import { cachedIngestHealth } from "./health";
+import { backfillHealth, cachedIngestHealth } from "./health";
+import type { BackfillSchedulerStatus } from "../../../src/indexer/backfill-scheduler";
 import { Database } from "bun:sqlite";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
-import { foldCaptureIntoSpineWithEmbeddings, type SpineResult } from "./pipeline";
+import { foldCaptureIntoSpine, type SpineResult } from "./pipeline";
 import { recordAssetFailures } from "./asset-failures";
 import { captureFailureReports } from "./capture-failures";
 import { conversationStatuses } from "./status";
@@ -51,9 +52,12 @@ export interface IngestServerOptions extends MonitorConfig {
   canonicalDir?: string;
   indexPath?: string;
   rawDir?: string;
+  /** Used by deep health checks. Captures defer vector inference to backfill. */
   embeddingProvider?: EmbeddingProvider | null;
   /** Max accepted POST /assets body; defaults to MAX_ASSET_BYTES (100MB). */
   maxAssetBytes?: number;
+  /** Live background coverage progress, only exposed through authenticated deep health. */
+  backfillStatus?: () => BackfillSchedulerStatus;
 }
 
 export interface IngestResponse {
@@ -119,7 +123,7 @@ export async function handleIngestRequest(req: Request, opts: IngestServerOption
   if (req.method === "GET" && url.pathname === `${HEALTH_PATH}/deep`) {
     if (!opts.ingestToken || req.headers.get("authorization") !== `Bearer ${opts.ingestToken}`) return json({ ok: false, error: "Unauthorized" }, 401);
     const health = await cachedIngestHealth(opts);
-    return json(health, health.ok ? 200 : 503);
+    return json({...health,backfill:backfillHealth(opts)}, health.ok ? 200 : 503);
   }
 
   if (req.method === "GET" && url.pathname === `${STATUS_PATH}/report`) {
@@ -297,7 +301,9 @@ export async function handleIngestRequest(req: Request, opts: IngestServerOption
       for (const [i, capture] of captures.entries()) {
         let parsed = false;
         try {
-          spine.push(...await foldCaptureIntoSpineWithEmbeddings(capture, {
+          // ACK waits for raw + canonical + FTS only. There is no async DB work
+          // or inference job to outlive this request or block the next capture.
+          spine.push(...foldCaptureIntoSpine(capture, {
             canonicalDir: fat.canonicalDir,
             rawRef: rawRefs[i],
             onParse: success => {
@@ -306,7 +312,6 @@ export async function handleIngestRequest(req: Request, opts: IngestServerOption
               monitorWrite(path, () => recordParseOutcome(path, capture.source, capture.source_id, success));
             },
             db,
-            embeddingProvider: opts.embeddingProvider ?? null,
           }));
         } catch (error) {
           if (!parsed) logCaptureParseFailure(capture, error);

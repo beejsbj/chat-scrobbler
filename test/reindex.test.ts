@@ -1,3 +1,4 @@
+import { decodeVector } from "../src/indexer/vector-store";
 // test/reindex.test.ts
 // Verifies that runUnify reads canonical session files and makes them searchable.
 import { test, expect, afterAll } from "bun:test";
@@ -166,10 +167,10 @@ test("unify preserves vectors when rebuilding with a failed embedder", async () 
     writeSession(opts.canonicalDir, sessionA);
     await runUnify({ ...opts, embeddingProvider: provider });
     const db = openIndex(opts.indexPath);
-    const before = db.query("SELECT * FROM message_embeddings").all();
+    const before = db.query("SELECT * FROM message_vectors").all();
     failing = true;
     await runUnify({ ...opts, embeddingProvider: provider });
-    expect(db.query("SELECT * FROM message_embeddings").all()).toEqual(before);
+    expect(db.query("SELECT * FROM message_vectors").all()).toEqual(before);
     expect(searchMessages(db, "photosynthesis")).toHaveLength(2);
     db.close();
   } finally { rmSync(dir, { recursive: true, force: true }); }
@@ -220,7 +221,7 @@ test("unify refuses empty-mount pruning and large deletion fractions unless forc
   } finally { db.close(); logs.mockRestore(); rmSync(dir, { recursive: true, force: true }); }
 });
 
-test("unify opens its embedding circuit after consecutive failures and finishes literal indexing", async () => {
+test("unify opens its embedding circuit after consecutive failed sessions and finishes literal indexing", async () => {
   const { spyOn } = await import("bun:test");
   const logs = spyOn(console, "error").mockImplementation(() => {});
   const dir = mkdtempSync(join(tmpdir(), "unify-circuit-"));
@@ -229,7 +230,8 @@ test("unify opens its embedding circuit after consecutive failures and finishes 
   try {
     for (let i = 0; i < 6; i++) writeSession(opts.canonicalDir, { ...sessionA, id: `chatgpt:circuit-${i}`, source_id: `circuit-${i}` });
     expect(await runUnify({ ...opts, embeddingFailureLimit: 2, embeddingProvider: { async embed(): Promise<number[]> { calls++; throw new Error("offline"); } } })).toBe(6);
-    expect(calls).toBe(2);
+    // Both messages are tried independently in each of the two failed sessions.
+    expect(calls).toBe(4);
     expect(JSON.stringify(logs.mock.calls)).toContain("unify_embedding_circuit_open");
     const db = openIndex(opts.indexPath);
     try { expect(searchMessages(db, "photosynthesis")).toHaveLength(12); } finally { db.close(); }
@@ -256,7 +258,7 @@ test("unify skips vector replacement when canonical mtime or indexed revision ch
         return [1, 0];
       } };
       await runUnify({ ...opts, embeddingProvider: provider });
-      expect(db.query("SELECT embedding FROM message_embeddings").all()).toEqual([{ embedding: "[0,1]" }, { embedding: "[0,1]" }]);
+      expect((db.query("SELECT embedding FROM message_vectors").all() as Array<{embedding: Uint8Array}>).map(row => Array.from(decodeVector(row.embedding, 2)))).toEqual([[0,1], [0,1]]);
     } finally { db.close(); rmSync(dir, { recursive: true, force: true }); }
   }
 });

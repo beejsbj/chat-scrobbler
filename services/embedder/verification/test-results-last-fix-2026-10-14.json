@@ -1,0 +1,67 @@
+{
+  "date_utc": "2026-10-14",
+  "runtime_commit": "4bf23f22741f589be383889d1249baa5766d302c",
+  "rebase_base": "d56b753",
+  "cloud_job": "dr-20261014-020929-577aee88",
+  "cloud_exit_code": 0,
+  "sandbox_deleted": true,
+  "bun": {
+    "version": "1.3.14",
+    "passed": 647,
+    "failed": 0,
+    "files": 75,
+    "assertions": 2730,
+    "seconds": 20.51
+  },
+  "typescript": {
+    "command": "bun x tsc --noEmit",
+    "exit_code": 0
+  },
+  "python_cloud": {
+    "discovered": 45,
+    "passed": 43,
+    "skipped": 2,
+    "seconds": 8.132,
+    "skip_reason": "Docker Compose unavailable"
+  },
+  "python_local": {
+    "discovered": 45,
+    "passed": 45,
+    "skipped": 0,
+    "seconds": 7.057,
+    "includes_compose_rendering": true
+  },
+  "compile": {
+    "command": "bun build --compile src/cli/chat-scrobbler.ts",
+    "exit_code": 0,
+    "modules": 305
+  },
+  "compiled_help": {
+    "command": "chat-scrobbler embed-backfill --help",
+    "exit_code": 0,
+    "includes_retry_skipped": true
+  },
+  "retry_policy": {
+    "first_delay_ms": 86400000,
+    "cycle_delay_multipliers": [
+      1,
+      3,
+      7
+    ],
+    "fenced": true,
+    "fresh_work_first": true,
+    "empty_text_retried": false
+  },
+  "monitor_line": "FAILED embeddings skipped=<n> reason=<top reason>",
+  "previous_gate_job": {
+    "job": "dr-20261014-020833-dba36597",
+    "exit_code": 1,
+    "sandbox_deleted": true,
+    "resolved_failure": "Obsolete serve test expected status/report to be absent before PR #13"
+  },
+  "production_deployed": false,
+  "production_index_modified": false,
+  "pushed": false,
+  "native_inference_repeated": false,
+  "real_index_measurement_repeated": false
+}

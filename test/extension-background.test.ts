@@ -1,16 +1,22 @@
-import { afterAll, beforeAll, beforeEach, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, beforeEach, expect, test } from "bun:test";
 import { buildRawCapture } from "../packages/shared/src";
 import type { RuntimeMessage } from "../packages/extension/src/messages";
 
 type RuntimeListener = (message: RuntimeMessage, sender: unknown, sendResponse: (response: unknown) => void) => boolean;
 
-const storageData: Record<string, unknown> = {};
 const originalFetch = globalThis.fetch;
+const originalChrome = Object.getOwnPropertyDescriptor(globalThis, "chrome");
+afterEach(() => { globalThis.fetch = originalFetch; });
+afterAll(() => {
+  if (originalChrome) Object.defineProperty(globalThis, "chrome", originalChrome);
+  else Reflect.deleteProperty(globalThis, "chrome");
+});
+
+const storageData: Record<string, unknown> = {};
 async function sha256Of(bytes: number[]): Promise<string> {
   const digest = await crypto.subtle.digest("SHA-256", new Uint8Array(bytes));
   return Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, "0")).join("");
 }
-afterAll(() => { globalThis.fetch = originalFetch; });
 let runtimeListener: RuntimeListener | null = null;
 
 beforeAll(async () => {

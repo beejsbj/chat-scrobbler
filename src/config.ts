@@ -42,14 +42,23 @@ export interface ChatHistoryConfig extends MonitorConfig {
   embeddingProvider: EmbeddingProviderKind;
   /** Provider model override. Defaults depend on the selected provider. */
   embeddingModel: string | null;
+  /** Local EmbeddingGemma service used when embeddingProvider = "embeddinggemma". */
+  embeddingBaseUrl: string;
   /** Local Ollama server used when embeddingProvider = "ollama". */
   ollamaBaseUrl: string;
   /** Gemini API key used when embeddingProvider = "gemini". Prefer env. */
   geminiApiKey: string | null;
+  /** Serve fills pending vectors when a provider is configured. */
+  embeddingBackfillEnabled: boolean;
+  embeddingBackfillIntervalMs: number;
+  embeddingBackfillBatchSize: number;
+  embeddingSkippedRetryMs: number;
+  embeddingChunkChars: number | null;
+  embeddingMaxChunks: number;
 }
 
-export type EmbeddingProviderKind = "none" | "gemini" | "ollama" | "hash";
-const EMBEDDING_PROVIDER_KINDS: readonly EmbeddingProviderKind[] = ["none", "gemini", "ollama", "hash"];
+export type EmbeddingProviderKind = "none" | "gemini" | "ollama" | "embeddinggemma" | "hash";
+const EMBEDDING_PROVIDER_KINDS: readonly EmbeddingProviderKind[] = ["none", "gemini", "ollama", "embeddinggemma", "hash"];
 
 /** Default data home: keeps user data out of whatever repo/cwd the tool runs from. */
 const DATA_HOME = join(homedir(), ".local", "share", "chat-scrobbler");
@@ -68,9 +77,16 @@ export const DEFAULT_CONFIG: ChatHistoryConfig = {
   backupTargets: [join(DATA_HOME, "backups")],
   embeddingProvider: "none",
   embeddingModel: null,
+  embeddingBaseUrl: "http://127.0.0.1:4320",
   ollamaBaseUrl: "http://127.0.0.1:11434",
   geminiApiKey: null,
   ...monitorSettings(),
+  embeddingBackfillEnabled: true,
+  embeddingBackfillIntervalMs: 600_000,
+  embeddingBackfillBatchSize: 25,
+  embeddingSkippedRetryMs: 86_400_000,
+  embeddingChunkChars: null,
+  embeddingMaxChunks: 16,
 };
 
 export interface LoadConfigOptions {
@@ -103,8 +119,15 @@ const FILE_KEYS: Array<keyof ChatHistoryConfig> = [
   "backupTargets",
   "embeddingProvider",
   "embeddingModel",
+  "embeddingBaseUrl",
   "ollamaBaseUrl",
   "geminiApiKey",
+  "embeddingBackfillEnabled",
+  "embeddingBackfillIntervalMs",
+  "embeddingBackfillBatchSize",
+  "embeddingSkippedRetryMs",
+  "embeddingChunkChars",
+  "embeddingMaxChunks",
 ];
 
 /** Resolve the layered config. Pure given its options (env + fs are injectable). */
@@ -142,8 +165,29 @@ export function loadConfig(opts: LoadConfigOptions = {}): ChatHistoryConfig {
   applyNullableString(cfg, "mcpPublicBaseUrl", env.MCP_PUBLIC_BASE_URL ?? env.CHAT_SCROBBLER_MCP_PUBLIC_BASE_URL);
   applyEmbeddingProvider(cfg, env.CHAT_SCROBBLER_EMBED_PROVIDER ?? env.EMBED_PROVIDER);
   applyNullableString(cfg, "embeddingModel", env.CHAT_SCROBBLER_EMBED_MODEL ?? env.EMBED_MODEL);
+  const chunkChars=env.CHAT_SCROBBLER_EMBED_CHUNK_CHARS?.trim() || cfg.embeddingChunkChars;
+  cfg.embeddingChunkChars=chunkChars===null || chunkChars===undefined ? null : Number(chunkChars);
+  if(cfg.embeddingChunkChars!==null && (!Number.isInteger(cfg.embeddingChunkChars)||cfg.embeddingChunkChars<16)) throw new Error("invalid embedding chunk size");
+  cfg.embeddingMaxChunks=Number(env.CHAT_SCROBBLER_EMBED_MAX_CHUNKS ?? cfg.embeddingMaxChunks);
+  if(!Number.isInteger(cfg.embeddingMaxChunks)||cfg.embeddingMaxChunks<1||cfg.embeddingMaxChunks>16) throw new Error("invalid embedding max chunks");
+  applyString(cfg, "embeddingBaseUrl", env.CHAT_SCROBBLER_EMBED_BASE_URL);
   applyString(cfg, "ollamaBaseUrl", env.CHAT_SCROBBLER_OLLAMA_BASE_URL ?? env.OLLAMA_BASE_URL);
   applyNullableString(cfg, "geminiApiKey", env.GEMINI_API_KEY ?? env.GOOGLE_API_KEY);
+  for (const key of ["embeddingBackfillIntervalMs", "embeddingBackfillBatchSize", "embeddingSkippedRetryMs"] as const) {
+    if (!Number.isSafeInteger(cfg[key]) || cfg[key] < 1) cfg[key]=DEFAULT_CONFIG[key];
+  }
+  if (typeof cfg.embeddingBackfillEnabled !== "boolean") cfg.embeddingBackfillEnabled=DEFAULT_CONFIG.embeddingBackfillEnabled;
+  const enabled=env.CHAT_SCROBBLER_EMBED_BACKFILL_ENABLED;
+  if (enabled === "true" || enabled === "1") cfg.embeddingBackfillEnabled=true;
+  if (enabled === "false" || enabled === "0") cfg.embeddingBackfillEnabled=false;
+  for (const [key,value] of [
+    ["embeddingBackfillIntervalMs",env.CHAT_SCROBBLER_EMBED_BACKFILL_INTERVAL_MS],
+    ["embeddingBackfillBatchSize",env.CHAT_SCROBBLER_EMBED_BACKFILL_BATCH_SIZE],
+    ["embeddingSkippedRetryMs",env.CHAT_SCROBBLER_EMBED_SKIPPED_RETRY_MS],
+  ] as const) {
+    const n=Number(value);
+    if (value !== undefined && Number.isSafeInteger(n) && n>0) cfg[key]=n;
+  }
   if (env.BACKUP_TARGET !== undefined && env.BACKUP_TARGET !== "") {
     const targets = env.BACKUP_TARGET.split(",").map(s => s.trim()).filter(Boolean);
     if (targets.length > 0) cfg.backupTargets = targets;
@@ -199,7 +243,7 @@ function readConfigFile(path: string | null): PartialConfig {
   }
 }
 
-function applyString(cfg: ChatHistoryConfig, key: "canonicalDir" | "indexPath" | "ollamaBaseUrl" | "bindHost", v: string | undefined): void {
+function applyString(cfg: ChatHistoryConfig, key: "canonicalDir" | "indexPath" | "ollamaBaseUrl" | "embeddingBaseUrl" | "bindHost", v: string | undefined): void {
   if (v !== undefined && v !== "") cfg[key] = v;
 }
 

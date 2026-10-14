@@ -1,0 +1,132 @@
+import { test, expect, spyOn } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import * as os from "node:os";
+import { join } from "node:path";
+import { DEFAULT_CONFIG } from "../src/config";
+import { openIndex, indexSession } from "../src/indexer/sqlite";
+import { runEmbedBackfill } from "../src/cli/embed-backfill";
+import { fixture } from "./support/embedding-fixture";
+
+test("CLI validates model/provider/controls before creating a database", async () => {
+  for (const args of [[], ["--model","m","--provider","none"], ["--model","m","--rate","bad"], ["--model","m","--limit","0"], ["--provider","oops","--model","m"]]) {
+    await expect(runEmbedBackfill(args,{...DEFAULT_CONFIG,indexPath:"/nonexistent-parent/no-write.db"},()=>{})).rejects.toThrow();
+  }
+});
+test("CLI fills isolated hash fixtures and reports coverage without changing config", async () => {
+  const root=mkdtempSync(join(tmpdir(),"embed-cli-"));
+  try {
+    const cfg={...DEFAULT_CONFIG,indexPath:join(root,"index.db")}; const db=openIndex(cfg.indexPath); indexSession(db,fixture()); db.close();
+    const out:string[]=[];
+    await runEmbedBackfill(["--model","hash-v1","--provider","hash","--limit","1","--rate","1000","--load-threshold","1000"],cfg,text=>out.push(text));
+    expect(JSON.parse(out.at(-1)!)).toMatchObject({event:"complete",embedded:1,text:{total:1,embedded:1}});
+    expect(cfg.embeddingProvider).toBe("none");
+    const inspect=openIndex(cfg.indexPath); expect(inspect.query("SELECT * FROM message_vectors").all()).toHaveLength(1); inspect.close();
+  } finally {rmSync(root,{recursive:true,force:true});}
+});
+
+test("CLI migration ignores even an explicitly configured emergency host load brake", async () => {
+  const root = mkdtempSync(join(tmpdir(), "embed-migrate-"));
+  const load = spyOn(os, "loadavg").mockReturnValue([32, 32, 32]);
+  const sleep = spyOn(Bun, "sleep").mockImplementation(async () => { throw new Error("unexpected load pause"); });
+  try {
+    const cfg = { ...DEFAULT_CONFIG, indexPath: join(root, "index.db") };
+    const db = openIndex(cfg.indexPath);
+    indexSession(db, fixture());
+    db.run(`INSERT INTO message_embeddings(session_id,message_id,embedding,text,title,provider_kind,provider_model,dimension)
+      VALUES ('chatgpt:test','m','[1,0]','archived words','T','test','m',2)`);
+    db.close();
+    const out: string[] = [];
+    await runEmbedBackfill(["--migrate-only", "--load-threshold", "1"], cfg, text => out.push(text));
+    expect(JSON.parse(out.at(-1)!)).toMatchObject({ event: "migration_complete", scanned: 1, converted: 1, invalid: 0 });
+    expect(load).not.toHaveBeenCalled();
+    expect(sleep).not.toHaveBeenCalled();
+  } finally { load.mockRestore(); sleep.mockRestore(); rmSync(root, { recursive: true, force: true }); }
+});
+
+test("CLI defaults to serial inference without checking aggregate host load", async () => {
+  const root = mkdtempSync(join(tmpdir(), "embed-load-"));
+  const load = spyOn(os, "loadavg").mockReturnValue([32, 32, 32]);
+  try {
+    const cfg = { ...DEFAULT_CONFIG, indexPath: join(root, "index.db") };
+    const db = openIndex(cfg.indexPath);
+    indexSession(db, fixture());
+    db.close();
+    const out: string[] = [];
+    await runEmbedBackfill(["--model", "hash-v1", "--provider", "hash"], cfg, text => out.push(text));
+    expect(JSON.parse(out.at(-1)!)).toMatchObject({ event: "complete", embedded: 1 });
+    expect(load).not.toHaveBeenCalled();
+  } finally { load.mockRestore(); rmSync(root, { recursive: true, force: true }); }
+});
+
+test("manual backfill and migrate-only use the same index lock and release it after errors", async () => {
+  const { acquireBackfillLock } = await import("../src/indexer/backfill-lock");
+  const root = mkdtempSync(join(tmpdir(), "embed-cli-lock-"));
+  try {
+    const cfg = {...DEFAULT_CONFIG,indexPath:join(root,"index.db")};
+    const lock=acquireBackfillLock(cfg.indexPath)!;
+    for (const args of [["--migrate-only"],["--model","hash-v1","--provider","hash"]])
+      await expect(runEmbedBackfill(args,cfg,()=>{})).rejects.toThrow("backfill already running");
+    lock.release();
+    const db=openIndex(cfg.indexPath); indexSession(db,fixture()); db.close();
+    await expect(runEmbedBackfill(["--provider","hash","--model","hash-v1"],cfg,()=>{throw new Error("writer failed");})).rejects.toThrow("writer failed");
+    const again=acquireBackfillLock(cfg.indexPath)!;
+    expect(again).toBeTruthy(); again.release();
+  } finally {rmSync(root,{recursive:true,force:true});}
+});
+
+test("embed-backfill --help describes controls without opening an index or requiring a model", async () => {
+  const output:string[]=[];
+  await runEmbedBackfill(["--help"],{...DEFAULT_CONFIG,indexPath:"/nonexistent-parent/no-help.db"},text=>output.push(text));
+  expect(output.join("\n")).toContain("--migrate-only");
+  expect(output.join("\n")).toContain("--model");
+  expect(output.join("\n")).toContain("docker exec");
+  expect(output.join("\n")).toContain("Due backlog continues after 1 second");
+});
+
+test("manual CLI reports recovery and fences a lease stolen during inference", async () => {
+  const {acquireBackfillLock}=await import("../src/indexer/backfill-lock");
+  const root=mkdtempSync(join(tmpdir(),"cli-lease-fence-"));
+  const cfg={...DEFAULT_CONFIG,indexPath:join(root,"index.db"),embeddingProvider:"ollama" as const,embeddingModel:"test"};
+  const db=openIndex(cfg.indexPath);indexSession(db,fixture());db.close();
+  const dead=acquireBackfillLock(cfg.indexPath,{now:()=>1000})!;
+  const originalFetch=globalThis.fetch,output:string[]=[];
+  globalThis.fetch=(async(_url:string|URL|Request,_init?:RequestInit)=>{
+    const replacement=openIndex(cfg.indexPath);
+    try {replacement.run("UPDATE locks SET owner_token='replacement'");}finally{replacement.close();}
+    return new Response(JSON.stringify({embeddings:[[1,0]]}));
+  }) as typeof fetch;
+  try {
+    await expect(runEmbedBackfill(["--model","test"],cfg,line=>output.push(line))).rejects.toThrow("backfill lease lost");
+    expect(output.map(line=>JSON.parse(line))).toContainEqual(expect.objectContaining({event:"lease_acquired",lease:expect.objectContaining({recovered:true})}));
+    expect(JSON.parse(output.at(-1)!)).toMatchObject({event:"lease_lost",lease:{state:"lost"}});
+    const inspect=openIndex(cfg.indexPath);
+    try {expect(inspect.query("SELECT * FROM message_vectors").all()).toHaveLength(0);}
+    finally {inspect.close();}
+  }finally{globalThis.fetch=originalFetch;dead.release();rmSync(root,{recursive:true,force:true});}
+});
+
+test('manual --retry-skipped retries immediately for the configured model without touching other sets or blanks',async()=> {
+ const {initializePendingEmbeddings,pendingEmbeddingRows,deferPendingEmbedding,pendingCoverage}=await import('../src/indexer/pending-embeddings');
+ const {HashEmbeddingProvider}=await import('../src/indexer/embedding-providers');
+ const root=mkdtempSync(join(tmpdir(),'retry-skipped-cli-'));
+ try {
+  const cfg={...DEFAULT_CONFIG,indexPath:join(root,'index.db'),embeddingProvider:'hash' as const,embeddingModel:'hash-v1'};
+  const db=openIndex(cfg.indexPath),p=new HashEmbeddingProvider();
+  const s=fixture();s.messages.push({...s.messages[0],id:'blank',text:'  \n '});indexSession(db,s);
+  for(const provider of [p,{...p,kind:'other',model:'other',embed:()=>[1,0]}]) {
+   await initializePendingEmbeddings(db,provider);
+   const row=pendingEmbeddingRows(db,provider,1)[0];
+   for(let i=0;i<3;i++)deferPendingEmbedding(db,row,{kind:'timeout',reason:'request_timeout'},Date.now());
+  }
+  db.close();
+  const output:string[]=[];
+  await runEmbedBackfill(['--retry-skipped','--rate','1000'],cfg,line=>output.push(line));
+  expect(JSON.parse(output.at(-1)!)).toMatchObject({embedded:1,queue:{skipped:1,empty:1},failed:0});
+  const inspect=openIndex(cfg.indexPath);
+  try {
+   expect(pendingCoverage(inspect,{kind:'other',model:'other',embed:()=>[1,0]})).toMatchObject({skipped:2,embedded:0});
+  }finally{inspect.close();}
+  await expect(runEmbedBackfill(['--migrate-only','--retry-skipped'],cfg,()=>{})).rejects.toThrow('cannot combine');
+ }finally{rmSync(root,{recursive:true,force:true});}
+});

@@ -1,0 +1,52 @@
+{
+  "date_utc": "2026-10-14",
+  "runtime_commit": "b23ed5ca3bfba5a4c08ef5782bcba58ff8c717ce",
+  "cloud_job": "dr-20261014-013505-2823a4f6",
+  "cloud_exit_code": 0,
+  "sandbox_deleted": true,
+  "bun": {
+    "version": "1.3.14",
+    "passed": 601,
+    "failed": 0,
+    "files": 71,
+    "assertions": 2496,
+    "seconds": 11.38
+  },
+  "typescript": {
+    "command": "bun x tsc --noEmit",
+    "exit_code": 0
+  },
+  "python_cloud": {
+    "discovered": 45,
+    "passed": 43,
+    "skipped": 2,
+    "seconds": 7.578,
+    "skip_reason": "Docker Compose unavailable"
+  },
+  "python_local": {
+    "discovered": 45,
+    "passed": 45,
+    "skipped": 0,
+    "seconds": 7.568,
+    "includes_compose_rendering": true
+  },
+  "compile": {
+    "command": "bun build --compile src/cli/chat-scrobbler.ts",
+    "exit_code": 0,
+    "modules": 288
+  },
+  "compiled_help": {
+    "command": "chat-scrobbler embed-backfill --help",
+    "exit_code": 0
+  },
+  "production_deployed": false,
+  "production_index_modified": false,
+  "pushed": false,
+  "bounded_real_copy_receipt": "backfill-round4-2026-10-14.json",
+  "earlier_1500_char_receipt": "backfill-round4-1500-2026-10-14.json",
+  "real_index_copies_deleted": true,
+  "transient_measurement_units_inactive": true,
+  "runner_exit_code": 2,
+  "cleanup": "verified by cancel after asynchronous deletion converged (remote HTTP 404)",
+  "measurement_runtime_commit": "8ca52d43ed2d69e733207be78fb83a95a73968c0"
+}
