@@ -32,3 +32,43 @@ test('item deferrals survive runs, skip after three failures, and reset when cap
   expect(pendingEmbeddingRows(db,p,1,999999)[0]).toMatchObject({text:'changed',attempts:0,state:'pending'});
  }finally{db.close();}
 });
+
+test('registration reads each input and publishes its marker under one writer reservation',async()=> {
+ const {mkdtempSync,rmSync}=await import('node:fs'),{tmpdir}=await import('node:os'),{join}=await import('node:path');
+ const {spyOn}=await import('bun:test');
+ const root=mkdtempSync(join(tmpdir(),'pending-race-')),path=join(root,'index.db');
+ const db=openIndex(path),writer=openIndex(path);indexSession(db,fixture());writer.run('PRAGMA busy_timeout=0');
+ const query=db.query.bind(db);let raced=false;
+ const spy=spyOn(db,'query').mockImplementation(((sql:string)=>{
+  const statement=query(sql);
+  if(sql.includes('SELECT f.rowid,f.*,s.updated_at'))return new Proxy(statement,{get(target,key){
+   if(key==='all')return (...args:any[])=>{
+    const rows=target.all(...args);
+    if(!raced){raced=true;try{indexSession(writer,fixture('changed during seed'));}catch(error){
+      if(!String(error).includes('locked'))throw error;
+    }}
+    return rows;
+   };
+   const value=Reflect.get(target,key);return typeof value==='function' ? value.bind(target) : value;
+  }});
+  return statement;
+ }) as typeof db.query);
+ try {
+  await initializePendingEmbeddings(db,p);
+  const rows=pendingEmbeddingRows(db,p,1,Date.now());
+  expect(raced).toBe(true);
+  const {textVectorHash}=await import('../src/indexer/vector-store');
+  expect(rows[0].input_hash).toBe(textVectorHash(rows[0].text));
+ }finally{spy.mockRestore();writer.close();db.close();rmSync(root,{recursive:true,force:true});}
+});
+
+test('CLI work estimates use pending size metadata, including the chunk cap',async()=> {
+ const {pendingWorkEstimate}=await import('../src/indexer/pending-embeddings');
+ const db=openIndex(':memory:');
+ try {
+  indexSession(db,fixture('x'.repeat(6000)));await initializePendingEmbeddings(db,p);
+  expect(pendingWorkEstimate(db,p)).toBe(4);
+  indexSession(db,fixture('x'.repeat(60000)));
+  expect(pendingWorkEstimate(db,p)).toBe(16);
+ }finally{db.close();}
+});

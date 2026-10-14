@@ -1,5 +1,6 @@
 import { persistEmbeddingStatus } from "./embedding-status";
 import { monitorStatePath } from "../monitor/state";
+import { EmbeddingRequestError } from "./embedding-failures";
 import type { ChatHistoryConfig, EmbeddingProviderKind } from "../config";
 import type { EmbeddingProvider, EmbeddingContext } from "./sqlite";
 
@@ -95,8 +96,8 @@ export class GeminiEmbeddingProvider implements EmbeddingProvider {
       body: JSON.stringify(body),
     });
     if (!response.ok) {
-      const detail = await safeResponseText(response);
-      throw new Error(`Gemini embedding request failed (${response.status}): ${detail}`);
+      await response.body?.cancel();
+      throw new EmbeddingRequestError({kind:"item",reason:`http_${response.status}`});
     }
     return embeddingValues(await response.json());
   }
@@ -122,8 +123,8 @@ export class OllamaEmbeddingProvider implements EmbeddingProvider {
       body: JSON.stringify({ model: this.model, input: text }),
     });
     if (!response.ok) {
-      const detail = await safeResponseText(response);
-      throw new Error(`Ollama embedding request failed (${response.status}): ${detail}`);
+      await response.body?.cancel();
+      throw new EmbeddingRequestError({kind:"item",reason:`http_${response.status}`});
     }
     return embeddingValues(await response.json());
   }
@@ -185,8 +186,8 @@ export class EmbeddingGemmaProvider implements EmbeddingProvider {
       }),
     });
     if (!response.ok) {
-      const detail = await safeResponseText(response);
-      throw new Error(`EmbeddingGemma embedding request failed (${response.status}): ${detail}`);
+      await response.body?.cancel();
+      throw new EmbeddingRequestError({kind:"item",reason:`http_${response.status}`});
     }
     const payload = await response.json() as { data?: Array<{ embedding?: unknown }> } | null;
     signal.throwIfAborted();
@@ -276,11 +277,6 @@ function embeddingValues(payload: unknown): number[] {
     }
   }
   throw new Error("Embedding provider response did not include a numeric vector");
-}
-
-async function safeResponseText(response: Response): Promise<string> {
-  const text = await response.text().catch(() => "");
-  return text.slice(0, 500) || response.statusText;
 }
 
 function tokenizeForEmbedding(text: string): string[] {
