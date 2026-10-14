@@ -1,4 +1,5 @@
-import { DetailFailureStreak, ProviderDetailError, DeterministicCaptureError, TransientSyncError } from "./sync-errors";
+import { DetailFailureStreak } from "./detail-failure-streak";
+import { ProviderDetailError, DeterministicCaptureError, TransientSyncError } from "./sync-errors";
 import { logSyncFailure, SyncFailureTracker } from "./sync-failures";
 /**
  * Gemini scrobbler provider.
@@ -278,7 +279,7 @@ async function syncGemini(
   options: ProviderSyncOptions,
 ): Promise<ProviderSyncResult> {
   const failures = new SyncFailureTracker((options.captureFailures ?? []).filter(f => !options.shouldIgnore?.("gemini", f.source_id)));
-  const detailFailures = new DetailFailureStreak();
+  const detailFailures = new DetailFailureStreak((options.detailFailureStreak ?? []).filter(f => !options.shouldIgnore?.("gemini", f.source_id)));
   let scanned = 0;
   let captured = 0;
   let skipped = 0;
@@ -326,13 +327,13 @@ async function syncGemini(
         emitCapture: options.emitCapture,
         uploadAsset: options.uploadAsset,
       }, true);
-      detailFailures.succeeded();
+      detailFailures.succeeded(id);
       failures.succeeded(id);
       if (!didCapture) { skipped++; maxConversationUpdatedAt = maxIso(maxConversationUpdatedAt, fetchedAt); continue; }
       captured += 1;
       maxConversationUpdatedAt = maxIso(maxConversationUpdatedAt, fetchedAt);
     } catch (error) {
-      detailFailures.failed(error);
+      detailFailures.failed(error, id, null);
       failed++;
       failures.failed(id, null);
       if (failures.isQuarantined(id, null)) maxConversationUpdatedAt = maxIso(maxConversationUpdatedAt, fetchedAt);
@@ -340,8 +341,9 @@ async function syncGemini(
     }
   }
 
+  detailFailures.finish();
   failures.finishListing();
-  return { source: "gemini", scanned, captured, skipped, failed, captureFailures: failures.list(), maxConversationUpdatedAt: failures.pending ? options.lastSync ?? null : maxConversationUpdatedAt, account: null };
+  return { source: "gemini", scanned, captured, skipped, failed, captureFailures: failures.list(), detailFailureStreak: detailFailures.snapshot(), maxConversationUpdatedAt: failures.pending ? options.lastSync ?? null : maxConversationUpdatedAt, account: null };
 }
 
 /**

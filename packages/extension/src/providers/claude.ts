@@ -1,4 +1,5 @@
-import { abortTransientCapture, DetailFailureStreak } from "./sync-errors";
+import { DetailFailureStreak } from "./detail-failure-streak";
+import { abortTransientCapture } from "./sync-errors";
 import { logSyncFailure, SyncFailureTracker } from "./sync-failures";
 import { buildRawCapture } from "../../../shared/src";
 import { assetReferences, uploadProviderAssets } from "./assets";
@@ -94,7 +95,7 @@ async function syncClaude(fetcher: FetchLike, options: ProviderSyncOptions): Pro
   const org = await getOrganization(fetcher);
   let offset = 0;
   const failures = new SyncFailureTracker((options.captureFailures ?? []).filter(f => !options.shouldIgnore?.("claude", f.source_id)));
-  const detailFailures = new DetailFailureStreak();
+  const detailFailures = new DetailFailureStreak((options.detailFailureStreak ?? []).filter(f => !options.shouldIgnore?.("claude", f.source_id)));
   let scanned = 0;
   let captured = 0;
   let skipped = 0;
@@ -112,7 +113,6 @@ async function syncClaude(fetcher: FetchLike, options: ProviderSyncOptions): Pro
       const retry = failures.shouldRetry(item.id, item.updatedAt);
       scanned += 1;
       if (options.shouldIgnore?.("claude", item.id)) {
-        detailFailures.succeeded();
         failures.succeeded(item.id);
         skipped += 1;
         continue;
@@ -151,7 +151,7 @@ async function syncClaude(fetcher: FetchLike, options: ProviderSyncOptions): Pro
           conversationUpdatedAt: item.updatedAt,
           rawUrl: `${currentOrigin()}${detailEndpoint}`,
         }));
-        detailFailures.succeeded();
+        detailFailures.succeeded(item.id);
         failures.succeeded(item.id);
         if (didCapture === false) {
           skipped += 1;
@@ -160,7 +160,7 @@ async function syncClaude(fetcher: FetchLike, options: ProviderSyncOptions): Pro
         captured += 1;
         maxConversationUpdatedAt = maxIso(maxConversationUpdatedAt, item.updatedAt);
       } catch (error) {
-        detailFailures.failed(error);
+        detailFailures.failed(error, item.id, item.updatedAt);
         failed++;
         failures.failed(item.id, item.updatedAt);
         if (failures.isQuarantined(item.id, item.updatedAt)) maxConversationUpdatedAt = maxIso(maxConversationUpdatedAt, item.updatedAt);
@@ -172,6 +172,7 @@ async function syncClaude(fetcher: FetchLike, options: ProviderSyncOptions): Pro
     if (items.length < LIST_LIMIT) break;
   }
 
+  detailFailures.finish();
   failures.finishListing();
   return {
     source: "claude",
@@ -179,7 +180,7 @@ async function syncClaude(fetcher: FetchLike, options: ProviderSyncOptions): Pro
     captured,
     skipped,
     failed,
-    captureFailures: failures.list(), maxConversationUpdatedAt: failures.pending ? options.lastSync ?? null : maxConversationUpdatedAt,
+    captureFailures: failures.list(), detailFailureStreak: detailFailures.snapshot(), maxConversationUpdatedAt: failures.pending ? options.lastSync ?? null : maxConversationUpdatedAt,
     account: org.uuid,
   };
 }

@@ -15,7 +15,7 @@ test("manual retry also stops an environmental streak of detail 5xx without retu
   const provider = { source: "chatgpt", captureOne: async () => { calls++; throw new ProviderDetailError(500); } } as unknown as ProviderAdapter;
   const records = ["a", "b", "c", "d"].map(source_id => ({ ...previous, source_id }));
   await expect(retryCapturedFailures(provider, { captureFailures: records, emitCapture: async () => {}, pause: async () => {} }))
-    .rejects.toMatchObject({ name: "TransientSyncError" });
+    .rejects.toMatchObject({ name: "ProviderDetailOutageError" });
   expect(calls).toBe(3);
   expect(records.every(r => r.attempts === 3)).toBe(true);
 });

@@ -429,3 +429,49 @@ for (const status of [401, 403, 404, 405, 407, 408]) test(`receiver ${status} ab
     expect(reports[3]).toMatchObject({ capture_failures: [], last_sync_error: { reason: "receiver_unavailable", status } });
   } finally { tabs.query = oldQuery; tabs.sendMessage = oldSend; }
 });
+
+test("background persists a three-chat 500 cohort across four fresh adapter runs and releases the cursor", async () => {
+  const { createChatgptAdapter } = await import("../packages/extension/src/providers/chatgpt");
+  const { syncErrorResponse } = await import("../packages/extension/src/sync-error-response");
+  const tabs = chrome.tabs as any;
+  const oldQuery = tabs.query, oldSend = tabs.sendMessage;
+  const cursor = "2026-06-04T00:00:00Z";
+  storageData["scrobbler.status"] = { capturesPosted: 0, lastCaptureAt: null, providers: { chatgpt: { lastSync: cursor, captureFailures: [] } } };
+  globalThis.fetch = (async () => Response.json({ ok: true })) as unknown as typeof fetch;
+  const requestedStreaks: number[] = [];
+  tabs.query = (_query: any, done: any) => done([{ id: 1, url: "https://chatgpt.com/" }]);
+  tabs.sendMessage = (_id: any, request: any, done: any) => {
+    requestedStreaks.push(request.detailFailureStreak.length);
+    createChatgptAdapter(async url => {
+      if (url === "/api/auth/session") return Response.json({});
+      if (url.includes("conversations?")) return Response.json({ items: ["a", "b", "c", "good"].map(id => ({ id, update_time: "2026-06-05T00:00:00Z" })) });
+      return url.endsWith("/good") ? Response.json({ mapping: {} }) : new Response("permanent", { status: 500 });
+    }).sync({ ...request, emitCapture: async () => {} }).then(result => done({ ok: true, ...result }), error => done(syncErrorResponse(error)));
+  };
+  try {
+    for (let run = 0; run < 4; run++) {
+      expect(await sendRuntimeMessage({ type: "SCROBBLER_SYNC_ACTIVE_TAB" })).toMatchObject({ ok: run !== 0 });
+      const state = (storageData["scrobbler.status"] as any).providers.chatgpt;
+      expect(state.captureFailures.every((f: any) => f.attempts === run)).toBe(true);
+      storageData["scrobbler.status"] = JSON.parse(JSON.stringify(storageData["scrobbler.status"]));
+    }
+    const state = (storageData["scrobbler.status"] as any).providers.chatgpt;
+    expect(requestedStreaks).toEqual([0, 3, 3, 3]);
+    expect(state.captureFailures).toHaveLength(3);
+    expect(state.captureFailures.every((f: any) => f.quarantined && f.attempts === 3)).toBe(true);
+    expect(state.lastSync).toBe("2026-06-05T00:00:00Z");
+  } finally { tabs.query = oldQuery; tabs.sendMessage = oldSend; }
+});
+
+test("retrying a confirmed cohort behind the cursor cannot move the saved cursor backwards", async () => {
+  const tabs = chrome.tabs as any;
+  const oldQuery = tabs.query, oldSend = tabs.sendMessage;
+  storageData["scrobbler.status"] = { capturesPosted: 0, providers: { chatgpt: { lastSync: "2026-06-06T00:00:00Z" } } };
+  tabs.query = (_query: any, done: any) => done([{ id: 1, url: "https://chatgpt.com/" }]);
+  tabs.sendMessage = (_id: any, _request: any, done: any) => done({ ok: true, source: "chatgpt", captureFailures: [], maxConversationUpdatedAt: "2026-06-05T00:00:00Z" });
+  globalThis.fetch = (async () => Response.json({ ok: true })) as unknown as typeof fetch;
+  try {
+    expect(await sendRuntimeMessage({ type: "SCROBBLER_SYNC_ACTIVE_TAB" })).toMatchObject({ ok: true });
+    expect((storageData["scrobbler.status"] as any).providers.chatgpt.lastSync).toBe("2026-06-06T00:00:00Z");
+  } finally { tabs.query = oldQuery; tabs.sendMessage = oldSend; }
+});

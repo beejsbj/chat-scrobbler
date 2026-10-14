@@ -1,3 +1,4 @@
+import { maxIso } from "./providers/types";
 import { fetchAllowedAsset } from "./providers/asset-fetch";
 import "./chrome-api";
 import { assetsUrl, capturesUrl, deleteCaptureUrl, statusUrl, DEFAULT_INGEST_BASE_URL, DEFAULT_SYNC_PERIOD_MINUTES, type ProviderSource, type ConversationCaptureFailure, type AssetBackfillPage } from "../../shared/src";
@@ -44,6 +45,7 @@ interface Settings {
 interface ProviderState {
   lastSync: string | null;
   captureFailures?: ConversationCaptureFailure[];
+  detailFailureStreak?: import("../../shared/src").DetailFailureIdentity[];
   lastBackfill?: { next_after: string | null; sessions: number; attempted: number; captured: number; unavailable: number; completed_at: string };
   lastVisitSync: string | null;
   lastResult: unknown;
@@ -404,12 +406,13 @@ async function syncTab(tab: any, provider: ProviderSource, reason: "manual" | "p
   // sendTabMessage resolves undefined when the tab has no live content script
   // (e.g. opened before the extension loaded / reloaded). Guard with optional
   // chaining so this surfaces a clear message instead of a "reading 'ok'" crash.
-  const response = await sendTabMessage(tab.id, { type: "SCROBBLER_SYNC_REQUEST", provider, lastSync, captureFailures: status.providers[provider]?.captureFailures ?? [], retryFailed: reason === "retry" }) as SyncResponse | undefined;
+  const response = await sendTabMessage(tab.id, { type: "SCROBBLER_SYNC_REQUEST", provider, lastSync, captureFailures: status.providers[provider]?.captureFailures ?? [], detailFailureStreak: status.providers[provider]?.detailFailureStreak ?? [], retryFailed: reason === "retry" }) as SyncResponse | undefined;
   if (!response?.ok) {
     const error = response?.error ?? "Content script not active in that tab; reload the tab and try again.";
     await mutateStatus(next => {
-      const previous = next.providers[provider] ?? { lastSync, lastVisitSync: null, lastResult: null, captureFailures: [] };
+      const previous: ProviderState = next.providers[provider] ?? { lastSync, lastVisitSync: null, lastResult: null, captureFailures: [], lastError: null };
       next.providers[provider] = { ...previous, lastError: error,
+        detailFailureStreak: response?.detailFailureStreak ?? previous.detailFailureStreak,
         lastSyncError: response?.syncIssue ?? { reason: "sync_unavailable", occurred_at: new Date().toISOString() } };
     });
     await reportSyncFailuresBestEffort(provider, status.providers[provider]?.captureFailures ?? []);
@@ -419,8 +422,9 @@ async function syncTab(tab: any, provider: ProviderSource, reason: "manual" | "p
   await mutateStatus((next) => {
     next.providers[provider] = {
       ...next.providers[provider],
-      lastSync: response.maxConversationUpdatedAt ?? lastSync,
+      lastSync: maxIso(lastSync, response.maxConversationUpdatedAt),
       captureFailures: response.captureFailures ?? [],
+      detailFailureStreak: response.detailFailureStreak ?? [],
       lastVisitSync: reason === "visit" ? new Date().toISOString() : next.providers[provider]?.lastVisitSync ?? null,
       lastResult: { ...response, reason, tabId: tab.id, synced_at: new Date().toISOString() },
       lastError: null,

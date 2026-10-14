@@ -1,4 +1,4 @@
-import type { AssetFailure, ProviderSource, RawCapture, ConversationCaptureFailure, AssetBackfillPage, AssetBackfillCommit, UploadedAsset, SyncIssue } from "../../shared/src";
+import type { AssetFailure, ProviderSource, RawCapture, ConversationCaptureFailure, AssetBackfillPage, AssetBackfillCommit, UploadedAsset, SyncIssue, DetailFailureIdentity } from "../../shared/src";
 import type { ProviderSyncResult } from "./providers";
 import type { CaptureKind } from "./recent-captures";
 
@@ -7,6 +7,7 @@ export interface SyncRequest {
   provider: ProviderSource;
   lastSync?: string | null;
   captureFailures?: ConversationCaptureFailure[];
+  detailFailureStreak?: DetailFailureIdentity[];
   retryFailed?: boolean;
 }
 
@@ -176,6 +177,7 @@ export interface ErrorResponse {
   ok: false;
   error: string;
   syncIssue?: SyncIssue;
+  detailFailureStreak?: DetailFailureIdentity[];
 }
 
 export type SyncResponse = ContentSyncResponse | ErrorResponse;

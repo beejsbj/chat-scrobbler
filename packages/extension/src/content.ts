@@ -78,6 +78,7 @@ async function syncProvider(message: SyncRequest): Promise<SyncResponse> {
   const result = await provider!.sync({
     lastSync: message.lastSync ?? null,
     captureFailures: message.captureFailures,
+    detailFailureStreak: message.detailFailureStreak,
     emitCapture,
     shouldIgnore: (_source, sourceId) => ignoredIds.has(sourceId),
     uploadAsset,
@@ -128,7 +129,7 @@ async function refreshIgnoredIds(): Promise<void> {
 }
 
 async function retryFailedCaptures(message: SyncRequest): Promise<SyncResponse> {
-  const result = await retryCapturedFailures(provider!, { lastSync: message.lastSync, captureFailures: message.captureFailures,
+  const result = await retryCapturedFailures(provider!, { lastSync: message.lastSync, captureFailures: message.captureFailures, detailFailureStreak: message.detailFailureStreak,
     emitCapture, uploadAsset, shouldIgnore: (_source, id) => ignoredIds.has(id) });
   return { ok: true, ...result };
 }

@@ -1,3 +1,4 @@
+import type { DetailFailureIdentity } from "../../../shared/src";
 /** An outage must never become a permanent conversation failure. */
 export class TransientSyncError extends Error {
   constructor(message = "Capture temporarily unavailable", readonly status?: number) { super(message); this.name = "TransientSyncError"; }
@@ -15,13 +16,9 @@ export function abortTransientCapture(error: unknown): void {
 export class ProviderDetailError extends DeterministicCaptureError {
   constructor(status: number) { super(`Provider rejected conversation (${status})`, status); this.name = "ProviderDetailError"; }
 }
-/** An isolated detail 5xx belongs to a chat; three consecutive ones suggest an outage. */
-export class DetailFailureStreak {
-  private consecutive = 0;
-  succeeded(): void { this.consecutive = 0; }
-  failed(error: unknown): void {
-    this.consecutive = error instanceof ProviderDetailError && error.status! >= 500 ? this.consecutive + 1 : 0;
-    if (this.consecutive >= 3) throw new TransientSyncError("Provider detail endpoints repeatedly unavailable");
-    abortTransientCapture(error);
+export class ProviderDetailOutageError extends TransientSyncError {
+  constructor(readonly detailFailureStreak: DetailFailureIdentity[]) {
+    super("Provider detail endpoints repeatedly unavailable; retry later");
+    this.name = "ProviderDetailOutageError";
   }
 }

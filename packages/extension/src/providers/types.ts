@@ -1,10 +1,11 @@
-import type { ProviderSource, RawCapture, UploadedAsset, ConversationCaptureFailure, AssetBackfillReference } from "../../../shared/src";
+import type { ProviderSource, RawCapture, UploadedAsset, ConversationCaptureFailure, DetailFailureIdentity, AssetBackfillReference } from "../../../shared/src";
 import type { AssetUploadRequest } from "../messages";
 import { DeterministicCaptureError, ProviderDetailError, TransientSyncError } from "./sync-errors";
 
 export interface ProviderSyncOptions {
   lastSync?: string | null;
   captureFailures?: ConversationCaptureFailure[];
+  detailFailureStreak?: DetailFailureIdentity[];
   emitCapture: (capture: RawCapture) => Promise<EmitCaptureResult>;
   shouldIgnore?: (source: ProviderSource, sourceId: string) => boolean;
   uploadAsset?: (asset: AssetUploadRequest) => Promise<UploadedAsset>;
@@ -21,6 +22,7 @@ export interface ProviderSyncResult {
   skipped: number;
   failed?: number;
   captureFailures?: ConversationCaptureFailure[];
+  detailFailureStreak?: DetailFailureIdentity[];
   maxConversationUpdatedAt: string | null;
   account: string | null;
 }
