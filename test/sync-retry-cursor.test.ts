@@ -161,3 +161,32 @@ for (const source of ["chatgpt", "claude", "gemini"] as const) for (const mode o
   expect(result.captureFailures).toEqual([]);
   expect(result.maxConversationUpdatedAt! > "2026-06-04T12:00:00Z").toBe(true);
 });
+
+for (const source of ["chatgpt", "claude"] as const) test(`${source} drops a due quarantined deleted chat after one complete listing`, async () => {
+  let listCalls = 0;
+  const stamp = "2026-06-01T00:00:00Z";
+  const row = (id: string) => ({ id, uuid: id, update_time: stamp, updated_at: stamp });
+  const adapter = (source === "chatgpt" ? createChatgptAdapter : createClaudeAdapter)(async input => {
+    if (input === "/api/auth/session") return Response.json({});
+    if (input === "/api/organizations") return Response.json([{ uuid: "org" }]);
+    if (input.includes("conversations?")) {
+      listCalls++;
+      const offset = Number(/offset=(\d+)/.exec(input)![1]);
+      const items = offset === 0 ? Array.from({ length: 50 }, (_, i) => row(`a${i}`)) : offset === 50 ? [row("z")] : [];
+      return Response.json(source === "chatgpt" ? { items } : items);
+    }
+    return Response.json({ mapping: {}, chat_messages: [] });
+  });
+  const old = "2026-05-01T00:00:00Z";
+  const previous = [
+    { source_id: "deleted", updated_at: old, attempts: 3, quarantined: true, retry_after: new Date(Date.now() - 1000).toISOString() },
+    { source_id: "waiting", updated_at: old, attempts: 3, quarantined: true, retry_after: new Date(Date.now() + 86_400_000).toISOString() },
+  ];
+  const first = await adapter.sync({ lastSync: "2026-06-02T00:00:00Z", captureFailures: previous, emitCapture: async () => {} });
+  expect(listCalls).toBe(2);
+  expect(first.captureFailures!.map(f => f.source_id)).toEqual(["waiting"]);
+  listCalls = 0;
+  const second = await adapter.sync({ lastSync: "2026-06-02T00:00:00Z", captureFailures: first.captureFailures, emitCapture: async () => {} });
+  expect(second.captureFailures!.map(f => f.source_id)).toEqual(["waiting"]);
+  if (source === "chatgpt") expect(listCalls).toBe(1);
+});

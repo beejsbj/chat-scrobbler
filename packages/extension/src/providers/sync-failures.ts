@@ -39,7 +39,10 @@ export class SyncFailureTracker {
   }
   get hasRetries(): boolean { return [...this.failures.values()].some(f => !this.isQuarantined(f.source_id, f.updated_at)); }
   finishListing(): void {
-    for (const [id, failure] of this.failures) if (!failure.quarantined && !this.seen.has(id)) this.failures.delete(id);
+    for (const [id, failure] of this.failures) if (!this.seen.has(id) && !this.quarantineActive(failure)) this.failures.delete(id);
+  }
+  private quarantineActive(f: ConversationCaptureFailure): boolean {
+    return f.quarantined && !!f.retry_after && Date.parse(f.retry_after) > Date.now();
   }
   get pending(): boolean { return [...this.failures.values()].some(f => !f.quarantined); }
   list(): ConversationCaptureFailure[] { return [...this.failures.values()]; }
