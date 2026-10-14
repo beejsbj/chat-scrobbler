@@ -13,7 +13,8 @@ test('skipped timeout work automatically recovers after a day without manual int
  const db=openIndex(':memory:');
  try {
   indexSession(db,fixture());
-  for(const time of [1000,200000,500000])await pass(db,timeout,time);
+  for(const time of [1000,200000])await pass(db,timeout,time);
+  expect(await pass(db,timeout,500000)).toMatchObject({retry_scheduled:1});
   expect(await pass(db,provider,500000+day-1)).toMatchObject({attempted:0,queue:{skipped:1}});
   expect(await pass(db,provider,500000+day)).toMatchObject({embedded:1,queue:{skipped:0},text:{embedded:1}});
  }finally{db.close();}

@@ -20,7 +20,7 @@ export interface BackfillReport {
   scan?: { cursor: number; asset_cursor: string; scanned: number; exhausted: boolean };
   event: "progress" | "load_pause" | "complete";
   embedded: number; converted: number; skipped: number; failed: number; stale: number; attempted: number;
-  deferred: number; permanently_skipped: number; truncated: number; provider_outage: boolean;
+  deferred: number; retry_scheduled: number; truncated: number; provider_outage: boolean;
   coverage_at_attempt: number | null;
   text: { total: number; embedded: number } | null; assets: { total: number; embedded: number } | null;
   requests: number; estimated_requests: number | null; remaining_requests: number | null;
@@ -55,7 +55,7 @@ async function runBackfill(db:Database,opts:BackfillOptions):Promise<BackfillRep
   const timer=setTimeout(()=>{signal?.removeEventListener('abort',abort);resolve();},ms);
   signal?.addEventListener('abort',abort,{once:true});
  });});
- let embedded=0,skipped=0,failed=0,stale=0,attempted=0,deferred=0,permanently_skipped=0,truncated=0,requests=0;
+ let embedded=0,skipped=0,failed=0,stale=0,attempted=0,deferred=0,retry_scheduled=0,truncated=0,requests=0;
  let requestMs=0,measured=0,needsPacing=false,provider_outage=false,prepared=false;
  let estimated:number|null=null;
  const sequence=opts.connectionSequence ?? {count:0,lastItem:null};
@@ -63,7 +63,7 @@ async function runBackfill(db:Database,opts:BackfillOptions):Promise<BackfillRep
  const report=(event:BackfillReport['event']):BackfillReport=> {
   const coverage=prepared ? pendingCoverage(db,provider) : null;
   const remaining=estimated===null ? null : pendingWorkEstimate(db,provider),mean=measured ? requestMs/measured/1000 : null;
-  return {event,embedded,converted:0,skipped,failed,stale,attempted,deferred,permanently_skipped,truncated,provider_outage,
+  return {event,embedded,converted:0,skipped,failed,stale,attempted,deferred,retry_scheduled,truncated,provider_outage,
    ...(coverage ? {queue:{pending:coverage.pending,deferred:coverage.deferred,skipped:coverage.skipped,empty:coverage.empty,reasons:coverage.reasons}} : {}),
    coverage_at_attempt:coverage ? attempted : null,text:coverage ? {total:coverage.total,embedded:coverage.embedded} : null,
    assets:prepared && provider.embedAsset ? assetCoverage(db,provider) : null,
@@ -134,7 +134,7 @@ async function runBackfill(db:Database,opts:BackfillOptions):Promise<BackfillRep
     const failure=classifyEmbeddingFailure(error);
     const result=db.transaction(()=>{guard();const result=deferPendingEmbedding(db,row,failure,wallNow(),opts.retrySkippedMs);guard();return result;}).immediate();
     if(!result){stale++;continue;}
-    if(result.state==='skipped'){skipped++;permanently_skipped++;}else deferred++;
+    if(result.state==='skipped'){skipped++;retry_scheduled++;}else deferred++;
     provider_outage=recordFailure(sequence,`${row.session_id}\0${row.message_id}`,failure);
    }
    opts.progress?.(report('progress'));await pause();
