@@ -1,6 +1,6 @@
 import {expect,test} from 'bun:test';
 import {openIndex,indexSession} from '../src/indexer/sqlite';
-import {initializePendingEmbeddings,pendingEmbeddingRows,pendingCoverage,completePendingEmbedding,deferPendingEmbedding} from '../src/indexer/pending-embeddings';
+import {createPendingTables,initializePendingEmbeddings,pendingEmbeddingRows,pendingCoverage,pendingWorkEstimate,completePendingEmbedding,deferPendingEmbedding} from '../src/indexer/pending-embeddings';
 import {fixture} from './support/embedding-fixture';
 import {putTextChunks} from '../src/indexer/vector-store';
 const p={kind:'test',model:'m',dimensions:2,embed:()=>[1,0]};
@@ -131,5 +131,26 @@ test(`legacy maintenance preserves extras and queues a rebuild (${broken}, regis
   expect(pendingEmbeddingRows(db,p,1)[0]).toMatchObject({state:'pending',reason:'chunk_set_rebuild'});
   indexSession(db,s);
   expect(pendingEmbeddingRows(db,p,1)[0]).toMatchObject({state:'pending',reason:'chunk_set_rebuild'});
+ }finally{db.close();}
+});
+
+for(const missing of [['input_chars'],['input_bytes'],['input_chars','input_bytes']])
+test(`adding ${missing.join('+')} resets seeding and backfills sizes without resetting retries`,async()=> {
+ const db=openIndex(':memory:');
+ try {
+  indexSession(db,fixture('é'.repeat(3000)));await initializePendingEmbeddings(db,p);
+  const selected=pendingEmbeddingRows(db,p,1)[0];
+  deferPendingEmbedding(db,selected,{kind:'timeout',reason:'request_timeout'},1000);
+  const retry=db.query('SELECT state,attempts,retry_at,reason FROM embedding_pending').get();
+  for(const column of missing)db.run(`ALTER TABLE embedding_pending DROP COLUMN ${column}`);
+  createPendingTables(db);
+  expect(db.query('SELECT cursor,seeded FROM embedding_models').get()).toEqual({cursor:0,seeded:0});
+  await initializePendingEmbeddings(db,p);
+  expect(db.query('SELECT input_chars,input_bytes FROM embedding_pending').get()).toEqual({input_chars:3000,input_bytes:6000});
+  expect(db.query('SELECT state,attempts,retry_at,reason FROM embedding_pending').get()).toEqual(retry);
+  expect(pendingWorkEstimate(db,p)).toBe(2);
+  const seeded=db.query('SELECT cursor,seeded FROM embedding_models').get();
+  createPendingTables(db);
+  expect(db.query('SELECT cursor,seeded FROM embedding_models').get()).toEqual(seeded);
  }finally{db.close();}
 });

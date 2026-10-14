@@ -19,8 +19,13 @@ export function createPendingTables(db:Database) {
    type TEXT NOT NULL,state TEXT NOT NULL,attempts INTEGER NOT NULL DEFAULT 0,retry_at INTEGER NOT NULL DEFAULT 0,
    priority TEXT NOT NULL,reason TEXT,truncated INTEGER NOT NULL DEFAULT 0,input_chars INTEGER NOT NULL DEFAULT 0,input_bytes INTEGER NOT NULL DEFAULT 0,
    PRIMARY KEY(session_id,message_id,provider_kind,provider_model))`);
- const columns=db.query('PRAGMA table_info(embedding_pending)').all() as Array<{name:string}>;
- for(const column of ['input_chars','input_bytes'])if(!columns.some(row=>row.name===column))db.run(`ALTER TABLE embedding_pending ADD COLUMN ${column} INTEGER NOT NULL DEFAULT 0`);
+ db.transaction(()=> {
+  const columns=db.query('PRAGMA table_info(embedding_pending)').all() as Array<{name:string}>;
+  const missing=['input_chars','input_bytes'].filter(column=>!columns.some(row=>row.name===column));
+  for(const column of missing)db.run(`ALTER TABLE embedding_pending ADD COLUMN ${column} INTEGER NOT NULL DEFAULT 0`);
+  // Publish the schema and rescan requirement together, including after a crash.
+  if(missing.length)db.run('UPDATE embedding_models SET cursor=0,seeded=0');
+ }).immediate();
  db.run(`CREATE INDEX IF NOT EXISTS embedding_pending_due_v2 ON embedding_pending(provider_kind,provider_model,priority DESC,fts_rowid DESC)
    WHERE state IN ('pending','deferred')`);
  db.run('CREATE INDEX IF NOT EXISTS embedding_pending_coverage_v2 ON embedding_pending(provider_kind,provider_model,type,state,reason)');
