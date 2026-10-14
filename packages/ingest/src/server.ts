@@ -28,7 +28,8 @@ import { AssetBlobMissingError, lookupAssetBlob, referenceExistingAsset } from "
 import { BodyTooLargeError, readBoundedBody } from "./bounded-body";
 import { handleAssetBackfill } from "./asset-backfill";
 import { captureJsonEntries } from "../../../src/store/raw-json";
-import { rawDirForCanonicalDir, storeRawCapture } from "../../../src/store/raw";
+import { rawDirForCanonicalDir } from "../../../src/store/raw";
+import { archiveCaptureWithGeminiMedia } from "./gemini-media-retention";
 import { deleteSessionArchive } from "../../../src/store/delete";
 import { isSessionDeleted } from "../../../src/store/tombstones";
 import type { EmbeddingProvider } from "../../../src/indexer/sqlite";
@@ -274,15 +275,16 @@ export async function handleIngestRequest(req: Request, opts: IngestServerOption
       }
       return [{ capture, serialized: entries[i] }];
     });
-    const captures = accepted.map(entry => entry.capture);
     const rawDir = opts.rawDir ?? (opts.canonicalDir ? rawDirForCanonicalDir(opts.canonicalDir) : null);
     if (!rawDir) return json({ ok: false, error: "raw store is not configured" }, 503);
-    let rawRefs: string[];
-    try { rawRefs = captures.map((capture, i) => storeRawCapture(rawDir, capture, accepted[i].serialized)); }
+    let archived: Array<{ capture: RawCapture; rawRef: string }>;
+    try { archived = accepted.map(entry => archiveCaptureWithGeminiMedia(rawDir, entry.capture, entry.serialized)); }
     catch {
       console.error(JSON.stringify({ event: "raw_capture_store_failed", reason: "raw_store_write_failed" }));
       return json({ ok: false, error: "raw_store_write_failed" }, 503);
     }
+    const captures = archived.map(entry => entry.capture);
+    const rawRefs = archived.map(entry => entry.rawRef);
     if (opts.indexPath && captures.length) {
       const path = monitorStatePath(opts.indexPath, opts.monitorStatePath);
       monitorWrite(path, () => {
