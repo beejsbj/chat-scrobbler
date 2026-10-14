@@ -2,6 +2,7 @@ import {expect,test} from 'bun:test';
 import {openIndex,indexSession} from '../src/indexer/sqlite';
 import {initializePendingEmbeddings,pendingEmbeddingRows,pendingCoverage,completePendingEmbedding,deferPendingEmbedding} from '../src/indexer/pending-embeddings';
 import {fixture} from './support/embedding-fixture';
+import {putTextChunks} from '../src/indexer/vector-store';
 const p={kind:'test',model:'m',dimensions:2,embed:()=>[1,0]};
 
 test('pending preparation yields once, reuses existing vectors, and newest messages win',async()=> {
@@ -104,5 +105,31 @@ test('late failures cannot demote completed work or reopen permanently skipped w
   db.run("UPDATE embedding_pending SET state='skipped',attempts=3,reason='retry_exhausted_request_timeout'");
   expect(deferPendingEmbedding(db,selected,{kind:'connection',reason:'connection_unavailable'},1000)).toBeNull();
   expect(db.query('SELECT state,attempts,reason FROM embedding_pending').get()).toEqual({state:'skipped',attempts:3,reason:'retry_exhausted_request_timeout'});
+ }finally{db.close();}
+});
+
+for(const registered of [false,true])for(const broken of ['corrupt','missing'])
+test(`legacy maintenance preserves extras and queues a rebuild (${broken}, registered=${registered})`,async()=> {
+ const db=openIndex(':memory:');
+ try {
+  const s=fixture();indexSession(db,s);
+  const row={session_id:s.id,message_id:'m',provider_kind:p.kind,provider_model:p.model,dimension:2,
+   embedding:[0,1],text:s.messages[0].text,title:s.title,source:s.source,role:'user',created_at:null};
+  db.transaction(()=>putTextChunks(db,row,[[0,1],[1,0]]))();
+  db.run(`INSERT INTO message_embeddings(session_id,message_id,embedding,text,title,provider_kind,provider_model,dimension)
+   VALUES (?,?,?,?,?,?,?,?)`,[s.id,'m','[0,1]',row.text,row.title,p.kind,p.model,2]);
+  if(registered)await initializePendingEmbeddings(db,p);
+  if(broken==='corrupt')db.run('UPDATE message_vectors SET embedding=?',[new Uint8Array(new Float32Array([NaN,0]).buffer)]);
+  else db.run('DELETE FROM message_vectors');
+  db.run('UPDATE embedding_models SET seeded=0,cursor=0');
+  const extras=db.query('SELECT * FROM message_vector_chunks').all(),first=db.query('SELECT * FROM message_vectors').all();
+  await initializePendingEmbeddings(db,p);
+  expect(db.query('SELECT * FROM message_vector_chunks').all()).toEqual(extras);
+  expect(db.query('SELECT * FROM message_vectors').all()).toEqual(first);
+  expect(pendingEmbeddingRows(db,p,1)[0]).toMatchObject({state:'pending',attempts:0,reason:'chunk_set_rebuild'});
+  db.run("UPDATE message_embeddings SET embedding='[1,0]'");
+  expect(pendingEmbeddingRows(db,p,1)[0]).toMatchObject({state:'pending',reason:'chunk_set_rebuild'});
+  indexSession(db,s);
+  expect(pendingEmbeddingRows(db,p,1)[0]).toMatchObject({state:'pending',reason:'chunk_set_rebuild'});
  }finally{db.close();}
 });

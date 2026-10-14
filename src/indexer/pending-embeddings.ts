@@ -7,6 +7,7 @@ import {failureRetry,type EmbeddingFailure} from './embedding-failures';
 export interface PendingEmbeddingRow {
  session_id:string;message_id:string;provider_kind:string;provider_model:string;input_hash:string;title:string|null;
  fts_rowid:number;type:'text'|'image'|'audio'|'video';state:string;attempts:number;retry_at:number;
+ reason:string|null;
  rowid:number;text:string;role:string;created_at:string|null;source:string;
 }
 export function createPendingTables(db:Database) {
@@ -29,12 +30,15 @@ export function createPendingVectorTriggers(db:Database) {
  AFTER ${event} ON message_vectors BEGIN UPDATE embedding_pending SET state='complete',attempts=0,retry_at=0,reason=NULL
  WHERE session_id=NEW.session_id AND message_id=NEW.message_id AND provider_kind=NEW.provider_kind
  AND provider_model=NEW.provider_model AND input_hash=NEW.text_hash AND title IS NEW.title; END`);
- for(const event of ['INSERT','UPDATE'])db.run(`CREATE TRIGGER IF NOT EXISTS pending_legacy_${event.toLowerCase()}
+ for(const event of ['INSERT','UPDATE']) {
+ db.run(`DROP TRIGGER IF EXISTS pending_legacy_${event.toLowerCase()}`);
+ db.run(`CREATE TRIGGER pending_legacy_${event.toLowerCase()}
  AFTER ${event} ON message_embeddings WHEN json_valid(NEW.embedding) AND json_array_length(NEW.embedding)=NEW.dimension BEGIN
  UPDATE embedding_pending SET state='complete',attempts=0,retry_at=0,reason=NULL WHERE session_id=NEW.session_id
  AND message_id=NEW.message_id AND provider_kind=NEW.provider_kind AND provider_model=COALESCE(NEW.provider_model,'')
- AND title IS NEW.title AND NEW.text=(SELECT f.text FROM messages_fts f WHERE f.rowid=fts_rowid
+ AND COALESCE(reason,'')!='chunk_set_rebuild' AND title IS NEW.title AND NEW.text=(SELECT f.text FROM messages_fts f WHERE f.rowid=fts_rowid
  AND f.session_id=embedding_pending.session_id AND f.message_id=embedding_pending.message_id); END`);
+ }
  db.run(`CREATE TRIGGER IF NOT EXISTS pending_vector_delete AFTER DELETE ON message_vectors BEGIN
  UPDATE embedding_pending SET state='pending',retry_at=0 WHERE session_id=OLD.session_id AND message_id=OLD.message_id
  AND provider_kind=OLD.provider_kind AND provider_model=OLD.provider_model AND state='complete'; END`);
@@ -97,13 +101,19 @@ export async function initializePendingEmbeddings(db:Database,provider:Embedding
    if(state.seeded)return true;
    const rows=db.query('SELECT f.rowid,f.*,s.updated_at FROM messages_fts f LEFT JOIN sessions s ON s.id=f.session_id WHERE f.rowid>? ORDER BY f.rowid LIMIT ?').all(state.cursor,batch) as any[];
    for(const row of rows) {
-    const current=row.text.trim() && reusableTextVector(db,row.session_id,row.message_id,row.text,row.title ?? null,provider);
+    const binary=row.text.trim() && reusableBinaryTextVector(db,row.session_id,row.message_id,row.text,row.title ?? null,provider);
+    const rebuild=!!row.text.trim() && !binary && !!db.query(`SELECT 1 FROM message_vector_chunks
+      WHERE session_id=? AND message_id=? AND provider_kind=? AND provider_model=? AND (? IS NULL OR dimension=?) LIMIT 1`)
+      .get(row.session_id,row.message_id,kind,model,provider.dimensions ?? null,provider.dimensions ?? null);
+    const current=binary || !rebuild && row.text.trim() && reusableTextVector(db,row.session_id,row.message_id,row.text,row.title ?? null,provider);
     // Repair a corrupt binary snapshot from matching legacy data as CPU-only
     // maintenance. Unconverted legacy rows remain outside the inference budget.
     if(current && db.query('SELECT 1 FROM message_vectors WHERE session_id=? AND message_id=? AND provider_kind=? AND provider_model=?')
-      .get(row.session_id,row.message_id,kind,model) && !reusableBinaryTextVector(db,row.session_id,row.message_id,row.text,row.title ?? null,provider))
+      .get(row.session_id,row.message_id,kind,model) && !binary)
       putTextVector(db,{...row,...vectorScope(provider,current.length),embedding:current});
     upsertText(db,row,kind,model,current ? 'complete' : 'pending');
+    if(rebuild)db.run(`UPDATE embedding_pending SET state='pending',attempts=0,retry_at=0,truncated=0,reason='chunk_set_rebuild'
+      WHERE session_id=? AND message_id=? AND provider_kind=? AND provider_model=?`,[row.session_id,row.message_id,kind,model]);
    }
    if(rows.length<batch && provider.embedAsset)seedAssets(db,kind,model);
    db.run('UPDATE embedding_models SET cursor=?,seeded=? WHERE provider_kind=? AND provider_model=?',
