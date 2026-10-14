@@ -12,6 +12,7 @@ import { runUnify } from "./unify";
 import { parseSessionId } from "../core/session-id";
 import { startHttpServer } from "../mcp/http";
 import { handleIngestRequest } from "../../packages/ingest/src/server";
+import { ingestMaxRequestBodySize } from "../../packages/ingest/src/request-body-limit";
 import { discoverConfigPath, type ChatHistoryConfig } from "../config";
 import { resolveTarget } from "../backup/target";
 import { createBackup, generateSnapshotName, listBackups, restoreBackup } from "../backup/backup";
@@ -691,7 +692,7 @@ export async function startServe(cfg: ChatHistoryConfig): Promise<ServeHandles> 
   const ingestServer = Bun.serve({
     hostname: cfg.bindHost,
     port: cfg.ingestPort,
-    maxRequestBodySize: Math.max(cfg.maxAssetBytes, 16 * 1024 * 1024),
+    maxRequestBodySize: ingestMaxRequestBodySize(cfg.maxAssetBytes),
     async fetch(req: Request): Promise<Response> {
       return handleIngestRequest(req, {
         canonicalDir: cfg.canonicalDir,
