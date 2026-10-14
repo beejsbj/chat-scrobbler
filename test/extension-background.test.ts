@@ -1,10 +1,12 @@
-import { beforeAll, beforeEach, expect, test } from "bun:test";
+import { afterAll, beforeAll, beforeEach, expect, test } from "bun:test";
 import { buildRawCapture } from "../packages/shared/src";
 import type { RuntimeMessage } from "../packages/extension/src/messages";
 
 type RuntimeListener = (message: RuntimeMessage, sender: unknown, sendResponse: (response: unknown) => void) => boolean;
 
 const storageData: Record<string, unknown> = {};
+const originalFetch = globalThis.fetch;
+afterAll(() => { globalThis.fetch = originalFetch; });
 let runtimeListener: RuntimeListener | null = null;
 
 beforeAll(async () => {
