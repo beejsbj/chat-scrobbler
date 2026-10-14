@@ -35,6 +35,8 @@ export interface EmbeddingProvider {
   readonly kind?: string;
   readonly model?: string | null;
   readonly dimensions?: number | null;
+  readonly chunkChars?: number | null;
+  readonly maxChunks?: number | null;
   embed(text: string, context?: EmbeddingContext): number[] | Promise<number[]>;
   embedAsset?(input: { type: "image" | "audio" | "video"; path?: string; base64?: string }, context?: EmbeddingContext): number[] | Promise<number[]>;
 }

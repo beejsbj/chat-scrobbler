@@ -50,6 +50,8 @@ export interface ChatHistoryConfig extends MonitorConfig {
   embeddingBackfillEnabled: boolean;
   embeddingBackfillIntervalMs: number;
   embeddingBackfillBatchSize: number;
+  embeddingChunkChars: number | null;
+  embeddingMaxChunks: number;
 }
 
 export type EmbeddingProviderKind = "none" | "gemini" | "ollama" | "embeddinggemma" | "hash";
@@ -78,6 +80,8 @@ export const DEFAULT_CONFIG: ChatHistoryConfig = {
   embeddingBackfillEnabled: true,
   embeddingBackfillIntervalMs: 600_000,
   embeddingBackfillBatchSize: 25,
+  embeddingChunkChars: null,
+  embeddingMaxChunks: 16,
 };
 
 export interface LoadConfigOptions {
@@ -115,6 +119,8 @@ const FILE_KEYS: Array<keyof ChatHistoryConfig> = [
   "embeddingBackfillEnabled",
   "embeddingBackfillIntervalMs",
   "embeddingBackfillBatchSize",
+  "embeddingChunkChars",
+  "embeddingMaxChunks",
 ];
 
 /** Resolve the layered config. Pure given its options (env + fs are injectable). */
@@ -150,6 +156,11 @@ export function loadConfig(opts: LoadConfigOptions = {}): ChatHistoryConfig {
   applyNullableString(cfg, "mcpPublicBaseUrl", env.MCP_PUBLIC_BASE_URL ?? env.CHAT_SCROBBLER_MCP_PUBLIC_BASE_URL);
   applyEmbeddingProvider(cfg, env.CHAT_SCROBBLER_EMBED_PROVIDER ?? env.EMBED_PROVIDER);
   applyNullableString(cfg, "embeddingModel", env.CHAT_SCROBBLER_EMBED_MODEL ?? env.EMBED_MODEL);
+  const chunkChars=env.CHAT_SCROBBLER_EMBED_CHUNK_CHARS ?? cfg.embeddingChunkChars;
+  cfg.embeddingChunkChars=chunkChars===null || chunkChars===undefined ? null : Number(chunkChars);
+  if(cfg.embeddingChunkChars!==null && (!Number.isInteger(cfg.embeddingChunkChars)||cfg.embeddingChunkChars<16)) throw new Error("invalid embedding chunk size");
+  cfg.embeddingMaxChunks=Number(env.CHAT_SCROBBLER_EMBED_MAX_CHUNKS ?? cfg.embeddingMaxChunks);
+  if(!Number.isInteger(cfg.embeddingMaxChunks)||cfg.embeddingMaxChunks<1||cfg.embeddingMaxChunks>16) throw new Error("invalid embedding max chunks");
   applyString(cfg, "embeddingBaseUrl", env.CHAT_SCROBBLER_EMBED_BASE_URL);
   applyString(cfg, "ollamaBaseUrl", env.CHAT_SCROBBLER_OLLAMA_BASE_URL ?? env.OLLAMA_BASE_URL);
   applyNullableString(cfg, "geminiApiKey", env.GEMINI_API_KEY ?? env.GOOGLE_API_KEY);

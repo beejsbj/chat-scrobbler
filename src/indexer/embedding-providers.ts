@@ -14,12 +14,14 @@ export interface EmbeddingGemmaContext extends EmbeddingContext {
 }
 
 export function embeddingProviderFromConfig(cfg: ChatHistoryConfig): EmbeddingProvider | null {
-  const provider = configuredProvider(cfg);
-  if (provider) persistEmbeddingStatus(provider, monitorStatePath(cfg.indexPath, cfg.monitorStatePath));
+  const provider=resolveProvider(cfg);
+  if(provider) {
+    Object.assign(provider,{chunkChars:cfg.embeddingChunkChars,maxChunks:cfg.embeddingMaxChunks});
+    persistEmbeddingStatus(provider, monitorStatePath(cfg.indexPath, cfg.monitorStatePath));
+  }
   return provider;
 }
-
-function configuredProvider(cfg: ChatHistoryConfig): EmbeddingProvider | null {
+function resolveProvider(cfg:ChatHistoryConfig):EmbeddingProvider|null {
   switch (cfg.embeddingProvider) {
     case "none":
       return null;
