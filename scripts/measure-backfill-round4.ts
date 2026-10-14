@@ -6,8 +6,9 @@ import {Database} from 'bun:sqlite';
 import {startServe} from '../src/cli/commands';
 import {DEFAULT_CONFIG} from '../src/config';
 
-const {values}=parseArgs({options:{source:{type:'string'},ollama:{type:'string'},out:{type:'string'},seconds:{type:'string',default:'90'}}});
+const {values}=parseArgs({options:{source:{type:'string'},ollama:{type:'string'},out:{type:'string'},seconds:{type:'string',default:'90'},chunkChars:{type:'string',default:'750'}}});
 if(!values.source || !values.ollama || !values.out)throw new Error('source, ollama and out are required');
+const chunkChars=Number(values.chunkChars);if(!Number.isInteger(chunkChars)||chunkChars<16)throw new Error('invalid chunk size');
 const seconds=Number(values.seconds);if(!Number.isFinite(seconds)||seconds<10||seconds>120)throw new Error('measurement must be 10..120 seconds');
 const load=await new Response(Bun.spawn(['uptime'],{stdout:'pipe',stderr:'pipe'}).stdout).text();
 const one=Number(load.match(/load average:\s*([\d.]+)/)?.[1]);
@@ -16,11 +17,11 @@ const root=mkdtempSync('/tmp/bjs548-round4-'),path=join(root,'index.db');
 let handles:Awaited<ReturnType<typeof startServe>>|undefined,timer:ReturnType<typeof setInterval>|undefined;
 const originalFetch=globalThis.fetch;
 const queryTexts=['embedding model','backup rollback','Claude settings'];
-const requests:Array<{kind:string;chars:number;ms:number;status:number}>=[];
+const requests:Array<{kind:string;chars:number;bytes:number;ms:number;status:number}>=[];
 const sourceCommit=(await new Response(Bun.spawn(['git','rev-parse','HEAD'],{stdout:'pipe'}).stdout).text()).trim();
 const result:any={source_commit:sourceCommit,date:new Date().toISOString(),source_kind:'online read-only SQLite backup of live index',loadavg_before:one,
  resource_caps:{cpu_percent:200,memory_bytes:2*1024**3,swap_bytes:0,nice:19},
- ollama_caps:{cpus:1,memory_bytes:1258291200,swap_bytes:0},chunk_chars:1500,max_chunks:16};
+ ollama_caps:{cpus:1,memory_bytes:1258291200,swap_bytes:0},chunk_chars:chunkChars,chunk_bytes:chunkChars,max_chunks:16};
 try {
  const copy=Bun.spawn(['python3','-c',`import sqlite3,sys,pathlib
 src=sqlite3.connect(pathlib.Path(sys.argv[1]).resolve().as_uri()+'?mode=ro',uri=True)
@@ -40,15 +41,19 @@ dst=sqlite3.connect(sys.argv[2]);src.backup(dst,pages=256,sleep=0.01);dst.close(
    const body=JSON.parse(String(init?.body)),text=String(body.input),started=performance.now();
    let status=0;
    try {const response=await originalFetch(input,init);status=response.status;return response;}
-   finally {requests.push({kind:queryTexts.includes(text) ? 'query':'document',chars:text.length,ms:performance.now()-started,status});}
+   finally {requests.push({kind:queryTexts.includes(text) ? 'query':'document',chars:text.length,bytes:Buffer.byteLength(text),ms:performance.now()-started,status});}
   }
   return originalFetch(input,init);
  }) as typeof fetch;
  const cfg={...DEFAULT_CONFIG,indexPath:path,canonicalDir:join(root,'canonical','sessions'),ingestPort:0,mcpHttpPort:0,
   embeddingProvider:'ollama' as const,embeddingModel:'nomic-embed-text',ollamaBaseUrl:values.ollama,
-  embeddingChunkChars:1500,embeddingMaxChunks:16,embeddingBackfillIntervalMs:1000,embeddingBackfillBatchSize:25};
- let last=performance.now(),gap=0,startupGap=0,id=0;
- timer=setInterval(()=>{const at=performance.now();gap=Math.max(gap,at-last-10);last=at;},10);
+  embeddingChunkChars:chunkChars,embeddingMaxChunks:16,embeddingBackfillIntervalMs:1000,embeddingBackfillBatchSize:25};
+ let last=performance.now(),gap=0,startupGap=0,id=0,warmupGap=0,searchReady=false;
+ const stalls:Array<{elapsed_ms:number;delay_ms:number;maintenance:string;converted:number}>=[];
+ timer=setInterval(()=>{const at=performance.now(),delay=at-last-10;gap=Math.max(gap,delay);if(!searchReady)warmupGap=Math.max(warmupGap,delay);
+  if(delay>100 && stalls.length<32) {const state=handles?.backfillScheduler?.status().maintenance;
+   stalls.push({elapsed_ms:at-startup,delay_ms:delay,maintenance:state?.state ?? 'starting',converted:state?.migration?.converted ?? 0});}
+  last=at;},10);
  const startup=performance.now();handles=await startServe(cfg);
  const endpoint=`http://127.0.0.1:${handles.mcpServer.port}/mcp`;
  const search=async(query:string)=> {
@@ -62,16 +67,18 @@ dst=sqlite3.connect(sys.argv[2]);src.backup(dst,pages=256,sleep=0.01);dst.close(
  };
  const first=await search(queryTexts[0]);result.first_query=first;
  // Separate first-open schema work from the remaining cooperative warmup.
- await Bun.sleep(20);result.first_open_and_initial_query_max_event_loop_delay_ms=gap;gap=0;
- while(handles.backfillScheduler!.status().maintenance.state!=='complete') {
-  if(performance.now()-startup>60_000)throw new Error('startup exceeded measurement bound');await Bun.sleep(50);
- }
- let warm=await search(queryTexts[0]);
+ await Bun.sleep(20);result.first_open_and_initial_query_max_event_loop_delay_ms=gap;gap=0;warmupGap=0;
+ let warm=first;
  while(warm.semantic==='warming') {
   if(performance.now()-startup>90_000)throw new Error('warmup exceeded measurement bound');
-  await Bun.sleep(100);warm=await search(queryTexts[0]);
+  await Bun.sleep(250);warm=await search(queryTexts[0]);
  }
  if(warm.semantic!=='available')throw new Error('semantic warmup failed; measurement is invalid');
+ searchReady=true;result.first_semantic_ready_ms=performance.now()-startup;
+ result.search_warmup_max_event_loop_delay_ms=warmupGap;
+ while(handles.backfillScheduler!.status().maintenance.state!=='complete') {
+  if(performance.now()-startup>90_000)throw new Error('startup exceeded measurement bound');await Bun.sleep(50);
+ }
  result.startup_ms=performance.now()-startup;startupGap=gap;gap=0;
  result.startup_max_event_loop_delay_ms=startupGap;
  const inspect=new Database(path,{readonly:true});
@@ -91,8 +98,12 @@ dst=sqlite3.connect(sys.argv[2]);src.backup(dst,pages=256,sleep=0.01);dst.close(
  Object.assign(result,{measurement_seconds:elapsed,completed_messages:completed,messages_per_hour:completed/elapsed*3600,
   search:{count:latencies.length,median_ms:percentile(.5),p95_ms:percentile(.95),max_ms:latencies.at(-1),semantic_counts:semantics},
   running_max_event_loop_delay_ms:gap,requests:{total:requests.length,documents:requests.filter(r=>r.kind==='document').length,
-   max_document_chars:Math.max(0,...requests.filter(r=>r.kind==='document').map(r=>r.chars)),failed:requests.filter(r=>r.status!==200).length},
-  extra_chunk_vectors:chunks,queue_states:states,rss_mib:process.memoryUsage().rss/1024**2,maintenance:handles.backfillScheduler!.status().maintenance});
+   max_document_chars:Math.max(0,...requests.filter(r=>r.kind==='document').map(r=>r.chars)),
+   max_document_bytes:Math.max(0,...requests.filter(r=>r.kind==='document').map(r=>r.bytes)),failed:requests.filter(r=>r.status!==200).length},
+  event_loop_stalls:stalls,request_profiles:Object.fromEntries(['query','document'].map(kind=>{
+   const times=requests.filter(r=>r.kind===kind).map(r=>r.ms).sort((a,b)=>a-b),pick=(p:number)=>times[Math.min(times.length-1,Math.ceil(times.length*p)-1)];
+   return [kind,{count:times.length,median_ms:pick(.5),p95_ms:pick(.95),max_ms:times.at(-1)}];
+  })),extra_chunk_vectors:chunks,queue_states:states,rss_mib:process.memoryUsage().rss/1024**2,maintenance:handles.backfillScheduler!.status().maintenance});
 } finally {
  clearInterval(timer);await handles?.stop?.();globalThis.fetch=originalFetch;
  rmSync(root,{recursive:true,force:true});result.temporary_copy_deleted=true;
