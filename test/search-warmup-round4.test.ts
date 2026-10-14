@@ -3,8 +3,9 @@ import {Database} from 'bun:sqlite';
 import {mkdtempSync, rmSync, statSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
-import {openIndex} from '../src/indexer/sqlite';
+import {openIndex, indexSession} from '../src/indexer/sqlite';
 import {warmSearchCaches, searchWarmupStatus} from '../src/indexer/search-warmup';
+import {fixture} from './support/embedding-fixture';
 
 const autocheckpoint = (db: ReturnType<typeof openIndex>) =>
   (db.query('PRAGMA wal_autocheckpoint').get() as {wal_autocheckpoint: number}).wal_autocheckpoint;
@@ -36,6 +37,30 @@ test('warmup disables commit checkpoints across lookup and literal yields, then 
     db.close();
     rmSync(root, {recursive: true, force: true});
   }
+});
+
+test('vector warmup keeps autocheckpoint disabled and uses persisted vectors without inference', async () => {
+  const db = openIndex(':memory:');
+  const provider = {kind: 'test', model: 'warmup-round4', dimensions: 2, embed: () => [1, 0]};
+  try {
+    const session = fixture();
+    session.messages = Array.from({length: 13}, (_, i) => ({...session.messages[0], id: String(i)}));
+    indexSession(db, session, {embeddingProvider: provider});
+    const stages = new Set<string>();
+    let calls = 0;
+    db.run('PRAGMA wal_autocheckpoint=29');
+    await warmSearchCaches(db, {...provider, embed: () => {calls++; throw new Error('unexpected inference');}}, {
+      batchSize: 3, yield: async () => {
+        expect(autocheckpoint(db)).toBe(0);
+        stages.add(searchWarmupStatus(db).stage);
+        await Bun.sleep(0);
+      },
+    });
+    expect(stages.has('vectors')).toBe(true);
+    expect(calls).toBe(0);
+    expect(autocheckpoint(db)).toBe(29);
+    expect(searchWarmupStatus(db).state).toBe('ready');
+  } finally {db.close();}
 });
 
 test('warmup caps oversized lookup batches so startup still yields after at most 64 rows', async () => {
@@ -78,6 +103,26 @@ test('warmup restores autocheckpoint after yield failure and cancellation, inclu
       expect(autocheckpoint(db)).toBe(23);
     } finally {db.close();}
   }
+});
+
+test('cancelling a pending warmup yield restores the checkpoint policy before the yield resumes', async () => {
+  const db = openIndex(':memory:');
+  const abort = new AbortController();
+  const reason = new Error('warmup stopped');
+  let entered!: () => void, resume!: () => void;
+  const waiting = new Promise<void>(resolve => {entered = resolve;});
+  const gate = new Promise<void>(resolve => {resume = resolve;});
+  db.run('PRAGMA wal_autocheckpoint=31');
+  const job = warmSearchCaches(db, null, {signal: abort.signal, yield: async () => {
+    entered(); await gate;
+  }}).then(() => null, error => error);
+  try {
+    await waiting;
+    abort.abort(reason);
+    expect(await Promise.race([job, Bun.sleep(100).then(() => 'still waiting')])).toBe(reason);
+    expect(autocheckpoint(db)).toBe(31);
+    expect(searchWarmupStatus(db).state).toBe('failed');
+  } finally {resume(); await job; db.close();}
 });
 
 test('warmup checkpoints a large WAL between batches while keeping the request loop live', async () => {
