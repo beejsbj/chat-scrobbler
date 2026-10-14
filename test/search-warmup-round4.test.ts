@@ -6,6 +6,8 @@ import {join} from 'node:path';
 import {openIndex, indexSession} from '../src/indexer/sqlite';
 import {warmSearchCaches, searchWarmupStatus} from '../src/indexer/search-warmup';
 import {fixture} from './support/embedding-fixture';
+import {migrateVectorsInBackground} from '../src/indexer/background-vector-migration';
+import {deferWalCheckpoints} from '../src/indexer/background-wal-checkpoint';
 
 const autocheckpoint = (db: ReturnType<typeof openIndex>) =>
   (db.query('PRAGMA wal_autocheckpoint').get() as {wal_autocheckpoint: number}).wal_autocheckpoint;
@@ -37,6 +39,55 @@ test('warmup disables commit checkpoints across lookup and literal yields, then 
     db.close();
     rmSync(root, {recursive: true, force: true});
   }
+});
+
+test('competing worker checkpoints do not turn WAL contention into a failed warmup', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'warmup-checkpoint-race-'));
+  const path = join(root, 'index.db');
+  const db = openIndex(path);
+  try {
+    db.run('PRAGMA wal_autocheckpoint=0');
+    db.run('CREATE TABLE checkpoint_fixture(payload BLOB)');
+    const wal = deferWalCheckpoints(db);
+    try {
+      for (let round = 0; round < 3; round++) {
+        db.run('INSERT INTO checkpoint_fixture VALUES (zeroblob(5242880))');
+        const outcomes = await Promise.allSettled([
+          wal.checkpoint(), wal.checkpoint(), wal.checkpoint(), warmSearchCaches(db, null),
+        ]);
+        for (const outcome of outcomes) {
+          expect(outcome.status).toBe('fulfilled');
+        }
+        expect(searchWarmupStatus(db).state).toBe('ready');
+      }
+    } finally {wal.restore();}
+  } finally {db.close(); rmSync(root, {recursive: true, force: true});}
+});
+
+test('warmup remains ready when startup migration and checkpoints share the same WAL', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'warmup-concurrent-'));
+  const path = join(root, 'index.db');
+  const db = openIndex(path);
+  try {
+    db.run('PRAGMA wal_autocheckpoint=0');
+    db.run('CREATE TABLE checkpoint_fixture(payload BLOB)');
+    db.run('INSERT INTO checkpoint_fixture VALUES (zeroblob(5242880))');
+    db.transaction(() => {
+      for (let i = 0; i < 193; i++) {
+        db.run('INSERT INTO messages_fts(session_id,message_id,text,source,title) VALUES (?,?,?,?,?)',
+          ['chatgpt:test', String(i), 'stored words', 'chatgpt', 'T']);
+        db.run(`INSERT INTO message_embeddings(session_id,message_id,embedding,text,title,provider_kind,provider_model,dimension)
+          VALUES (?,?,?,?,?,?,?,?)`, ['chatgpt:test', String(i), '[1,0]', 'stored words', 'T', 'test', 'legacy', 2]);
+      }
+    })();
+    const provider = {kind: 'test', model: 'legacy', dimensions: 2, embed: () => {throw new Error('unexpected inference');}};
+    const outcomes = await Promise.allSettled([warmSearchCaches(db, provider), migrateVectorsInBackground(path)]);
+    for (const outcome of outcomes) {
+      // Deliberately omit errors/messages from this diagnostic's assertion output.
+      expect(outcome.status).toBe('fulfilled');
+    }
+    expect(searchWarmupStatus(db).state).toBe('ready');
+  } finally {db.close(); rmSync(root, {recursive: true, force: true});}
 });
 
 test('vector warmup keeps autocheckpoint disabled and uses persisted vectors without inference', async () => {
@@ -103,6 +154,16 @@ test('warmup restores autocheckpoint after yield failure and cancellation, inclu
       expect(autocheckpoint(db)).toBe(23);
     } finally {db.close();}
   }
+});
+
+test('failed warmup records only a sanitized error name, SQLite code and stage', async () => {
+  const db = openIndex(':memory:');
+  const failure = Object.assign(new Error('private chat text must never be logged'), {code: 'SQLITE_BUSY'});
+  try {
+    await expect(warmSearchCaches(db, null, {yield: async () => {throw failure;}})).rejects.toBe(failure);
+    expect(searchWarmupStatus(db)).toMatchObject({state: 'failed', failure: {name: 'Error', code: 'SQLITE_BUSY', stage: 'lookup'}});
+    expect(JSON.stringify(searchWarmupStatus(db))).not.toContain('private chat text');
+  } finally {db.close();}
 });
 
 test('cancelling a pending warmup yield restores the checkpoint policy before the yield resumes', async () => {
