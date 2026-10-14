@@ -14,6 +14,7 @@ import {initializePendingEmbeddings,pendingEmbeddingRows,pendingCoverage,pending
 export {textCoverage} from './text-coverage';
 export interface BackfillReport {
   lease?: BackfillLeaseStatus;
+  queue?: {pending:number;deferred:number;skipped:number;empty:number;reasons:Record<string,number>};
   /** Background scan progress, without an archive-wide coverage probe. */
   scan?: { cursor: number; asset_cursor: string; scanned: number; exhausted: boolean };
   event: "progress" | "load_pause" | "complete";
@@ -62,6 +63,7 @@ async function runBackfill(db:Database,opts:BackfillOptions):Promise<BackfillRep
   const coverage=prepared ? pendingCoverage(db,provider) : null;
   const remaining=estimated===null ? null : Math.max(0,estimated-completedRequests),mean=measured ? requestMs/measured/1000 : null;
   return {event,embedded,converted:0,skipped,failed,stale,attempted,deferred,permanently_skipped,truncated,provider_outage,
+   ...(coverage ? {queue:{pending:coverage.pending,deferred:coverage.deferred,skipped:coverage.skipped,empty:coverage.empty,reasons:coverage.reasons}} : {}),
    coverage_at_attempt:coverage ? attempted : null,text:coverage ? {total:coverage.total,embedded:coverage.embedded} : null,
    assets:prepared && provider.embedAsset ? assetCoverage(db,provider) : null,
    ...(opts.leaseStatus ? {lease:opts.leaseStatus()} : {}),

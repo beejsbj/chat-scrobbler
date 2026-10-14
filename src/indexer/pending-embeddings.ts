@@ -150,7 +150,8 @@ export function pendingCoverage(db:Database,provider:EmbeddingProvider) {
   .all(kind,model) as Array<{state:string;reason:string|null;n:number}>;
  const count=(state:string)=>rows.filter(row=>row.state===state).reduce((n,row)=>n+row.n,0);
  return {total:rows.filter(row=>row.reason!=='empty_text').reduce((n,row)=>n+row.n,0),embedded:count('complete'),
-  pending:count('pending'),deferred:count('deferred'),skipped:count('skipped'),empty:rows.filter(row=>row.reason==='empty_text').reduce((n,row)=>n+row.n,0)};
+  pending:count('pending'),deferred:count('deferred'),skipped:count('skipped'),empty:rows.filter(row=>row.reason==='empty_text').reduce((n,row)=>n+row.n,0),
+  reasons:Object.fromEntries(rows.filter(row=>row.reason).map(row=>[row.reason,rows.filter(other=>other.reason===row.reason).reduce((n,other)=>n+other.n,0)]))};
 }
 export function completePendingEmbedding(db:Database,row:PendingEmbeddingRow,truncated=false) {
  db.run(`UPDATE embedding_pending SET state='complete',attempts=0,retry_at=0,truncated=?,reason=?

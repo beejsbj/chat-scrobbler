@@ -85,3 +85,13 @@ test('an incomplete chunk set is rebuilt rather than completed from a legacy poo
   expect(db.query('SELECT * FROM message_vector_chunks').all()).toHaveLength(0);
  }finally{db.close();}
 });
+
+test('persistent skip reasons remain visible after a later empty pass',async()=> {
+ const db=openIndex(':memory:');indexSession(db,fixture('timeout'));
+ try {
+  const provider={...p,embed:async()=>{throw new DOMException('timeout','TimeoutError');}};
+  for(const time of [1000,200000,500000])await embedBackfill(db,{provider,wallNow:()=>time,limit:1,sleep:async()=>{}});
+  const report=await embedBackfill(db,{provider,wallNow:()=>999999,limit:1,sleep:async()=>{}});
+  expect(report).toMatchObject({attempted:0,queue:{pending:0,deferred:0,skipped:1,reasons:{retry_exhausted_request_timeout:1}}});
+ }finally{db.close();}
+});
