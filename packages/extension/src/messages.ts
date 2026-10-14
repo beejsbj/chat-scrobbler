@@ -178,6 +178,7 @@ export interface ErrorResponse {
   error: string;
   syncIssue?: SyncIssue;
   detailFailureStreak?: DetailFailureIdentity[];
+  captureFailures?: ConversationCaptureFailure[];
 }
 
 export type SyncResponse = ContentSyncResponse | ErrorResponse;

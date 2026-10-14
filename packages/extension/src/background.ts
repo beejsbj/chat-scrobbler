@@ -413,10 +413,11 @@ async function syncTab(tab: any, provider: ProviderSource, reason: "manual" | "p
     await mutateStatus(next => {
       const previous: ProviderState = next.providers[provider] ?? { lastSync, lastVisitSync: null, lastResult: null, captureFailures: [], lastError: null };
       next.providers[provider] = { ...previous, lastError: error,
+        captureFailures: response?.captureFailures ?? previous.captureFailures,
         detailFailureStreak: response?.detailFailureStreak ?? previous.detailFailureStreak,
         lastSyncError: response?.syncIssue ?? { reason: "sync_unavailable", occurred_at: new Date().toISOString() } };
     });
-    await reportSyncFailuresBestEffort(provider, status.providers[provider]?.captureFailures ?? []);
+    await reportSyncFailuresBestEffort(provider, response?.captureFailures ?? status.providers[provider]?.captureFailures ?? []);
     throw new Error(error);
   }
 

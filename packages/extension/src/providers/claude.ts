@@ -102,6 +102,7 @@ async function syncClaude(fetcher: FetchLike, options: ProviderSyncOptions): Pro
   let failed = 0;
   let maxConversationUpdatedAt: string | null = null;
 
+  try {
   while (true) {
     const endpoint = `/api/organizations/${encodeURIComponent(org.uuid)}/chat_conversations?limit=${LIST_LIMIT}&offset=${offset}`;
     const page = await fetchJson(fetcher, endpoint);
@@ -162,7 +163,7 @@ async function syncClaude(fetcher: FetchLike, options: ProviderSyncOptions): Pro
       } catch (error) {
         detailFailures.failed(error, item.id, item.updatedAt);
         failed++;
-        failures.failed(item.id, item.updatedAt);
+        failures.failed(item.id, item.updatedAt, error);
         if (failures.isQuarantined(item.id, item.updatedAt)) maxConversationUpdatedAt = maxIso(maxConversationUpdatedAt, item.updatedAt);
         logSyncFailure("claude", item.id);
       }
@@ -183,6 +184,7 @@ async function syncClaude(fetcher: FetchLike, options: ProviderSyncOptions): Pro
     captureFailures: failures.list(), detailFailureStreak: detailFailures.snapshot(), maxConversationUpdatedAt: failures.pending ? options.lastSync ?? null : maxConversationUpdatedAt,
     account: org.uuid,
   };
+  } catch (error) { return failures.abort(error); }
 }
 
 function currentOrigin(): string | null {

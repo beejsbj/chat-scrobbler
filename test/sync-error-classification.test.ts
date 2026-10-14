@@ -5,6 +5,8 @@ import { createGeminiAdapter } from "../packages/extension/src/providers/gemini"
 import type { ProviderSource, ConversationCaptureFailure } from "../packages/shared/src";
 
 const stamp = "2026-06-05T12:00:00Z";
+import { syncErrorResponse } from "../packages/extension/src/sync-error-response";
+import { ReceiverSyncError } from "../packages/extension/src/providers/sync-errors";
 function adapterFor(source: ProviderSource, ids: string[], detail: (id: string) => Promise<Response>) {
   const fetcher = async (input: string, init?: RequestInit) => {
     if (input === "/api/auth/session") return Response.json({});
@@ -26,6 +28,23 @@ function goodDetail(source: ProviderSource) {
   return source === "gemini" ? new Response(JSON.stringify([["wrb.fr", "hNvQHb", "[[]]"]]))
     : Response.json({ mapping: {}, chat_messages: [] });
 }
+
+for (const source of ["chatgpt", "claude", "gemini"] as const) test(`${source}: deterministic attempts survive a later receiver abort across three runs`, async () => {
+  let failures: ConversationCaptureFailure[] = [];
+  for (let run = 1; run <= 3; run++) {
+    try {
+      await adapterFor(source, ["bad", "outage"], async id => id === "bad" ? new Response("missing", { status: 404 }) : goodDetail(source)).sync({
+        captureFailures: failures, emitCapture: async () => { throw new ReceiverSyncError("receiver down", 503); },
+      });
+      throw new Error("sync should abort");
+    } catch (error) {
+      const response = syncErrorResponse(error);
+      expect(response).toMatchObject({ ok: false, syncIssue: { reason: "receiver_unavailable", status: 503 },
+        captureFailures: [{ source_id: "bad", attempts: run, quarantined: run === 3 }] });
+      failures = (response as any).captureFailures;
+    }
+  }
+});
 
 for (const source of ["chatgpt", "claude", "gemini"] as const) test(`${source}: an isolated permanent detail 500 does not starve the next chat over five syncs`, async () => {
   let badCalls = 0;
@@ -53,7 +72,11 @@ for (const source of ["chatgpt", "claude", "gemini"] as const) test(`${source}: 
 for (const source of ["chatgpt", "claude", "gemini"] as const) test(`${source}: three consecutive detail 5xx escalate to an environmental outage`, async () => {
   let calls = 0;
   const adapter = adapterFor(source, ["a", "b", "c", "d"], async () => { calls++; return new Response("", { status: 502 }); });
-  await expect(adapter.sync({ emitCapture: async () => {} })).rejects.toMatchObject({ name: "ProviderDetailOutageError" });
+  try { await adapter.sync({ emitCapture: async () => {} }); throw new Error("outage should abort"); }
+  catch (error) {
+    expect(error).toMatchObject({ name: "ProviderDetailOutageError" });
+    expect(syncErrorResponse(error).captureFailures).toEqual([]);
+  }
   expect(calls).toBe(3);
 });
 

@@ -275,6 +275,7 @@ async function syncGemini(
 
   const ids = pageCtx.listConversationIds();
 
+  try {
   for (const id of ids) {
     failures.observed(id);
     scanned += 1;
@@ -322,7 +323,7 @@ async function syncGemini(
     } catch (error) {
       detailFailures.failed(error, id, null);
       failed++;
-      failures.failed(id, null);
+      failures.failed(id, null, error);
       if (failures.isQuarantined(id, null)) maxConversationUpdatedAt = maxIso(maxConversationUpdatedAt, fetchedAt);
       logSyncFailure("gemini", id);
     }
@@ -331,6 +332,7 @@ async function syncGemini(
   detailFailures.finish();
   failures.finishListing();
   return { source: "gemini", scanned, captured, skipped, failed, captureFailures: failures.list(), detailFailureStreak: detailFailures.snapshot(), maxConversationUpdatedAt: failures.pending ? options.lastSync ?? null : maxConversationUpdatedAt, account: null };
+  } catch (error) { return failures.abort(error); }
 }
 
 /**

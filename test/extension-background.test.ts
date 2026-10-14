@@ -497,3 +497,26 @@ test("a valid receiver acknowledgement records the single archived capture", asy
     .toMatchObject({ ok: true, captured: true });
   expect((await sendRuntimeMessage({ type: "SCROBBLER_GET_STATUS" }) as any).status.capturesPosted).toBe(1);
 });
+
+test("background saves and reports deterministic attempts from a partially aborted sync without advancing its cursor", async () => {
+  const tabs = chrome.tabs as any;
+  const oldQuery = tabs.query, oldSend = tabs.sendMessage;
+  const cursor = "2026-06-04T00:00:00Z";
+  storageData["scrobbler.status"] = { capturesPosted: 0, providers: { chatgpt: { lastSync: cursor, captureFailures: [] } } };
+  const reports: any[] = [];
+  globalThis.fetch = (async (_url, init) => { reports.push(JSON.parse(String(init?.body))); return Response.json({ ok: true }); }) as typeof fetch;
+  tabs.query = (_query: any, done: any) => done([{ id: 1, url: "https://chatgpt.com/" }]);
+  tabs.sendMessage = (_id: any, request: any, done: any) => {
+    const attempts = (request.captureFailures[0]?.attempts ?? 0) + 1;
+    done({ ok: false, error: "receiver down", captureFailures: [{ source_id: "bad", updated_at: null, attempts, quarantined: attempts >= 3 }],
+      syncIssue: { reason: "receiver_unavailable", status: 503, occurred_at: new Date().toISOString() } });
+  };
+  try {
+    for (let run = 0; run < 3; run++) expect(await sendRuntimeMessage({ type: "SCROBBLER_SYNC_ACTIVE_TAB" })).toMatchObject({ ok: false });
+    const provider = (await sendRuntimeMessage({ type: "SCROBBLER_GET_STATUS" }) as any).status.providers.chatgpt;
+    expect(provider.lastSync).toBe(cursor);
+    expect(provider.captureFailures).toMatchObject([{ source_id: "bad", attempts: 3, quarantined: true }]);
+    expect(reports.map(report => report.capture_failures[0].attempts)).toEqual([1, 2, 3]);
+  } finally { tabs.query = oldQuery; tabs.sendMessage = oldSend; }
+});
+
