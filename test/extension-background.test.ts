@@ -540,7 +540,7 @@ test("background saves and reports deterministic attempts from a partially abort
   } finally { tabs.query = oldQuery; tabs.sendMessage = oldSend; }
 });
 
-test("one manual retry action retries each provider once despite multiple open tabs", async () => {
+for (const action of ["SCROBBLER_RETRY_FAILED_OPEN_TABS", "SCROBBLER_SYNC_ALL_OPEN_TABS"] as const) test(`one ${action} action syncs each provider once despite multiple open tabs`, async () => {
   const tabs = chrome.tabs as any;
   const oldQuery = tabs.query, oldSend = tabs.sendMessage;
   const requests: string[] = [];
@@ -552,11 +552,11 @@ test("one manual retry action retries each provider once despite multiple open t
   ]);
   tabs.sendMessage = (_id: any, request: any, done: any) => {
     requests.push(request.provider);
-    expect(request.retryFailed).toBe(true);
+    expect(request.retryFailed).toBe(action === "SCROBBLER_RETRY_FAILED_OPEN_TABS");
     done({ ok: true, source: request.provider, captureFailures: [], scanned: 0, captured: 0, skipped: 0, account: null, maxConversationUpdatedAt: null });
   };
   try {
-    expect(await sendRuntimeMessage({ type: "SCROBBLER_RETRY_FAILED_OPEN_TABS" })).toMatchObject({ ok: true });
+    expect(await sendRuntimeMessage({ type: action })).toMatchObject({ ok: true });
     expect(requests).toEqual(["chatgpt", "claude", "gemini"]);
   } finally { tabs.query = oldQuery; tabs.sendMessage = oldSend; }
 });
