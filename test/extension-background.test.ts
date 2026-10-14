@@ -520,3 +520,23 @@ test("background saves and reports deterministic attempts from a partially abort
   } finally { tabs.query = oldQuery; tabs.sendMessage = oldSend; }
 });
 
+test("one manual retry action retries each provider once despite multiple open tabs", async () => {
+  const tabs = chrome.tabs as any;
+  const oldQuery = tabs.query, oldSend = tabs.sendMessage;
+  const requests: string[] = [];
+  globalThis.fetch = (async () => Response.json({ ok: true })) as unknown as typeof fetch;
+  tabs.query = (_query: any, done: any) => done([
+    { id: 1, url: "https://chatgpt.com/c/a" }, { id: 2, url: "https://chatgpt.com/c/b" },
+    { id: 3, url: "https://claude.ai/chat/a" }, { id: 4, url: "https://claude.ai/chat/b" },
+    { id: 5, url: "https://gemini.google.com/app/a" }, { id: 6, url: "https://gemini.google.com/app/b" },
+  ]);
+  tabs.sendMessage = (_id: any, request: any, done: any) => {
+    requests.push(request.provider);
+    expect(request.retryFailed).toBe(true);
+    done({ ok: true, source: request.provider, captureFailures: [], scanned: 0, captured: 0, skipped: 0, account: null, maxConversationUpdatedAt: null });
+  };
+  try {
+    expect(await sendRuntimeMessage({ type: "SCROBBLER_RETRY_FAILED_OPEN_TABS" })).toMatchObject({ ok: true });
+    expect(requests).toEqual(["chatgpt", "claude", "gemini"]);
+  } finally { tabs.query = oldQuery; tabs.sendMessage = oldSend; }
+});
