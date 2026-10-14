@@ -6,6 +6,10 @@ type RuntimeListener = (message: RuntimeMessage, sender: unknown, sendResponse: 
 
 const storageData: Record<string, unknown> = {};
 const originalFetch = globalThis.fetch;
+async function sha256Of(bytes: number[]): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new Uint8Array(bytes));
+  return Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, "0")).join("");
+}
 afterAll(() => { globalThis.fetch = originalFetch; });
 let runtimeListener: RuntimeListener | null = null;
 
@@ -210,7 +214,7 @@ test("background checks SHA-256 and references existing blobs without uploading 
     calls.push({ method: init?.method ?? "GET", url: String(input), body: init?.body });
     if (String(input).includes("/reference?")) {
       expect(init?.body).toBeUndefined();
-      return Response.json({ ok: true, pointer: "p", local_path: "assets/claude/c/hash.png", sha256: "hash" });
+      return Response.json({ ok: true, pointer: "p", local_path: "assets/claude/c/hash.png", sha256: "039058c6f2c0cb492c533b0a4d14ef77cc0f78abccced5287d84a1a2011cfb81", size_bytes: 3 });
     }
     return Response.json({ ok: true, exists: true });
   }) as typeof fetch;
@@ -222,11 +226,12 @@ test("background checks SHA-256 and references existing blobs without uploading 
 
 test("background falls back to uploading bytes when an old server has no hash lookup", async () => {
   const calls: string[] = [];
+  const hash = await sha256Of([1, 2]);
   globalThis.fetch = (async (input, init) => {
     calls.push(init?.method ?? "GET");
     if (!init?.method) return new Response("", { status: 404 });
     expect(Array.from(init.body as Uint8Array)).toEqual([1, 2]);
-    return Response.json({ ok: true, pointer: "p", local_path: "assets/claude/c/hash" });
+    return Response.json({ ok: true, pointer: "p", local_path: "assets/claude/c/hash", sha256: hash, size_bytes: 2 });
   }) as typeof fetch;
   expect(await sendRuntimeMessage({ type: "SCROBBLER_ASSET_UPLOAD", asset: { source: "claude", sourceId: "c", pointer: "p", bytes: [1, 2] } })).toMatchObject({ ok: true });
   expect(calls).toEqual(["GET", "POST"]);
@@ -239,10 +244,11 @@ test("background persists the configurable asset size limit", async () => {
 
 test("background assembles bounded asset chunks before hash lookup and upload", async () => {
   let uploaded: number[] | undefined;
+  const hash = await sha256Of([1, 2, 3]);
   globalThis.fetch = (async (_input, init) => {
     if (!init?.method) return Response.json({ ok: true, exists: false });
     uploaded = Array.from(init.body as Uint8Array);
-    return Response.json({ ok: true, pointer: "p", local_path: "assets/chatgpt/c/hash" });
+    return Response.json({ ok: true, pointer: "p", local_path: "assets/chatgpt/c/hash", sha256: hash, size_bytes: 3 });
   }) as typeof fetch;
   const start = await sendRuntimeMessage({ type: "SCROBBLER_ASSET_UPLOAD_START", asset: { source: "chatgpt", sourceId: "c", pointer: "p" }, sizeBytes: 3 }) as any;
   expect(start.ok).toBe(true);
@@ -286,12 +292,14 @@ for (const identity of [
   { source: "gemini" as const, sourceId: "c", pointer: "file-immutable" },
   { source: "gemini" as const, sourceId: "c", pointer: `sha256:${"a".repeat(64)}` },
 ]) test(`content-addressed ${identity.pointer} cache verifies receiver existence across sessions`, async () => {
-  const hash = "a".repeat(64);
+  const uploadHash = await sha256Of([1, 2]);
+  const hash = identity.pointer.startsWith("sha256:") ? "a".repeat(64) : uploadHash;
   const calls: Array<{ url: string; method: string; bytes: boolean }> = [];
   globalThis.fetch = (async (input, init) => {
     calls.push({ url: String(input), method: init?.method ?? "GET", bytes: !!init?.body });
     if (!init?.method) return Response.json({ exists: calls.length > 2 });
-    return Response.json({ pointer: "https://lh3.googleusercontent.com/voice", local_path: "assets/gemini/c/hash.wav", sha256: hash });
+    const sha256 = init.body ? uploadHash : new URL(String(input)).searchParams.get("sha256");
+    return Response.json({ ok: true, pointer: identity.pointer, local_path: "assets/gemini/c/hash.wav", sha256, size_bytes: 2 });
   }) as typeof fetch;
   await sendRuntimeMessage({ type: "SCROBBLER_ASSET_UPLOAD", asset: { ...identity, bytes: [1, 2] } });
   const result = await sendRuntimeMessage({ type: "SCROBBLER_ASSET_LOOKUP", asset: { ...identity, sourceId: "other" } });
@@ -340,12 +348,11 @@ test("an interrupted ingest acknowledgement remains an environmental failure", a
 
 for (const secondConversation of ["convB", "convA"]) test(`sandbox path reuse in ${secondConversation} never links convA's old bytes`, async () => {
   const pointer = "sandbox:/mnt/data/plot.png";
-  const hashA = "a".repeat(64), hashB = "b".repeat(64);
-  let byteUploads = 0;
-  globalThis.fetch = (async (_input, init) => {
+  const hashA = await sha256Of([1]), hashB = await sha256Of([2]);
+  globalThis.fetch = (async (input, init) => {
     if (!init?.method) return Response.json({ exists: true });
-    if (init.body) { byteUploads++; return Response.json({ pointer, sha256: byteUploads === 1 ? hashA : hashB, local_path: "assets/plot.png" }); }
-    return Response.json({ pointer, sha256: hashA, local_path: "assets/plot.png" });
+    const sha256 = init.body ? await sha256Of(Array.from(init.body as Uint8Array)) : new URL(String(input)).searchParams.get("sha256");
+    return Response.json({ ok: true, pointer, sha256, local_path: "assets/plot.png", size_bytes: 1 });
   }) as typeof fetch;
   const identity = { source: "chatgpt" as const, sourceId: "convA", pointer };
   expect(await sendRuntimeMessage({ type: "SCROBBLER_ASSET_UPLOAD", asset: { ...identity, bytes: [1] } })).toMatchObject({ ok: true });
@@ -356,7 +363,7 @@ for (const secondConversation of ["convB", "convA"]) test(`sandbox path reuse in
   expect(await sendRuntimeMessage({ type: "SCROBBLER_ASSET_LOOKUP", asset: second })).toMatchObject({ ok: true, asset: null });
   // The receiver already knows B's actual hash; byte dedup can still link B after a fresh download.
   globalThis.fetch = (async (_input, init) => init?.method
-    ? Response.json({ pointer, sha256: hashB, local_path: "assets/new-plot.png" }) : Response.json({ exists: true })) as typeof fetch;
+    ? Response.json({ ok: true, pointer, sha256: hashB, local_path: "assets/new-plot.png", size_bytes: 1 }) : Response.json({ exists: true })) as typeof fetch;
   expect(await sendRuntimeMessage({ type: "SCROBBLER_ASSET_UPLOAD", asset: { ...second, bytes: [2] } }))
     .toMatchObject({ ok: true, asset: { sha256: hashB } });
 });
@@ -372,12 +379,13 @@ for (const pointer of ["/mnt/data/plot.png", "https://lh3.googleusercontent.com/
 test("background follows only visible allowlisted media redirect hops and validates the final bytes", async () => {
   const mediaRequests: string[] = [];
   let uploads = 0;
+  const audioHash = await sha256Of([7]);
   globalThis.fetch = (async (input, init) => {
     const url = String(input);
     if (url.includes("/assets")) {
       if (!init?.method) return Response.json({ exists: false });
       uploads++;
-      return Response.json({ pointer: "file-audio", local_path: "assets/audio", sha256: "a".repeat(64) });
+      return Response.json({ ok: true, pointer: "file-audio", local_path: "assets/audio", sha256: audioHash, size_bytes: 1 });
     }
     mediaRequests.push(url);
     expect(init?.redirect).toBe("manual");
@@ -389,6 +397,16 @@ test("background follows only visible allowlisted media redirect hops and valida
   expect(await sendRuntimeMessage({ type: "SCROBBLER_ASSET_FETCH", url: "https://lh3.googleusercontent.com/media/audio", upload: { source: "gemini", sourceId: "c", pointer: "file-audio" } })).toMatchObject({ ok: true });
   expect(mediaRequests).toEqual(["https://lh3.googleusercontent.com/media/audio", "https://lh4.googleusercontent.com/media/audio"]);
   expect(uploads).toBe(1);
+});
+
+test("background reports an invalid receiver asset acknowledgement as asset_upload_failed", async () => {
+  globalThis.fetch = (async (input, init) => {
+    const url = String(input);
+    if (!url.includes("/assets")) return new Response(new Uint8Array([7]), { headers: { "content-type": "audio/wav" } });
+    return init?.method ? Response.json({}) : Response.json({ exists: false });
+  }) as typeof fetch;
+  expect(await sendRuntimeMessage({ type: "SCROBBLER_ASSET_FETCH", url: "https://lh3.googleusercontent.com/media/audio", upload: { source: "gemini", sourceId: "c", pointer: "file-audio" } }))
+    .toMatchObject({ ok: false, error: "asset_upload_failed" });
 });
 
 for (const status of [401, 403, 404, 405, 407, 408]) test(`receiver ${status} aborts four syncs with no attempts and surfaces its error locally and through /status`, async () => {
