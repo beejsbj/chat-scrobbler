@@ -47,6 +47,14 @@ export function createVectorTables(db: Database): void {
     PRIMARY KEY(session_id,message_id,provider_kind,provider_model,dimension))`);
   db.run(`CREATE INDEX IF NOT EXISTS message_vector_scope ON message_vectors(provider_kind,provider_model,dimension,source)`);
   db.run("CREATE INDEX IF NOT EXISTS message_vector_session ON message_vectors(session_id,provider_kind,provider_model,dimension)");
+  db.run(`CREATE TABLE IF NOT EXISTS message_vector_chunks (
+    session_id TEXT NOT NULL, message_id TEXT NOT NULL, provider_kind TEXT NOT NULL,
+    provider_model TEXT NOT NULL, dimension INTEGER NOT NULL,
+    chunk_index INTEGER NOT NULL CHECK(chunk_index BETWEEN 1 AND 15), embedding BLOB NOT NULL,
+    text_hash TEXT NOT NULL, title TEXT, source TEXT,
+    PRIMARY KEY(session_id,message_id,provider_kind,provider_model,dimension,chunk_index))`);
+  db.run("CREATE INDEX IF NOT EXISTS message_chunk_scope ON message_vector_chunks(provider_kind,provider_model,dimension,source)");
+  db.run("CREATE INDEX IF NOT EXISTS message_chunk_session ON message_vector_chunks(session_id,provider_kind,provider_model,dimension)");
   db.run("CREATE INDEX IF NOT EXISTS legacy_vector_session ON message_embeddings(session_id,provider_kind,dimension)");
   if (!(db.query("PRAGMA table_info(message_vectors)").all() as Array<{name:string}>).some(c=>c.name==="text_hash"))
     db.run("ALTER TABLE message_vectors ADD COLUMN text_hash TEXT");
@@ -59,6 +67,26 @@ export function putTextVector(db: Database, row: TextVectorRow): void {
     (session_id,message_id,provider_kind,provider_model,dimension,embedding,text,text_hash,role,created_at,source,title)
     VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`, [row.session_id,row.message_id,row.provider_kind,row.provider_model,row.dimension,
     encodeVector(row.embedding),"",textVectorHash(row.text),row.role,row.created_at,row.source,row.title]);
+  db.run(`DELETE FROM message_vector_chunks WHERE session_id=? AND message_id=?
+    AND provider_kind=? AND provider_model=? AND dimension=?`,
+    [row.session_id,row.message_id,row.provider_kind,row.provider_model,row.dimension]);
+}
+
+/** Replace a message's chunk set (at most 16 including chunk zero).
+ * The caller owns the transaction and freshness/lease fencing. */
+export function putTextChunks(db: Database, row: TextVectorRow, chunks: number[][]): void {
+  if (!chunks.length) throw new Error("at least one text chunk is required");
+  const vectors = chunks.slice(0, 16).map(chunk => {
+    if (chunk.length !== row.dimension) throw new Error("embedding dimension mismatch");
+    return encodeVector(chunk);
+  });
+  putTextVector(db, { ...row, embedding: chunks[0] });
+  const hash = textVectorHash(row.text);
+  const insert = db.query(`INSERT INTO message_vector_chunks
+    (session_id,message_id,provider_kind,provider_model,dimension,chunk_index,embedding,text_hash,title,source)
+    VALUES (?,?,?,?,?,?,?,?,?,?)`);
+  for (let i = 1; i < vectors.length; i++) insert.run(row.session_id,row.message_id,
+    row.provider_kind,row.provider_model,row.dimension,i,vectors[i],hash,row.title,row.source);
 }
 export function reusableBinaryTextVector(db: Database, sessionId: string, messageId: string, text: string, title: string | null, provider: EmbeddingProvider): number[] | null {
   const kind = provider.kind?.trim() || "unknown", model = provider.model?.trim() || "";
@@ -102,7 +130,8 @@ export function migrateLegacyVectors(db: Database, opts: { limit?: number; asser
         const embedding = validateEmbedding(JSON.parse(row.embedding));
         if (embedding.length !== row.dimension) throw new Error("invalid legacy dimension");
         // Never overwrite a newer binary vector with a historical JSON snapshot.
-        const exists = db.query(`SELECT 1 FROM message_vectors WHERE session_id=? AND message_id=? AND provider_kind=? AND provider_model=? AND dimension=?`)
+        const exists = db.query(`SELECT 1 FROM message_vectors WHERE session_id=?1 AND message_id=?2 AND provider_kind=?3 AND provider_model=?4 AND dimension=?5
+          UNION ALL SELECT 1 FROM message_vector_chunks WHERE session_id=?1 AND message_id=?2 AND provider_kind=?3 AND provider_model=?4 AND dimension=?5 LIMIT 1`)
           .get(row.session_id,row.message_id,row.provider_kind,row.provider_model ?? "",row.dimension);
         if (!exists) { putTextVector(db, { ...row, provider_model: row.provider_model ?? "", embedding }); converted++; }
       } catch { invalid++; }
