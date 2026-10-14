@@ -107,7 +107,7 @@ async function runBackfill(db:Database,opts:BackfillOptions):Promise<BackfillRep
    const requestsBefore=requests;
    try {
     check();
-    if(row.type==='text' && reusableTextVector(db,row.session_id,row.message_id,row.text,row.title,provider)) {
+    if(row.type==='text' && row.reason!=='chunk_set_rebuild' && reusableTextVector(db,row.session_id,row.message_id,row.text,row.title,provider)) {
      db.transaction(()=>{guard();check();completePendingEmbedding(db,row);guard();}).immediate();skipped++;continue;
     }
     attempted++;
