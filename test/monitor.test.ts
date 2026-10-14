@@ -522,6 +522,22 @@ test("rewriting old canonical sessions does not make missing attachments recent"
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
+for (const coldMs of [2100, 6500]) test(`a ${coldMs}ms cold embedding followed by a fast probe stays quiet`, async () => {
+  const { root, opts } = setup();
+  let now = 0;
+  let calls = 0;
+  const clock = spyOn(performance, "now").mockImplementation(() => now);
+  const provider = { kind: "hash", model: "hash-v1", dimensions: 64, embed() {
+    now += calls++ === 0 ? coldMs : 100;
+    return opts.embeddingProvider.embed("health");
+  } };
+  try {
+    const report = await monitorReport({ ...opts, embeddingProvider: provider });
+    expect(report.failures).toEqual([]);
+    expect(report.health.embedding_responsiveness).toBe("ok");
+  } finally { clock.mockRestore(); rmSync(root, { recursive: true, force: true }); }
+});
+
 test("an embedder responding after two seconds is slow rather than unavailable", async () => {
   const { root, opts } = setup();
   const provider = { kind: "hash", model: "hash-v1", dimensions: 64, async embed() { await new Promise(resolve => setTimeout(resolve, 2100)); return opts.embeddingProvider.embed("health"); } };
