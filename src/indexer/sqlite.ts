@@ -10,7 +10,7 @@ import { createBackfillLockTable } from "./backfill-lock";
 import { createSearchRevision } from "./search-revision";
 // src/indexer/sqlite.ts
 import { embeddingFailed, embeddingStatus, embeddingSucceeded, validateEmbedding, type SemanticStatus } from "./embedding-status";
-import { createVectorTables, reusableTextVector, vectorScope } from "./vector-store";
+import { createVectorTables, reusableTextVector, reusableBinaryTextVector, vectorScope } from "./vector-store";
 import { Database } from "bun:sqlite";
 import type { Session } from "../schema/types";
 import { isSessionDeleted } from "../store/tombstones";
@@ -101,7 +101,8 @@ export async function indexSessionWithEmbeddings(db: Database, s: Session, opts:
   for(const message of s.messages) {
     if(!message.text.trim()) continue;
     try {
-      const reused=reusableEmbedding(db,s,message.id,message.text,embeddingProvider);
+      const binary=reusableBinaryTextVector(db,s.id,message.id,message.text,s.title,embeddingProvider);
+      const reused=binary ?? reusableEmbedding(db,s,message.id,message.text,embeddingProvider);
       const split=reused ? {chunks:[],truncated:false} : documentChunks(message.text,embeddingProvider),vectors:number[][]=[];
       if(reused)vectors.push(reused);
       else for(const chunk of split.chunks) {
@@ -115,7 +116,7 @@ export async function indexSessionWithEmbeddings(db: Database, s: Session, opts:
         const live=db.query("SELECT f.text,f.title FROM message_lookup k JOIN messages_fts f ON f.rowid=k.fts_rowid AND f.session_id=k.session_id AND f.message_id=k.message_id WHERE k.session_id=? AND k.message_id=?")
           .get(s.id,message.id) as {text:string;title:string|null}|null;
         if(!live || live.text!==message.text || live.title!==s.title || opts.shouldReplaceEmbeddings && !opts.shouldReplaceEmbeddings()) return false;
-        if(!reused)putInlineChunks(db,{...row,provider_model:row.provider_model ?? ""},vectors,split.truncated);return true;
+        if(!binary)putInlineChunks(db,{...row,provider_model:row.provider_model ?? ""},vectors,split.truncated);return true;
       })();
       if(!written) return "stale";
     } catch {failed=true;}
@@ -351,8 +352,10 @@ function collectSyncEmbeddingRows(db:Database,s: Session, provider: EmbeddingPro
   for(const m of s.messages) {
     if(!m.text.trim()) continue;
     try {
-      if(reusableEmbedding(db,s,m.id,m.text,provider))continue;
-      const split=documentChunks(m.text,provider),chunks=split.chunks.map(chunk=>syncEmbedding(provider,chunk,{kind:"document",title:s.title}));
+      if(reusableBinaryTextVector(db,s.id,m.id,m.text,s.title,provider))continue;
+      const reused=reusableEmbedding(db,s,m.id,m.text,provider);
+      const split=reused ? {chunks:[],truncated:false} : documentChunks(m.text,provider);
+      const chunks=reused ? [reused] : split.chunks.map(chunk=>syncEmbedding(provider,chunk,{kind:"document",title:s.title}));
       const embedding=chunks[0];
       rows.push({session_id:s.id,message_id:m.id,embedding,chunks,truncated:split.truncated,text:m.text,role:m.role,created_at:m.created_at,
         source:s.source,title:s.title,...embeddingMetadata(provider,embedding)});

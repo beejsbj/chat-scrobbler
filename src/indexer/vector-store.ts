@@ -102,6 +102,12 @@ export function reusableBinaryTextVector(db: Database, sessionId: string, messag
 export function reusableTextVector(db: Database, sessionId: string, messageId: string, text: string, title: string | null, provider: EmbeddingProvider): number[] | null {
   const binary=reusableBinaryTextVector(db,sessionId,messageId,text,title,provider);
   if(binary) return binary;
+  // A matching extra chunk with no valid first chunk is a partial newer set.
+  // Rebuild it rather than replacing it with a retained pooled legacy vector.
+  if(db.query(`SELECT 1 FROM message_vector_chunks WHERE session_id=? AND message_id=?
+    AND provider_kind=? AND provider_model=? AND (? IS NULL OR dimension=?) AND text_hash=? AND title IS ? LIMIT 1`)
+    .get(sessionId,messageId,provider.kind?.trim() || "unknown",provider.model?.trim() || "",provider.dimensions ?? null,
+      provider.dimensions ?? null,textVectorHash(text),title))return null;
   const model=provider.model?.trim() || "";
   const params=[sessionId,messageId,provider.kind?.trim() || "unknown",model,provider.dimensions ?? null,provider.dimensions ?? null,text,title];
   const legacy = db.query(`SELECT * FROM message_embeddings WHERE session_id=? AND message_id=?
