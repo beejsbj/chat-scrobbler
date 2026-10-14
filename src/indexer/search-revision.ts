@@ -18,9 +18,10 @@ export function createSearchRevision(db: Database): void {
   db.run("CREATE INDEX IF NOT EXISTS search_vector_scope ON search_vector_changes(provider_kind,provider_model,dimension,revision)");
   db.run("CREATE INDEX IF NOT EXISTS search_model_scope ON search_model_changes(provider_kind,provider_model,dimension,revision)");
   db.run("CREATE INDEX IF NOT EXISTS search_session_revision ON search_changes(revision)");
-  if(!upgraded) for(const table of ["sessions","message_vectors","message_embeddings"])
+  const tables=["sessions","message_vectors","message_vector_chunks","message_embeddings"];
+  if(!upgraded) for(const table of tables)
     for(const event of ["insert","update","delete"])db.run(`DROP TRIGGER IF EXISTS search_${table}_${event}`);
-  for(const table of ["sessions","message_vectors","message_embeddings"])
+  for(const table of tables)
     for(const event of ["INSERT","UPDATE","DELETE"]) {
       const refs=event==="UPDATE" ? ["OLD","NEW"] : [event==="DELETE" ? "OLD" : "NEW"];
       const marks=refs.map(ref=>table==="sessions"
@@ -34,11 +35,14 @@ export function createSearchRevision(db: Database): void {
         ${marks}
       END`);
     }
-  // Asset ranking and coordination leases do not dirty text/model caches.
+  // Asset ranking, coordination leases and embedding state do not dirty text/model caches.
   // Track their commits to avoid mistaking them for untracked FTS edits.
-  for(const table of ["asset_vectors","locks"]) for(const event of ["INSERT","UPDATE","DELETE"])
-    db.run(`CREATE TRIGGER IF NOT EXISTS search_${table}_${event.toLowerCase()} AFTER ${event} ON ${table} BEGIN
-      UPDATE search_revision SET revision=revision+1 WHERE id=1; END`);
+  for(const table of ["asset_vectors","locks","embedding_pending","embedding_models"]) {
+    if(!db.query("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(table))continue;
+    for(const event of ["INSERT","UPDATE","DELETE"])
+      db.run(`CREATE TRIGGER IF NOT EXISTS search_${table}_${event.toLowerCase()} AFTER ${event} ON ${table} BEGIN
+        UPDATE search_revision SET revision=revision+1 WHERE id=1; END`);
+  }
   })();
 }
 export function searchRevision(db: Database): number {
