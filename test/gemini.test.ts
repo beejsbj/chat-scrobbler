@@ -241,19 +241,17 @@ test("Gemini adapter aborts on an RPC outage without sending a DOM substitute", 
   expect(captures).toEqual([]);
 });
 
-test("Gemini adapter falls back to DOM capture when WIZ data unavailable", async () => {
+test("missing Gemini WIZ data aborts repeated syncs without quarantining visible chats", async () => {
   const captures: Array<{ source_id: string; payload: unknown }> = [];
   const fetcher: FetchLike = async () => { throw new Error("should not be called"); };
 
   // No wiz data available
   const pageCtx = makeFakePageCtx(["nowizid12345678a"], null);
-  const result = await createGeminiAdapter(fetcher, pageCtx).sync({
-    lastSync: null,
-    emitCapture: async (c) => { captures.push({ source_id: c.source_id, payload: c.payload }); },
-  });
-
-  expect(result.captured).toBe(1);
-  expect((captures[0].payload as Record<string, unknown>).dom_fallback).toBe(true);
+  for (let run = 0; run < 4; run++) await expect(createGeminiAdapter(fetcher, pageCtx).sync({
+    lastSync: null, captureFailures: [],
+    emitCapture: async (c) => { captures.push({ source_id: c.source_id, payload: c.payload }); throw new Error("unsupported DOM payload would be rejected"); },
+  })).rejects.toMatchObject({ name: "TransientSyncError" });
+  expect(captures).toEqual([]);
 });
 
 // ---------------------------------------------------------------------------

@@ -20,10 +20,9 @@ import { logSyncFailure, SyncFailureTracker } from "./sync-failures";
  *    The parsed response payload (inner JSON array from parseBatchExecuteResponse)
  *    is stored directly in RawCapture.payload and parsed by src/parsers/gemini.ts.
  *
- *    DOM FALLBACK: if wizData is unavailable or the RPC fails, ships the rendered
- *    conversation text from the DOM. Only works when the target conversation is
- *    currently loaded in the page. The gemini:api parser ignores dom_fallback
- *    payloads (they do not match the expected hNvQHb array structure).
+ *    DOM MEDIA FALLBACK: supplements API media from the current conversation page.
+ *    Missing WIZ bootstrap data aborts as an environmental failure, because the
+ *    API parser cannot ingest a rendered DOM text substitute.
  *
  * RISKS / FOLLOW-UPS:
  * - WIZ_global_data field names (SNlM0e/cfb2h/FdrFJe) are obfuscated and may
@@ -193,8 +192,8 @@ async function listGemini(pageCtx: GeminiPageContext, _pages: number): Promise<C
 }
 
 /**
- * Captures a single conversation: tries the batchexecute hNvQHb RPC first and
- * falls back to the rendered DOM text. Shared by the badge-reconciliation
+ * Captures a single conversation through batchexecute, supplementing DOM media.
+ * Shared by the badge-reconciliation
  * captureOne hook and the per-id loop in syncGemini so both paths stay in sync.
  */
 async function captureGeminiOne(
@@ -206,6 +205,7 @@ async function captureGeminiOne(
   skipUnchanged = false,
 ): Promise<boolean> {
   const wizData = pageCtx.readWizData();
+  if (!wizData) throw new TransientSyncError("Gemini bootstrap data unavailable; reload the provider page");
   const fetchedAt = new Date().toISOString();
 
   // PRIMARY PATH: batchexecute hNvQHb RPC.
@@ -239,25 +239,7 @@ async function captureGeminiOne(
     }
   }
 
-  // DOM FALLBACK: if RPC failed or wizData was unavailable, ship the rendered
-  // conversation text from the DOM. SPECULATIVE — only works when the target
-  // conversation is the currently rendered page. The gemini:api parser ignores
-  // dom_fallback payloads.
-  const domText = pageCtx.readConversationDom(id);
-  const candidates = geminiAssetCandidates(pageCtx, id);
-  const assets = await uploadProviderAssets(fetcher, options.uploadAsset, candidates);
-  const emitted = await options.emitCapture(buildRawCapture({
-    source: "gemini",
-    sourceId: id,
-    endpoint: `dom://gemini.google.com/app/${id}`,
-    payload: { dom_fallback: true, text: domText ?? "" },
-    assets,
-    assetReferences: assetReferences(candidates),
-    fetchedAt,
-    conversationUpdatedAt: updatedAt,
-    rawUrl: `https://gemini.google.com/app/${id}`,
-  }));
-  return emitted !== false;
+  throw new SyntaxError("Gemini conversation RPC returned no payload");
 }
 
 function geminiAssetCandidates(pageCtx: GeminiPageContext, sourceId: string): ProviderAssetCandidate[] {

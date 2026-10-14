@@ -1,9 +1,16 @@
 import { expect, test } from "bun:test";
 import { createBrowserPageContext, createGeminiAdapter } from "../packages/extension/src/providers/gemini";
+import type { FetchLike } from "../packages/extension/src/providers/types";
 import { uploadProviderAssets } from "../packages/extension/src/providers/assets";
 
 const id = "aaaa0000bbbb1111";
 const uuid = "a2532b3f-751b-4d54-8890-cb3e971ab982";
+const payload = [[[["c_" + id, "r_user"], null, [["keep the conversation text"], 1], null]]];
+function pageAdapter(fetcher: FetchLike) {
+  return createGeminiAdapter((url, init) => url.startsWith("/_/BardChatUi/")
+    ? Promise.resolve(new Response(JSON.stringify([["wrb.fr", "hNvQHb", JSON.stringify(payload)]])))
+    : fetcher(url, init), { ...createBrowserPageContext(), readWizData: () => ({ at: "csrf", bl: "build", fSid: "sid" }) });
+}
 async function onPage(origin: string, media: Array<{ tag: string; url: string; type: string }>, run: () => Promise<void>) {
   const descriptors = ["location", "document", "chrome"].map(key => [key, Object.getOwnPropertyDescriptor(globalThis, key)] as const);
   const elements = media.map(m => ({ tagName: m.tag.toUpperCase(), getAttribute: (key: string) => key === "src" ? m.url : key === "type" ? m.type : null }));
@@ -18,20 +25,20 @@ test("Gemini DOM audio and video blobs are read on their own page without cookie
   const blobs = ["audio", "video"].map((tag, index) => ({ tag, url: `blob:https://gemini.google.com/${uuid.slice(0, -1)}${index}`, type: `${tag}/${tag === "audio" ? "wav" : "mp4"}` }));
   await onPage("https://gemini.google.com", blobs, async () => {
     const requests: string[] = [], uploads: string[] = [], captures: any[] = [];
-    await createGeminiAdapter(async (url, init) => {
+    await pageAdapter(async (url, init) => {
       requests.push(url);
       expect(init?.credentials).toBe("omit");
       expect(init?.headers).toBeUndefined();
       const response = new Response(new Uint8Array([1, 2]), { headers: { "content-type": blobs.find(b => b.url === url)!.type } });
       Object.defineProperty(response, "url", { value: url });
       return response;
-    }, createBrowserPageContext()).captureOne!(id, null, {
+    }).captureOne!(id, null, {
       emitCapture: async capture => { captures.push(capture); }, uploadAsset: async asset => { uploads.push(asset.pointer); return { pointer: asset.pointer, local_path: "assets/media" }; },
     });
     expect(requests).toEqual(blobs.map(b => b.url));
     expect(uploads).toEqual(requests);
     expect(captures[0].assets).toHaveLength(2);
-    expect(captures[0].payload.text).toBe("keep the conversation text");
+    expect(captures[0].payload).toEqual(payload);
   });
 });
 
@@ -39,7 +46,7 @@ for (const [origin, blob] of [["https://gemini.google.com", `blob:https://claude
   await onPage(origin, [{ tag: "audio", url: blob, type: "audio/wav" }], async () => {
     let fetched = 0;
     let captured = false;
-    await createGeminiAdapter(async () => { fetched++; return new Response(new Uint8Array([1])); }, createBrowserPageContext()).captureOne!(id, null, {
+    await pageAdapter(async () => { fetched++; return new Response(new Uint8Array([1])); }).captureOne!(id, null, {
       emitCapture: async () => { captured = true; }, uploadAsset: async () => { throw new Error("must not upload"); },
     });
     expect(fetched).toBe(0);
@@ -64,7 +71,7 @@ test("DOM blob bytes still reject a session document disguised as audio", async 
   await onPage("https://gemini.google.com", [{ tag: "audio", url: blob, type: "audio/wav" }], async () => {
     let uploads = 0;
     let captured = false;
-    await createGeminiAdapter(async () => new Response('{"accessToken":"SECRET"}', { headers: { "content-type": "audio/wav" } }), createBrowserPageContext()).captureOne!(id, null, {
+    await pageAdapter(async () => new Response('{"accessToken":"SECRET"}', { headers: { "content-type": "audio/wav" } })).captureOne!(id, null, {
       emitCapture: async () => { captured = true; }, uploadAsset: async a => { uploads++; return { pointer: a.pointer, local_path: "assets/leak" }; },
     });
     expect(uploads).toBe(0);
