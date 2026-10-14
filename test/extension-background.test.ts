@@ -475,3 +475,9 @@ test("retrying a confirmed cohort behind the cursor cannot move the saved cursor
     expect((storageData["scrobbler.status"] as any).providers.chatgpt.lastSync).toBe("2026-06-06T00:00:00Z");
   } finally { tabs.query = oldQuery; tabs.sendMessage = oldSend; }
 });
+
+test("a proxy login page returned as a successful capture acknowledgement is environmental", async () => {
+  globalThis.fetch = (async () => new Response("<html>proxy sign-in</html>", { headers: { "content-type": "text/html" } })) as unknown as typeof fetch;
+  expect(await sendRuntimeMessage({ type: "SCROBBLER_CAPTURE_READY", capture: buildRawCapture({ source: "chatgpt", sourceId: "c", endpoint: "/detail", payload: {} }) }))
+    .toMatchObject({ ok: false, error_type: "transient" });
+});

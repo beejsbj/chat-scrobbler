@@ -323,8 +323,8 @@ async function postCapture(message: CaptureReadyMessage): Promise<unknown> {
       : `Receiver temporarily unavailable (${res.status})`, res.status);
   let ingest;
   try { ingest = await res.json(); } catch (error) {
-    if (error instanceof SyntaxError) throw error;
-    throw new ReceiverSyncError("Receiver response interrupted");
+    throw new ReceiverSyncError(error instanceof SyntaxError
+      ? "Receiver acknowledgement invalid; check the receiver URL and proxy" : "Receiver response interrupted");
   }
   if (ingest.count === 0 && Array.isArray(ingest.skipped_deleted) && ingest.skipped_deleted.some((item: { source: string; source_id: string }) => item.source === message.capture.source && item.source_id === message.capture.source_id)) return { ok: true, captured: false, ingest };
   await mutateStatus((status) => {
