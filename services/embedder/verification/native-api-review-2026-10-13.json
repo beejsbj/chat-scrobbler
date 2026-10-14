@@ -1,0 +1,28 @@
+{
+  "source": "/mnt/server-ssd/spikes/bjs-544/venv-a/lib/python3.12/site-packages/litert_lm/embedding_engine.py",
+  "sha256": "c299c71137bf2aa43755322f3837bf5512141b42cfce07c9f0f454376571737f",
+  "engine_parameters": [
+    "audio_backend",
+    "backend",
+    "cache_dir",
+    "max_input_length",
+    "model_path",
+    "vision_backend",
+    "vision_tokens_per_image"
+  ],
+  "option_fields": [
+    "input_overflow_strategy",
+    "insert_special_tokens",
+    "normalize",
+    "output_size",
+    "vision_tokens_per_image"
+  ],
+  "native_settings_verified": [
+    "litert_lm_embedding_engine_settings_set_vision_tokens_per_image",
+    "litert_lm_embedding_options_set_vision_tokens_per_image",
+    "litert_lm_embedding_engine_settings_set_num_threads",
+    "litert_lm_embedding_engine_settings_set_audio_num_threads"
+  ],
+  "vision_thread_setter_exposed": false,
+  "model_imported": false
+}

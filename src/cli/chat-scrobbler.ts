@@ -51,6 +51,18 @@ Recall workflow (the two steps an agent follows)
 
 Usage: chat-scrobbler <command> [options]
 
+Derived embeddings
+  embed-backfill --model <id> [--provider <kind>] [--limit <n>] [--rate <requests/s>]
+    Resume missing/changed text and assets; serial requests, default 100 ms yield
+    Use kernel cgroup CPU limits/nice for resource control and queue backpressure
+    --rate <requests/s>    Yield 1/rate seconds after each response, including chunks
+    --load-threshold <n>    Optional emergency host-load brake (e.g. 32); no default
+    --migrate-only         Convert legacy JSON to float32 without inference
+                           Exempt from the host-load brake
+    JSON progress separates HTTP requests from estimated 1800-byte native chunks
+    Initial ETA assumes 2 s/native chunk: 53k take ~29.4 h, plus HTTP pacing
+    Then ETA uses measured HTTP latency; native chunk counts are approximate
+
 Recall
   search <query>         Hybrid search when embeddings are enabled; otherwise FTS
     --grep <pattern>       Regex search mode instead of FTS or semantic search
@@ -237,6 +249,12 @@ async function main(argv: string[]): Promise<void> {
         break;
       }
 
+      case "embed-backfill": {
+        const { runEmbedBackfill } = await import("./embed-backfill");
+        await runEmbedBackfill(rest, cfg, write);
+        break;
+      }
+
       case "unify": {
         const { values } = parseArgs({ args: rest, options: { force: { type: "boolean", default: false } } });
         await runUnifyCmd({ cfg, write, force: values.force });
@@ -259,8 +277,20 @@ async function main(argv: string[]): Promise<void> {
       case "serve": {
         const handles = await startServe(cfg);
         printServeInfo(cfg, handles);
-        // Keep alive indefinitely until the process is terminated.
-        await new Promise<void>(() => {});
+        const exitCode=await new Promise<number>(resolve=> {
+          let closing=false;
+          const shutdown=async(code:number)=> {
+            if(closing) return;
+            closing=true;
+            try {await handles.stop!();}
+            catch {process.stderr.write("Error: serve shutdown failed\n");code=1;}
+            finally {process.removeListener("SIGINT",interrupt);process.removeListener("SIGTERM",terminate);}
+            resolve(code);
+          };
+          const interrupt=()=>{void shutdown(130);},terminate=()=>{void shutdown(0);};
+          process.on("SIGINT",interrupt);process.on("SIGTERM",terminate);
+        });
+        process.exit(exitCode);
         break;
       }
 

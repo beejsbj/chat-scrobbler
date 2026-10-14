@@ -1,5 +1,16 @@
+import {documentChunks} from './document-chunks';
+import {putInlineChunks} from './inline-chunk-write';
+import {isSearchWarming,searchWarmupFailed} from "./search-warmup";
+import { cachedSubstringCandidates } from "./literal-cache";
+import { createMessageLookup, ensureMessageLookup } from "./message-lookup";
+import { createAssetVectorTables, replaceAssetLinks, linkedAssetHashes, pruneUnownedAssetVectors, assetSemanticCandidates } from "./asset-embeddings";
+import { cachedSemanticCandidates } from "./active-vector-cache";
+import { createPendingTables, createPendingVectorTriggers, markPendingSession } from "./pending-embeddings";
+import { createBackfillLockTable } from "./backfill-lock";
+import { createSearchRevision } from "./search-revision";
 // src/indexer/sqlite.ts
 import { embeddingFailed, embeddingStatus, embeddingSucceeded, validateEmbedding, type SemanticStatus } from "./embedding-status";
+import { createVectorTables, reusableTextVector, reusableBinaryTextVector, vectorScope } from "./vector-store";
 import { Database } from "bun:sqlite";
 import type { Session } from "../schema/types";
 import { isSessionDeleted } from "../store/tombstones";
@@ -9,6 +20,8 @@ export interface EmbeddingContext {
   kind: "query" | "document";
   title?: string | null;
   signal?: AbortSignal;
+  /** Backfill load check before each provider HTTP request, including chunks. */
+  beforeRequest?: () => Promise<void>;
 }
 
 export interface MessageHit {
@@ -25,7 +38,10 @@ export interface EmbeddingProvider {
   readonly kind?: string;
   readonly model?: string | null;
   readonly dimensions?: number | null;
+  readonly chunkChars?: number | null;
+  readonly maxChunks?: number | null;
   embed(text: string, context?: EmbeddingContext): number[] | Promise<number[]>;
+  embedAsset?(input: { type: "image" | "audio" | "video"; path?: string; base64?: string }, context?: EmbeddingContext): number[] | Promise<number[]>;
 }
 
 export interface IndexSessionOptions { canonicalDir?: string; embeddingProvider?: EmbeddingProvider | null; shouldReplaceEmbeddings?: () => boolean; }
@@ -50,6 +66,13 @@ export function openIndex(path: string): Database {
     provider_kind TEXT, provider_model TEXT, dimension INTEGER,
     PRIMARY KEY (session_id, message_id));`);
   migrateMessageEmbeddings(db);
+  createMessageLookup(db);
+  createPendingTables(db);
+  createVectorTables(db);
+  createPendingVectorTriggers(db);
+  createAssetVectorTables(db);
+  createBackfillLockTable(db);
+  createSearchRevision(db);
   return db;
 }
 
@@ -59,9 +82,10 @@ export function indexSession(db: Database, s: Session, opts: IndexSessionOptions
   if (!embeddingProvider) return;
 
   try {
-    const rows = collectSyncEmbeddingRows(s, embeddingProvider);
+    const {rows,failed} = collectSyncEmbeddingRows(db, s, embeddingProvider);
     db.transaction(() => replaceEmbeddingRows(db, s, rows, opts))();
-    embeddingSucceeded(embeddingProvider, "ingest");
+    if(failed) embeddingFailed(embeddingProvider,"embedding_document_failed","ingest");
+    else embeddingSucceeded(embeddingProvider, "ingest");
   } catch {
     embeddingFailed(embeddingProvider, "embedding_document_failed", "ingest");
   }
@@ -73,15 +97,32 @@ export async function indexSessionWithEmbeddings(db: Database, s: Session, opts:
   if (!db.transaction(() => indexLiteralSession(db, s, opts))()) return "stale";
   if (!embeddingProvider) return "disabled";
 
-  try {
-    const rows = await collectAsyncEmbeddingRows(db, s, embeddingProvider);
-    const replaced = db.transaction(() => replaceEmbeddingRows(db, s, rows, opts))();
-    embeddingSucceeded(embeddingProvider, "ingest");
-    return replaced ? "indexed" : "stale";
-  } catch {
-    embeddingFailed(embeddingProvider, "embedding_document_failed", "ingest");
-    return "failed";
+  let failed=false;
+  for(const message of s.messages) {
+    if(!message.text.trim()) continue;
+    try {
+      const binary=reusableBinaryTextVector(db,s.id,message.id,message.text,s.title,embeddingProvider);
+      const reused=binary ?? reusableEmbedding(db,s,message.id,message.text,embeddingProvider);
+      const split=reused ? {chunks:[],truncated:false} : documentChunks(message.text,embeddingProvider),vectors:number[][]=[];
+      if(reused)vectors.push(reused);
+      else for(const chunk of split.chunks) {
+        vectors.push(validateEmbedding(await embeddingProvider.embed(chunk,{kind:"document",title:s.title})));
+        await Bun.sleep(0);
+      }
+      const embedding=vectors[0];
+      const row={session_id:s.id,message_id:message.id,text:message.text,role:message.role,
+        created_at:message.created_at,source:s.source,title:s.title,embedding,...embeddingMetadata(embeddingProvider,embedding)};
+      const written=db.transaction(()=> {
+        const live=db.query("SELECT f.text,f.title FROM message_lookup k JOIN messages_fts f ON f.rowid=k.fts_rowid AND f.session_id=k.session_id AND f.message_id=k.message_id WHERE k.session_id=? AND k.message_id=?")
+          .get(s.id,message.id) as {text:string;title:string|null}|null;
+        if(!live || live.text!==message.text || live.title!==s.title || opts.shouldReplaceEmbeddings && !opts.shouldReplaceEmbeddings()) return false;
+        if(!binary)putInlineChunks(db,{...row,provider_model:row.provider_model ?? ""},vectors,split.truncated);return true;
+      })();
+      if(!written) return "stale";
+    } catch {failed=true;}
   }
+  if(failed) {embeddingFailed(embeddingProvider,"embedding_document_failed","ingest");return "failed";}
+  embeddingSucceeded(embeddingProvider,"ingest");return "indexed";
 }
 
 /** Look up the indexed updated_at for given (source, source_id) pairs.
@@ -104,7 +145,14 @@ export function deleteIndexedSession(db: Database, source: string, sourceId: str
   const sessionIds = rows.length > 0 ? rows.map((row) => row.id) : [`${source}:${sourceId}`];
   for (const sessionId of sessionIds) {
     db.run(`DELETE FROM messages_fts WHERE session_id = ?`, [sessionId]);
+    db.run("DELETE FROM message_lookup WHERE session_id=?", [sessionId]);
     db.run(`DELETE FROM message_embeddings WHERE session_id = ?`, [sessionId]);
+    db.run(`DELETE FROM message_vectors WHERE session_id = ?`, [sessionId]);
+    db.run("DELETE FROM embedding_pending WHERE session_id=?",[sessionId]);
+    db.run("DELETE FROM message_vector_chunks WHERE session_id=?",[sessionId]);
+    const hashes=linkedAssetHashes(db,sessionId);
+    db.run("DELETE FROM asset_embedding_links WHERE session_id=?", [sessionId]);
+    pruneUnownedAssetVectors(db,hashes);
     db.run(`DELETE FROM sessions WHERE id = ?`, [sessionId]);
   }
   return { deleted: rows.length > 0, sessionIds };
@@ -123,7 +171,11 @@ export function searchMessages(db: Database, query: string, opts: SearchMessages
 
   const semanticProvider = opts.embeddingProvider ?? null;
   let status = embeddingStatus(semanticProvider);
-  if (semanticProvider) {
+  if (semanticProvider && isSearchWarming(db)) {
+    status={semantic:"warming",reason:"search_cache_warming",embedding_failures:status.embedding_failures};
+  } else if(semanticProvider && searchWarmupFailed(db)) {
+    status={semantic:"unavailable",reason:"search_cache_warmup_failed",embedding_failures:status.embedding_failures};
+  } else if (semanticProvider) {
     const attempt = safeSyncEmbedding(semanticProvider, query, { kind: "query" });
     const queryEmbedding = attempt.vector;
     status = attempt.status;
@@ -133,7 +185,7 @@ export function searchMessages(db: Database, query: string, opts: SearchMessages
   }
 
   const hits = finalizeHits(merged, limit);
-  if (status.semantic === "unavailable") for (const hit of hits) Object.assign(hit, status);
+  if (status.semantic === "unavailable" || status.semantic === "warming") for (const hit of hits) Object.assign(hit, status);
   return hits;
 }
 
@@ -149,7 +201,11 @@ export async function searchMessagesReport(db: Database, query: string, opts: Se
   const merged = literalHits(db, query, opts.source, limit);
   const semanticProvider = opts.embeddingProvider ?? null;
   let status = embeddingStatus(semanticProvider);
-  if (semanticProvider) {
+  if (semanticProvider && isSearchWarming(db)) {
+    status={semantic:"warming",reason:"search_cache_warming",embedding_failures:status.embedding_failures};
+  } else if(semanticProvider && searchWarmupFailed(db)) {
+    status={semantic:"unavailable",reason:"search_cache_warmup_failed",embedding_failures:status.embedding_failures};
+  } else if (semanticProvider) {
     const attempt = await safeAsyncEmbedding(semanticProvider, query, { kind: "query" });
     const queryEmbedding = attempt.vector;
     status = attempt.status;
@@ -158,7 +214,7 @@ export async function searchMessagesReport(db: Database, query: string, opts: Se
     }
   }
   const hits = finalizeHits(merged, limit);
-  if (status.semantic === "unavailable") for (const hit of hits) Object.assign(hit, status);
+  if (status.semantic === "unavailable" || status.semantic === "warming") for (const hit of hits) Object.assign(hit, status);
   return { hits, ...status };
 }
 
@@ -232,6 +288,7 @@ interface SemanticRow {
 }
 
 interface EmbeddingRow {
+  chunks:number[][];truncated:boolean;
   session_id: string; message_id: string; embedding: number[]; text: string; role: string;
   created_at: string | null; source: string; title: string | null;
   provider_kind: string; provider_model: string | null; dimension: number;
@@ -263,101 +320,61 @@ function indexLiteralSession(db: Database, s: Session, opts: IndexSessionOptions
   if (opts.canonicalDir && isSessionDeleted(opts.canonicalDir, s.source, s.source_id)) return false;
   // message_count counts rendered active messages; FTS indexes every branch so
   // search can reach text on inactive (edited-away) branches too.
+  replaceAssetLinks(db, s);
   const activeCount = activePath(s).filter(message => message.text.trim()).length;
   db.run(`INSERT OR REPLACE INTO sessions (id, source, source_id, title, created_at, updated_at, message_count)
           VALUES (?,?,?,?,?,?,?)`,
     [s.id, s.source, s.source_id, s.title, s.created_at, s.updated_at, activeCount]);
   db.run(`DELETE FROM messages_fts WHERE session_id = ?`, [s.id]);
+  db.run("DELETE FROM message_lookup WHERE session_id=?", [s.id]);
   const stmt = db.prepare(
     `INSERT INTO messages_fts (text, message_id, session_id, role, created_at, source, title)
      VALUES (?,?,?,?,?,?,?)`);
   for (const m of s.messages) {
     if (!m.text) continue;
-    stmt.run(m.text, m.id, s.id, m.role, m.created_at, s.source, s.title);
+    const result = stmt.run(m.text, m.id, s.id, m.role, m.created_at, s.source, s.title);
+    db.run("INSERT OR REPLACE INTO message_lookup(session_id,message_id,fts_rowid) VALUES (?,?,?)", [s.id,m.id,result.lastInsertRowid]);
   }
+  // Reconciliation belongs to capture indexing, even when inference is deferred.
+  const ids = new Set(s.messages.filter(message => message.text).map(message => message.id));
+  for (const table of ["message_vectors", "message_embeddings", "message_vector_chunks", "embedding_pending"]) {
+    const rows = db.query(`SELECT DISTINCT message_id FROM ${table} WHERE session_id=?`).all(s.id) as Array<{message_id:string}>;
+    for (const row of rows) if (!ids.has(row.message_id))
+      db.run(`DELETE FROM ${table} WHERE session_id=? AND message_id=?`, [s.id,row.message_id]);
+  }
+  markPendingSession(db,s);
+  db.run("DELETE FROM message_lookup_dirty WHERE session_id=?",[s.id]);
   return true;
 }
 
-function collectSyncEmbeddingRows(s: Session, provider: EmbeddingProvider): EmbeddingRow[] {
-  const rows: EmbeddingRow[] = [];
-  for (const m of s.messages) {
-    if (!m.text) continue;
-    const embedding = syncEmbedding(provider, m.text, { kind: "document", title: s.title });
-    rows.push({
-      session_id: s.id,
-      message_id: m.id,
-      embedding,
-      text: m.text,
-      role: m.role,
-      created_at: m.created_at,
-      source: s.source,
-      title: s.title,
-      ...embeddingMetadata(provider, embedding),
-    });
+function collectSyncEmbeddingRows(db:Database,s: Session, provider: EmbeddingProvider): {rows:EmbeddingRow[];failed:boolean} {
+  const rows:EmbeddingRow[]=[];let failed=false;
+  for(const m of s.messages) {
+    if(!m.text.trim()) continue;
+    try {
+      if(reusableBinaryTextVector(db,s.id,m.id,m.text,s.title,provider))continue;
+      const reused=reusableEmbedding(db,s,m.id,m.text,provider);
+      const split=reused ? {chunks:[],truncated:false} : documentChunks(m.text,provider);
+      const chunks=reused ? [reused] : split.chunks.map(chunk=>syncEmbedding(provider,chunk,{kind:"document",title:s.title}));
+      const embedding=chunks[0];
+      rows.push({session_id:s.id,message_id:m.id,embedding,chunks,truncated:split.truncated,text:m.text,role:m.role,created_at:m.created_at,
+        source:s.source,title:s.title,...embeddingMetadata(provider,embedding)});
+    } catch {failed=true;}
   }
-  return rows;
+  return {rows,failed};
 }
 
 // Providers re-send whole conversations on every sync (Gemini re-captures every
 // visible chat each poll), so reuse a stored vector whenever the embedded inputs
 // (text, title, provider identity) are unchanged instead of re-embedding them.
 function reusableEmbedding(db: Database, s: Session, messageId: string, text: string, provider: EmbeddingProvider): number[] | null {
-  const row = db.query(
-    `SELECT embedding, text, title, provider_kind, provider_model FROM message_embeddings WHERE session_id = ? AND message_id = ?`,
-  ).get(s.id, messageId) as { embedding: string; text: string; title: string | null; provider_kind: string | null; provider_model: string | null } | null;
-  if (!row || row.text !== text || (row.title ?? null) !== (s.title ?? null)) return null;
-  if (row.provider_kind !== (provider.kind?.trim() || "unknown") || row.provider_model !== (provider.model?.trim() || null)) return null;
-  try {
-    return validateEmbedding(JSON.parse(row.embedding));
-  } catch {
-    return null;
-  }
-}
-
-async function collectAsyncEmbeddingRows(db: Database, s: Session, provider: EmbeddingProvider): Promise<EmbeddingRow[]> {
-  const rows: EmbeddingRow[] = [];
-  for (const m of s.messages) {
-    if (!m.text) continue;
-    const embedding = reusableEmbedding(db, s, m.id, m.text, provider)
-      ?? validateEmbedding(await provider.embed(m.text, { kind: "document", title: s.title }));
-    rows.push({
-      session_id: s.id,
-      message_id: m.id,
-      embedding,
-      text: m.text,
-      role: m.role,
-      created_at: m.created_at,
-      source: s.source,
-      title: s.title,
-      ...embeddingMetadata(provider, embedding),
-    });
-  }
-  return rows;
+  return reusableTextVector(db, s.id, messageId, text, s.title ?? null, provider);
 }
 
 function replaceEmbeddingRows(db: Database, session: Session, rows: EmbeddingRow[], opts: IndexSessionOptions): boolean {
   const current = db.query("SELECT updated_at FROM sessions WHERE id = ?").get(session.id) as { updated_at: string } | null;
   if ((opts.canonicalDir && isSessionDeleted(opts.canonicalDir, session.source, session.source_id)) || current?.updated_at !== session.updated_at || (opts.shouldReplaceEmbeddings && !opts.shouldReplaceEmbeddings())) return false;
-  const sessionId = session.id;
-  db.run(`DELETE FROM message_embeddings WHERE session_id = ?`, [sessionId]);
-  const stmt = db.prepare(
-    `INSERT INTO message_embeddings (session_id, message_id, embedding, text, role, created_at, source, title, provider_kind, provider_model, dimension)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?)`);
-  for (const row of rows) {
-    stmt.run(
-      row.session_id,
-      row.message_id,
-      JSON.stringify(row.embedding),
-      row.text,
-      row.role,
-      row.created_at,
-      row.source,
-      row.title,
-      row.provider_kind,
-      row.provider_model,
-      row.dimension,
-    );
-  }
+  for (const row of rows) putInlineChunks(db, { ...row, provider_model: row.provider_model ?? "" },row.chunks,row.truncated);
   return true;
 }
 
@@ -393,19 +410,7 @@ function substringCandidates(db: Database, query: string, source: string | undef
   const literal = literalSearchQuery(query);
   if (!literal) return [];
 
-  const params: any[] = [literal.toLowerCase()];
-  let where = "instr(lower(text), ?) > 0";
-  if (source) {
-    where += " AND source = ?";
-    params.push(source);
-  }
-  params.push(limit);
-
-  return db.query(
-    `SELECT text, message_id, session_id, role, created_at, source, title
-     FROM messages_fts WHERE ${where}
-     LIMIT ?`,
-  ).all(...params) as any[];
+  return cachedSubstringCandidates(db,literal,source,limit);
 }
 
 function mergeSubstringHits(merged: Map<string, RankedHit>, rows: any[], query: string): void {
@@ -475,37 +480,13 @@ function finalizeHits(merged: Map<string, RankedHit>, limit: number): MessageHit
 }
 
 function semanticCandidates(db: Database, queryEmbedding: number[], metadata: EmbeddingMetadata, source: string | undefined, limit: number): SemanticRow[] {
-  const clauses = ["provider_kind = ?", "dimension = ?"];
-  const params: any[] = [metadata.provider_kind, metadata.dimension];
-  if (metadata.provider_model === null) {
-    clauses.push("provider_model IS NULL");
-  } else {
-    clauses.push("provider_model = ?");
-    params.push(metadata.provider_model);
+  const ranked = cachedSemanticCandidates(db,queryEmbedding,{...metadata,provider_model:metadata.provider_model ?? ""},source,limit);
+  const unique=new Map<string,SemanticRow>();
+  const assetRows=assetSemanticCandidates(db,queryEmbedding,metadata,source,limit);
+  for(const row of [...ranked,...assetRows].sort((a,b)=>b.similarity-a.similarity)) {
+    const key=hitKey(row.session_id,row.message_id); if(!unique.has(key)) unique.set(key,row);
   }
-  if (source) {
-    clauses.push("source = ?");
-    params.push(source);
-  }
-  const ranked: SemanticRow[] = [];
-  const query = db.query(`SELECT session_id, message_id, embedding, text, role, created_at, source, title
-     FROM message_embeddings WHERE ${clauses.join(" AND ")}`);
-  // Stream vectors so query memory is bounded by the candidate window, not the archive.
-  for (const row of query.iterate(...params) as Iterable<any>) {
-    const similarity = cosine(queryEmbedding, parseEmbedding(row.embedding));
-    if (similarity <= 0 || (ranked.length >= limit && similarity <= ranked[ranked.length - 1].similarity)) continue;
-    ranked.push({ ...row, similarity });
-    ranked.sort((a, b) => b.similarity - a.similarity);
-    if (ranked.length > limit) ranked.pop();
-  }
-  if (!ranked.length) return [];
-  // FTS metadata is unindexed: one scan returns text only for the top-K identities.
-  const values = ranked.map(() => "(?,?)").join(",");
-  const currentRows = db.query(`SELECT session_id, message_id, text FROM messages_fts
-    WHERE (session_id, message_id) IN (VALUES ${values})`)
-    .all(...ranked.flatMap(row => [row.session_id, row.message_id])) as Array<{ session_id: string; message_id: string; text: string }>;
-  const currentText = new Map(currentRows.map(row => [hitKey(row.session_id, row.message_id), row.text]));
-  return ranked.filter(row => currentText.get(hitKey(row.session_id, row.message_id)) === row.text);
+  return [...unique.values()].slice(0,limit);
 }
 
 function fusedScore(literalRank?: number, semanticRank?: number): number {
@@ -527,35 +508,9 @@ function semanticSnippet(text: string, query: string): string {
   return `${start > 0 ? "…" : ""}${compact.slice(start, start + 160)}${start + 160 < compact.length ? "…" : ""}`;
 }
 
-function parseEmbedding(raw: string): number[] {
-  try {
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return [];
-    const vector = parsed.map(Number);
-    return vector.every(Number.isFinite) ? vector : [];
-  } catch {
-    return [];
-  }
-}
-
-function cosine(a: number[], b: number[]): number {
-  if (a.length === 0 || a.length !== b.length) return 0;
-  const n = a.length;
-  let dot = 0, a2 = 0, b2 = 0;
-  for (let i = 0; i < n; i++) {
-    dot += a[i] * b[i];
-    a2 += a[i] * a[i];
-    b2 += b[i] * b[i];
-  }
-  return a2 && b2 ? dot / (Math.sqrt(a2) * Math.sqrt(b2)) : 0;
-}
-
 function embeddingMetadata(provider: EmbeddingProvider, embedding: number[]): EmbeddingMetadata {
-  return {
-    provider_kind: provider.kind?.trim() || "unknown",
-    provider_model: provider.model?.trim() || null,
-    dimension: embedding.length,
-  };
+  if (provider.dimensions && embedding.length !== provider.dimensions) throw new Error("embedding dimension mismatch");
+  return vectorScope(provider, embedding.length);
 }
 
 function syncEmbedding(provider: EmbeddingProvider, text: string, context: EmbeddingContext): number[] {
@@ -563,7 +518,9 @@ function syncEmbedding(provider: EmbeddingProvider, text: string, context: Embed
   if (result instanceof Promise) {
     throw new Error(`Embedding provider "${provider.kind ?? "unknown"}" is async; use indexSessionWithEmbeddings/searchMessagesWithEmbeddings`);
   }
-  return validateEmbedding(result);
+  const vector = validateEmbedding(result);
+  vectorScope(provider,vector.length);
+  return vector;
 }
 
 type EmbeddingAttempt = { vector: number[] | null; status: SemanticStatus };
@@ -582,6 +539,7 @@ function safeSyncEmbedding(provider: EmbeddingProvider, text: string, context: E
 async function safeAsyncEmbedding(provider: EmbeddingProvider, text: string, context: EmbeddingContext): Promise<EmbeddingAttempt> {
   try {
     const vector = validateEmbedding(await provider.embed(text, context));
+    vectorScope(provider,vector.length);
     embeddingSucceeded(provider);
     return { vector, status: embeddingStatus(provider) };
   } catch {

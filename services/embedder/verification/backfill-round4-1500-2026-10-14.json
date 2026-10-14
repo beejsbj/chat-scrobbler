@@ -1,0 +1,77 @@
+{
+  "source_commit": "677d7e42715390ed07423526403e91f43c27b508",
+  "date": "2026-10-14T00:52:48.773Z",
+  "source_kind": "online read-only SQLite backup of live index",
+  "loadavg_before": 4.36,
+  "resource_caps": {
+    "cpu_percent": 200,
+    "memory_bytes": 2147483648,
+    "swap_bytes": 0,
+    "nice": 19
+  },
+  "ollama_caps": {
+    "cpus": 1,
+    "memory_bytes": 1258291200,
+    "swap_bytes": 0
+  },
+  "chunk_chars": 1500,
+  "max_chunks": 16,
+  "messages": 35718,
+  "legacy_vectors": 31143,
+  "first_query": {
+    "ms": 781.7446770000006,
+    "semantic": "warming"
+  },
+  "first_open_and_initial_query_max_event_loop_delay_ms": 767.9463529999994,
+  "startup_ms": 58397.814933,
+  "startup_max_event_loop_delay_ms": 1290.4219129999983,
+  "measurement_seconds": 90.001386999,
+  "completed_messages": 62,
+  "messages_per_hour": 2479.9617810609957,
+  "search": {
+    "count": 46,
+    "median_ms": 821.0447890000069,
+    "p95_ms": 4678.281472999981,
+    "max_ms": 5099.780771999998,
+    "semantic_counts": {
+      "available": 46
+    }
+  },
+  "running_max_event_loop_delay_ms": 109.91851499999757,
+  "requests": {
+    "total": 119,
+    "documents": 72,
+    "max_document_chars": 1499,
+    "failed": 0
+  },
+  "extra_chunk_vectors": 8,
+  "queue_states": [
+    {
+      "state": "complete",
+      "n": 31205
+    },
+    {
+      "state": "pending",
+      "n": 4513
+    }
+  ],
+  "rss_mib": 366.61328125,
+  "maintenance": {
+    "state": "complete",
+    "migration": {
+      "scanned": 31143,
+      "converted": 31143,
+      "invalid": 0,
+      "cursor": 54594,
+      "lease": {
+        "state": "released",
+        "expires_at": 1791939267987,
+        "heartbeat_at": 1791939207987,
+        "recovered": false,
+        "recovered_at": null,
+        "recoveries": 0
+      }
+    }
+  },
+  "temporary_copy_deleted": true
+}

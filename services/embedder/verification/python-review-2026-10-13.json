@@ -1,0 +1,13 @@
+{
+  "date": "2026-10-13",
+  "environment": "local bjslab, existing Python 3.12, Docker Compose v5.0.2 available",
+  "source_commit": "c2a96cdfc1b854011774ee9279a4480294aaccaa",
+  "command": "/mnt/server-ssd/spikes/bjs-544/venv-a/bin/python -B -m unittest discover -s services/embedder/tests -v",
+  "passed": 42,
+  "failed": 0,
+  "skipped": 0,
+  "elapsed_seconds": 6.804,
+  "deployment_plans_rendered_without_starting_services": true,
+  "native_model_loaded_by_unittest": false,
+  "cloud_policy": "Rendered deployment tests skip without Docker; remaining tests do not need the spike runtime or model."
+}

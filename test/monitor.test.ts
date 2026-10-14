@@ -3,7 +3,7 @@ import { recordParseOutcome } from "../src/monitor/parse-state";
 import { monitorReport } from "../src/monitor/report";
 import { incrementMonitorCounter, recordCaptureReceipt, readMonitorState } from "../src/monitor/state";
 import { expect, spyOn, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { handleIngestRequest } from "../packages/ingest/src/server";
 import { getParser } from "../src/parsers/registry";
@@ -13,6 +13,9 @@ import { readSession, writeSession } from "../src/store/sessions";
 import { storeRawCapture } from "../src/store/raw";
 import { HashEmbeddingProvider } from "../src/indexer/embedding-providers";
 import { indexSession, openIndex } from "../src/indexer/sqlite";
+import { encodeVector, textVectorHash } from "../src/indexer/vector-store";
+import type { BackfillReport } from "../src/indexer/embed-backfill";
+import type { BackfillSchedulerStatus } from "../src/indexer/backfill-scheduler";
 import chatgpt from "./fixtures/chatgpt-api-sample.json";
 import claude from "./fixtures/claude-api-sample.json";
 import gemini from "./fixtures/gemini-api-sample.json";
@@ -106,16 +109,73 @@ test("asset counters and capture receipt freshness survive a fresh CLI process",
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
-test("embedding failures remain counted after changing provider instances without retaining error details", async () => {
+test("capture does not embed inline and legacy embedding counters persist across provider instances", async () => {
   const { root, opts } = setup();
   try {
-    const broken = { kind: "hash", model: "broken-model", async embed() { throw new Error("https://secret?token=chat-secret"); } };
+    let calls = 0;
+    const broken = { kind: "hash", model: "broken-model", async embed() { calls++; throw new Error("https://secret?token=chat-secret"); } };
     const response = await handleIngestRequest(new Request("http://local/captures", { method: "POST", body: JSON.stringify({ ...claude, fetched_at: new Date().toISOString() }) }), { ...opts, ingestToken: null, embeddingProvider: broken });
     expect(response.status).toBe(200);
+    expect(calls).toBe(0);
+    expect(readMonitorState(`${opts.indexPath}.monitor.sqlite`).counters.embedding_ingest_failures ?? 0).toBe(0);
+    incrementMonitorCounter(`${opts.indexPath}.monitor.sqlite`, "embedding_ingest_failures");
     const report = await (await handleIngestRequest(request(), { ...opts, embeddingProvider: new HashEmbeddingProvider() })).json();
     expect(report.counters.embedding_ingest_failures).toBe(1);
-    expect(report.counters.embedding_ingest_failures).toBe(1);
     expect(JSON.stringify(report)).not.toContain("secret");
+    expect((await monitorReport({ ...opts, embeddingProvider: new HashEmbeddingProvider() })).counters.embedding_ingest_failures).toBe(1);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("readonly coverage counts each current binary or legacy message once within provider, model and dimension", async () => {
+  const { root, opts } = setup();
+  try {
+    const db = openIndex(opts.indexPath);
+    db.run("UPDATE messages_fts SET created_at=?", [new Date().toISOString()]);
+    const rows = db.query("SELECT session_id,message_id,text,title FROM messages_fts ORDER BY rowid").all() as Array<{ session_id: string; message_id: string; text: string; title: string | null }>;
+    const legacy = (i: number, embedding = JSON.stringify(opts.embeddingProvider.embed(rows[i].text)), title = rows[i].title) => db.run(`INSERT INTO message_embeddings
+      (session_id,message_id,embedding,text,title,provider_kind,provider_model,dimension) VALUES (?,?,?,?,?,'hash','hash-v1',64)`,
+      [rows[i].session_id, rows[i].message_id, embedding, rows[i].text, title]);
+    const change = (i: number, sql: string, params: (string | number | Uint8Array | null)[] = []) => db.run(
+      `${sql} WHERE session_id=? AND message_id=?`, [...params, rows[i].session_id, rows[i].message_id]);
+    // One message has both formats and historical scopes; all count as one.
+    legacy(0);
+    db.run(`INSERT INTO message_vectors (session_id,message_id,provider_kind,provider_model,dimension,embedding,text,text_hash,title)
+      VALUES (?,?,'hash','old-model',64,?,'',?,?)`, [rows[0].session_id, rows[0].message_id, encodeVector(opts.embeddingProvider.embed(rows[0].text)), textVectorHash(rows[0].text), rows[0].title]);
+    legacy(1);
+    change(1, "DELETE FROM message_vectors");
+    // Older binary rows kept text before hashes were stored.
+    change(2, "UPDATE message_vectors SET text_hash=NULL,text=?", [rows[2].text]);
+    change(3, "UPDATE message_vectors SET text_hash=?,text=?", [textVectorHash("stale"), rows[3].text]);
+    change(4, "UPDATE message_vectors SET title='stale-title'");
+    change(5, "UPDATE message_vectors SET provider_kind='ollama'");
+    change(6, "UPDATE message_vectors SET dimension=1,embedding=?", [encodeVector([1])]);
+    change(7, "UPDATE message_vectors SET embedding=?", [new Uint8Array([1])]);
+    legacy(7, "[null]");
+    change(8, "DELETE FROM message_vectors");
+    legacy(8, undefined, "stale-title");
+    db.close();
+    const before = readFileSync(opts.indexPath);
+    const report = await monitorReport(opts);
+    expect(report.embeddings.coverage).toMatchObject({ with_vectors: 3, without_vectors: 6, recent_with_vectors: 3, recent_without_vectors: 6, recent_coverage: 1 / 3 });
+    expect(report.failures).toContain("FAILED embeddings recent_with_vectors=3 recent_without_vectors=6 threshold=0.95");
+    expect(readFileSync(opts.indexPath)).toEqual(before);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("monitor keeps legacy JSON coverage without creating binary tables or migrating vectors", async () => {
+  const { root, opts } = setup();
+  try {
+    const db = openIndex(opts.indexPath);
+    for (const row of db.query("SELECT session_id,message_id,text,title FROM messages_fts").all() as Array<{ session_id: string; message_id: string; text: string; title: string | null }>) {
+      db.run(`INSERT INTO message_embeddings (session_id,message_id,embedding,text,title,provider_kind,provider_model,dimension)
+        VALUES (?,?,?,?,?,'hash','hash-v1',64)`, [row.session_id, row.message_id, JSON.stringify(opts.embeddingProvider.embed(row.text)), row.text, row.title]);
+    }
+    db.run("DROP TABLE message_vectors");
+    db.close();
+    const before = readFileSync(opts.indexPath);
+    expect(cli(opts).stdout.toString()).toBe("");
+    expect((await monitorReport(opts)).embeddings.coverage).toMatchObject({ with_vectors: 9, without_vectors: 0 });
+    expect(readFileSync(opts.indexPath)).toEqual(before);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
@@ -196,6 +256,39 @@ test("HTTP snapshots cache small state reads for 60 seconds", async () => {
     const expired = await (await handleIngestRequest(request(), opts)).json();
     expect(expired.assets.recent_upload_failures).toBe(1);
   } finally { Date.now = originalNow; rmSync(root, { recursive: true, force: true }); }
+});
+
+test("authenticated live reports expose fresh backfill progress and last run during the state cache window without inference", async () => {
+  const { root, opts } = setup();
+  let calls = 0;
+  const provider = { kind: "hash", model: "hash-v1", embed() { calls++; throw new Error("must not embed"); } };
+  const progress: BackfillReport = {
+    event: "progress", embedded: 2, converted: 0, skipped: 0, failed: 0, stale: 0, attempted: 2,
+    deferred: 0, retry_scheduled: 0, truncated: 0, provider_outage: false, coverage_at_attempt: 2,
+    text: { total: 9, embedded: 2 }, assets: null, requests: 2, estimated_requests: 9, remaining_requests: 7,
+    estimated_compute_chunks: null, remaining_compute_chunks: null, elapsed_seconds: 4, mean_request_seconds: 2,
+    eta_seconds: 14, eta_basis: "observed",
+  };
+  const status: BackfillSchedulerStatus = {
+    enabled: true, running: true, state: "running", interval_ms: 600_000, batch_size: 5,
+    next_run_at: null, consecutive_failures: 0, progress, lease: null, last_run: null,
+    maintenance: { state: "idle", migration: null },
+  };
+  const liveOpts = { ...opts, embeddingProvider: provider, backfillStatus: () => structuredClone(status) };
+  try {
+    const response = await handleIngestRequest(request(), liveOpts);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ scope: "live", backfill: { running: true, progress: { embedded: 2 }, last_run: null } });
+    status.running = false;
+    status.state = "scheduled";
+    progress.embedded = 3;
+    progress.event = "complete";
+    status.last_run = { started_at: "2026-10-13T12:00:00Z", finished_at: "2026-10-13T12:00:06Z", outcome: "complete", report: progress, lease: null };
+    const next = await (await handleIngestRequest(request(), liveOpts)).json();
+    expect(next).toMatchObject({ backfill: { running: false, progress: { embedded: 3 }, last_run: { outcome: "complete", report: { embedded: 3 } } } });
+    expect(calls).toBe(0);
+    expect(JSON.stringify(next)).not.toContain("report-secret");
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
 test("offline monitor reports a missing index consistently without creating a replacement", () => {

@@ -14,6 +14,7 @@ import { monitorSettings } from "./config";
 import { rawObservations } from "./raw";
 import { canonicalObservations } from "./canonical";
 import { embeddingCoverage } from "./coverage";
+import { skippedEmbeddingFailure } from "./skipped";
 
 export function unknownTypeId(source: string, type: string): string {
   return createHash("sha256").update(JSON.stringify([source, type])).digest("hex").slice(0, 16);
@@ -70,6 +71,8 @@ export async function monitorReport(opts: IngestServerOptions, ack = false) {
   if (missingAssets) fail("assets", `missing_recent_blocks=${missingAssets}`);
   let coverage = null;
   try {
+    const skipped = skippedEmbeddingFailure(opts.indexPath, opts.embeddingProvider);
+    if (skipped) failures.push(skipped);
     if (opts.indexPath && indexExists) coverage = embeddingCoverage(opts.indexPath, opts.embeddingProvider ?? null, since, opts.embeddingProvider?.dimensions ?? ("embedding_dimension" in health ? health.embedding_dimension : undefined));
     if (coverage && coverage.recent_coverage < settings.monitorCoverageThreshold) fail("embeddings", `recent_with_vectors=${coverage.recent_with_vectors} recent_without_vectors=${coverage.recent_without_vectors} threshold=${settings.monitorCoverageThreshold}`);
   } catch { fail("index", "unreadable_or_incompatible"); }

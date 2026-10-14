@@ -11,6 +11,10 @@ import { assetFailureCount } from "./asset-failures";
 import type { IngestServerOptions } from "./server";
 
 interface StoreHealth { writable: boolean; reason?: string; }
+/** Progress changes between cached probes, so read it on every deep-health request. */
+export function backfillHealth(opts: IngestServerOptions) {
+  return opts.backfillStatus?.() ?? {enabled:false,running:false,state:"disabled",reason:"scheduler_not_configured"};
+}
 function writableDirectory(path: string | undefined): StoreHealth {
   if (!path) return { writable: false, reason: "store_not_configured" };
   const probe = join(path, `.health-${randomUUID()}`);

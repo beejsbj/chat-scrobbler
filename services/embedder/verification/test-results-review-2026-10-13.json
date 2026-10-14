@@ -1,0 +1,23 @@
+{
+  "date": "2026-10-13",
+  "source_commit": "93573e0050d4fb6489898851d62ac9ced8847795",
+  "environment": "disposable Daytona general sandbox, pinned Bun 1.3.14",
+  "job": "dr-20261013-215557-fe3bc9f3",
+  "command": "sh scripts/verify-bjs-548.sh",
+  "bun_tests": {
+    "passed": 445,
+    "failed": 0,
+    "files": 44
+  },
+  "typescript_no_emit_exit_code": 0,
+  "python": {
+    "ran": 42,
+    "passed": 40,
+    "skipped": 2,
+    "failed": 0,
+    "skipped_reason": "Docker Compose renderer unavailable in cloud; both deployment tests passed locally with all 42 Python tests"
+  },
+  "local_python_receipt": "python-review-2026-10-13.json",
+  "sandbox_deletion_verified": true,
+  "native_model_loaded_in_suite": false
+}

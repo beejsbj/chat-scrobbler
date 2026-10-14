@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { deleteIndexedSession, grepMessages, openIndex, indexSession, searchMessages, searchMessagesWithEmbeddings, listSessions, type EmbeddingProvider } from "../src/indexer/sqlite";
 import type { Session } from "../src/schema/types";
+import { encodeVector } from "../src/indexer/vector-store";
 
 function mk(id: string, source: "chatgpt" | "claude", title: string, text: string): Session {
   return {
@@ -166,7 +167,7 @@ test("new embeddings record provider metadata and vector dimension", () => {
   indexSession(db, mk("a", "chatgpt", "T", "provider metadata"), { embeddingProvider: provider });
 
   const row = db.query(
-    `SELECT provider_kind, provider_model, dimension FROM message_embeddings WHERE session_id = ?`,
+    `SELECT provider_kind, provider_model, dimension FROM message_vectors WHERE session_id = ?`,
   ).get("chatgpt:a") as { provider_kind: string; provider_model: string; dimension: number };
 
   expect(row).toEqual({
@@ -217,8 +218,8 @@ test("semantic search ignores corrupt rows whose stored vector length mismatches
   const db = openIndex(":memory:");
   indexSession(db, mk("a", "chatgpt", "T", "short vector stale text"), { embeddingProvider: provider });
   db.run(
-    `UPDATE message_embeddings SET embedding = ?, dimension = ? WHERE session_id = ?`,
-    [JSON.stringify([1, 0]), 3, "chatgpt:a"],
+    `UPDATE message_vectors SET embedding = ?, dimension = ? WHERE session_id = ?`,
+    [encodeVector([1, 0]), 3, "chatgpt:a"],
   );
 
   expect(searchMessages(db, "not-present", { embeddingProvider: provider })).toEqual([]);
@@ -316,7 +317,7 @@ test("deleteIndexedSession removes session, FTS, and embedding rows for a captur
   expect(listSessions(db).map((s) => s.id)).toEqual(["chatgpt:b"]);
   expect(searchMessages(db, "secret")).toHaveLength(1);
   const embeddingRows = db.query(
-    "SELECT COUNT(*) AS count FROM message_embeddings WHERE session_id = ?",
+    "SELECT COUNT(*) AS count FROM message_vectors WHERE session_id = ?",
   ).get("chatgpt:a") as { count: number };
   expect(embeddingRows.count).toBe(0);
 });
@@ -329,12 +330,12 @@ test("failed sync and async re-embedding preserve previous vectors and update li
     try {
       const s = mk("a", "chatgpt", "Before", "old text");
       indexSession(db, s, { embeddingProvider: provider });
-      const before = db.query("SELECT * FROM message_embeddings").all();
+      const before = db.query("SELECT * FROM message_vectors").all();
       failing = true;
       const changed = mk("a", "chatgpt", "After", "current text");
       if (asyncMode) await (await import("../src/indexer/sqlite")).indexSessionWithEmbeddings(db, changed, { embeddingProvider: provider });
       else indexSession(db, changed, { embeddingProvider: provider });
-      expect(db.query("SELECT * FROM message_embeddings").all()).toEqual(before);
+      expect(db.query("SELECT * FROM message_vectors").all()).toEqual(before);
       expect(searchMessages(db, "current")).toHaveLength(1);
       failing = false;
       expect(searchMessages(db, "unmatched-query", { embeddingProvider: provider })).toEqual([]);
@@ -370,7 +371,7 @@ test("concurrent queries keep their own semantic status when another query recov
   } finally { db.close(); }
 });
 
-test("semantic search validates only its ranked candidate window against current text", () => {
+test("semantic search filters stale vectors before ranking live candidates", () => {
   const db = openIndex(":memory:");
   const provider: EmbeddingProvider = { kind: "rank-window", embed: () => [1, 0] };
   try {
@@ -379,9 +380,9 @@ test("semantic search validates only its ranked candidate window against current
       indexSession(db, mk(`stale-${i}`, "chatgpt", "After", "current content"));
     }
     indexSession(db, mk("outside-window", "chatgpt", "Live", "live content"), { embeddingProvider: provider });
-    expect(searchMessages(db, "unmatched", { embeddingProvider: provider, limit: 1 })).toEqual([]);
-    indexSession(db, mk("stale-0", "chatgpt", "After", "old content"));
-    expect(searchMessages(db, "unmatched", { embeddingProvider: provider, limit: 1 })[0]?.message_id).toBe("stale-0-m1");
+    expect(searchMessages(db, "unmatched", { embeddingProvider: provider, limit: 1 })[0]?.message_id).toBe("outside-window-m1");
+    indexSession(db, mk("stale-0", "chatgpt", "Before", "old content"));
+    expect(searchMessages(db, "unmatched", { embeddingProvider: provider, limit: 2 }).map(hit => hit.message_id)).toContain("stale-0-m1");
   } finally { db.close(); }
 });
 
@@ -401,7 +402,7 @@ test("re-indexing an unchanged session reuses stored vectors instead of re-embed
   const other = { ...provider, model: "m2" };
   await indexSessionWithEmbeddings(db, session("2026-01-01T01:30:00Z", ["a", "b changed", "c"]), { embeddingProvider: other });
   expect(calls).toBe(7);
-  expect((db.query("SELECT COUNT(*) AS n FROM message_embeddings").get() as { n: number }).n).toBe(3);
+  expect((db.query("SELECT COUNT(*) AS n FROM message_vectors").get() as { n: number }).n).toBe(6);
 });
 
 test("message_count includes renderable active messages but excludes opaque-only and empty messages", () => {
@@ -420,4 +421,10 @@ test("message_count includes renderable active messages but excludes opaque-only
     expect(listSessions(db)[0].message_count).toBe(2);
     expect(searchMessages(db, "inactive")).toHaveLength(1);
   } finally { db.close(); }
+});
+
+test("wrong query dimensions preserve literal fallback and semantic status", async () => {
+  const {searchMessagesReport}=await import("../src/indexer/sqlite");const db=openIndex(":memory:");
+  try {indexSession(db,mk("a","chatgpt","T","literal words"));expect(await searchMessagesReport(db,"literal",{embeddingProvider:{kind:"test",model:"m",dimensions:2,embed:()=>[1,0,0]}})).toMatchObject({semantic:"unavailable",hits:[{session_id:"chatgpt:a",provenance:"literal"}]});}
+  finally {db.close();}
 });

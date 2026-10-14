@@ -1,0 +1,187 @@
+{
+  "source_commit": "8ca52d43ed2d69e733207be78fb83a95a73968c0",
+  "date": "2026-10-14T01:07:50.569Z",
+  "source_kind": "online read-only SQLite backup of live index",
+  "loadavg_before": 3.76,
+  "resource_caps": {
+    "cpu_percent": 200,
+    "memory_bytes": 2147483648,
+    "swap_bytes": 0,
+    "nice": 19
+  },
+  "ollama_caps": {
+    "cpus": 1,
+    "memory_bytes": 1258291200,
+    "swap_bytes": 0
+  },
+  "chunk_chars": 750,
+  "chunk_bytes": 750,
+  "max_chunks": 16,
+  "messages": 35718,
+  "legacy_vectors": 31143,
+  "first_query": {
+    "ms": 875.1477640000012,
+    "semantic": "warming"
+  },
+  "first_open_and_initial_query_max_event_loop_delay_ms": 801.7889909999994,
+  "first_semantic_ready_ms": 56829.920397999995,
+  "search_warmup_max_event_loop_delay_ms": 140.1327659999988,
+  "startup_ms": 56832.05278399999,
+  "startup_max_event_loop_delay_ms": 140.1327659999988,
+  "measurement_seconds": 90.644012741,
+  "completed_messages": 62,
+  "messages_per_hour": 2462.37995484331,
+  "search": {
+    "count": 61,
+    "median_ms": 791.023325999995,
+    "p95_ms": 2213.5392329999886,
+    "max_ms": 3675.7112879999913,
+    "semantic_counts": {
+      "available": 61
+    }
+  },
+  "running_max_event_loop_delay_ms": 111.98772499999905,
+  "requests": {
+    "total": 148,
+    "documents": 86,
+    "max_document_chars": 750,
+    "max_document_bytes": 750,
+    "failed": 0
+  },
+  "event_loop_stalls": [
+    {
+      "elapsed_ms": 811.7433299999993,
+      "delay_ms": 801.7889909999994,
+      "maintenance": "running",
+      "converted": 0
+    },
+    {
+      "elapsed_ms": 14077.611894,
+      "delay_ms": 103.15111099999922,
+      "maintenance": "running",
+      "converted": 10912
+    },
+    {
+      "elapsed_ms": 14203.312168999999,
+      "delay_ms": 115.70027499999924,
+      "maintenance": "running",
+      "converted": 10944
+    },
+    {
+      "elapsed_ms": 14504.321914999999,
+      "delay_ms": 116.85421700000006,
+      "maintenance": "running",
+      "converted": 11072
+    },
+    {
+      "elapsed_ms": 17423.320728,
+      "delay_ms": 101.7481140000018,
+      "maintenance": "running",
+      "converted": 13696
+    },
+    {
+      "elapsed_ms": 17534.220093999997,
+      "delay_ms": 100.89936599999783,
+      "maintenance": "running",
+      "converted": 13728
+    },
+    {
+      "elapsed_ms": 18250.824176000002,
+      "delay_ms": 110.53183200000058,
+      "maintenance": "running",
+      "converted": 13952
+    },
+    {
+      "elapsed_ms": 23841.063628999997,
+      "delay_ms": 140.1327659999988,
+      "maintenance": "running",
+      "converted": 18784
+    },
+    {
+      "elapsed_ms": 28893.973976999994,
+      "delay_ms": 104.6887299999944,
+      "maintenance": "running",
+      "converted": 24128
+    },
+    {
+      "elapsed_ms": 29248.428873999997,
+      "delay_ms": 101.63990100000228,
+      "maintenance": "running",
+      "converted": 24288
+    },
+    {
+      "elapsed_ms": 51222.153735,
+      "delay_ms": 107.5380970000042,
+      "maintenance": "complete",
+      "converted": 31143
+    },
+    {
+      "elapsed_ms": 56827.295771,
+      "delay_ms": 103.9514130000025,
+      "maintenance": "complete",
+      "converted": 31143
+    },
+    {
+      "elapsed_ms": 58729.699839,
+      "delay_ms": 104.409381999998,
+      "maintenance": "complete",
+      "converted": 31143
+    },
+    {
+      "elapsed_ms": 67949.66775200001,
+      "delay_ms": 111.98772499999905,
+      "maintenance": "complete",
+      "converted": 31143
+    },
+    {
+      "elapsed_ms": 72604.92948600001,
+      "delay_ms": 101.93611300000339,
+      "maintenance": "complete",
+      "converted": 31143
+    }
+  ],
+  "request_profiles": {
+    "query": {
+      "count": 62,
+      "median_ms": 102.5252720000135,
+      "p95_ms": 194.52792500000214,
+      "max_ms": 381.7747550000058
+    },
+    "document": {
+      "count": 86,
+      "median_ms": 598.9654169999994,
+      "p95_ms": 2598.152866999997,
+      "max_ms": 3666.0875139999844
+    }
+  },
+  "extra_chunk_vectors": 21,
+  "queue_states": [
+    {
+      "state": "complete",
+      "n": 31205
+    },
+    {
+      "state": "pending",
+      "n": 4513
+    }
+  ],
+  "rss_mib": 370.44921875,
+  "maintenance": {
+    "state": "complete",
+    "migration": {
+      "scanned": 31143,
+      "converted": 31143,
+      "invalid": 0,
+      "cursor": 54594,
+      "lease": {
+        "state": "released",
+        "expires_at": 1791940170074,
+        "heartbeat_at": 1791940110074,
+        "recovered": false,
+        "recovered_at": null,
+        "recoveries": 0
+      }
+    }
+  },
+  "temporary_copy_deleted": true
+}

@@ -103,6 +103,48 @@ export CHAT_SCROBBLER_EMBED_MODEL=mxbai-embed-large
 chat-scrobbler unify
 ```
 
+`serve` fills pending embeddings in the background when a provider is configured.
+The first batch waits 10 minutes for startup and search cache warmup. Each run
+attempts at most 25 items, scans at most 1,000 rows, and yields every 100 scanned
+rows and before inference requests. An unfinished sweep with fewer than 25
+attempts continues after one second; a filled batch or completed sweep waits
+the configured interval. Provider failures stop the batch and use jittered
+exponential backoff, capped at one hour or the configured interval if longer.
+
+| Environment variable | Default | JSON config key |
+| --- | --- | --- |
+| `CHAT_SCROBBLER_EMBED_BACKFILL_ENABLED` | `true` | `embeddingBackfillEnabled` |
+| `CHAT_SCROBBLER_EMBED_BACKFILL_INTERVAL_MS` | `600000` | `embeddingBackfillIntervalMs` |
+| `CHAT_SCROBBLER_EMBED_BACKFILL_BATCH_SIZE` | `25` | `embeddingBackfillBatchSize` |
+
+The bjslab Compose service forwards these controls from Coolify. Set enabled to
+`false` to disable scheduling. With no configured provider, scheduling is disabled.
+Authenticated `GET /health/deep` includes live `backfill` progress, scan cursors,
+the last run, and the next run time. Its counts describe the batch; background
+runs avoid full coverage scans and decoding covered vectors. Manual
+`embed-backfill --model <id>` validates vectors and reports full coverage;
+`embed-backfill --help` lists its controls.
+
+The scheduler, manual backfill, and `--migrate-only` share a SQLite heartbeat
+lease in the index's `locks` table. The owner renews every 15 seconds with a
+60-second expiry. After a crash, OOM kill, reboot or container replacement, any
+process can take over the expired token. A busy scheduler retries every 15 seconds
+(or the configured interval if shorter). Every vector/migration commit checks
+ownership inside its write transaction; a displaced or expired holder stops.
+No PID namespace matching or manual lock recovery is needed. Obsolete directory
+locks from earlier versions are ignored.
+
+Serve handles SIGTERM and SIGINT by aborting background inference, releasing its
+lease, and closing both listeners. Deep health reports stale/recovered/lost lease
+state, heartbeat/expiry timestamps, recovery count and the last run's lease.
+Manual CLI progress includes lease metadata and reports acquisition or loss.
+
+Serve shares one provider object across MCP, health, and backfill. Ollama and
+Gemini finish an active document call, then serve waiting queries before another
+document. Gemma uses its native priority queue per HTTP request, allowing queries
+to enter between document chunks. A manual CLI in a separate process has its own
+provider queue.
+
 `get` can narrow a conversation down for an agent: `--role` keeps only the turns
 you want (`user`, `assistant`, `system`, `tool`, comma-separated), and
 `--text-only` strips reasoning and tool blocks to leave just the prose. They

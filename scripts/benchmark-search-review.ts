@@ -1,0 +1,61 @@
+// Synthetic copy-sized dataset. No archive content is read.
+import { openIndex, searchMessages } from "../src/indexer/sqlite";
+import { decodeVector, encodeVector } from "../src/indexer/vector-store";
+import { cosine } from "../src/indexer/vector-math";
+import { mkdtempSync,rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+const httpMode=process.argv.includes("--http");
+const root=httpMode ? mkdtempSync(join(tmpdir(),"bjs548-search-")) : null;
+const indexPath=root ? join(root,"synthetic.db") : ":memory:";
+const db = openIndex(indexPath);
+const dimension = 768, messages = 35718, vectors = 31143;
+const vector = Array.from({length: dimension}, (_, i) => Math.sin(i + 1));
+const blob = encodeVector(vector), json = JSON.stringify(vector);
+const provider = {kind:"benchmark",model:"synthetic",dimensions:dimension,embed:()=>vector};
+const text = "Synthetic archive content about a remembered project and its decisions. ".repeat(30);
+db.transaction(() => {
+  db.run("INSERT INTO sessions VALUES ('chatgpt:bench','chatgpt','bench','Benchmark','2026-01-01','2026-01-02',?)",[messages]);
+  const fts = db.prepare("INSERT INTO messages_fts(text,message_id,session_id,role,source,title) VALUES (?,?,'chatgpt:bench','user','chatgpt','Benchmark')");
+  const legacy = db.prepare("INSERT INTO message_embeddings(session_id,message_id,embedding,text,title,provider_kind,provider_model,dimension) VALUES ('chatgpt:bench',?,?,?,'Benchmark','benchmark','synthetic',?)");
+  const binary = db.prepare("INSERT INTO message_vectors(session_id,message_id,embedding,text,title,provider_kind,provider_model,dimension) VALUES ('chatgpt:bench',?,?,?,'Benchmark','benchmark','synthetic',?)");
+  for(let i=0;i<messages;i++) {
+    const body=`${i} ${text}`; const id=`m${i}`;
+    const result=fts.run(body,id);
+    db.run("INSERT INTO message_lookup VALUES ('chatgpt:bench',?,?)",[id,result.lastInsertRowid]);
+    if(i<vectors){binary.run(id,blob,body,dimension);legacy.run(id,json,body,dimension);}
+  }
+})();
+const time=(run:()=>unknown)=>{const start=performance.now();run();return performance.now()-start;};
+const stage:Record<string,number>={};
+stage.substring_sql_ms=time(()=>db.query("SELECT text FROM messages_fts WHERE instr(lower(text),'unmatched query')>0 LIMIT 20").all());
+stage.binary_read_ms=time(()=>{for(const row of db.query("SELECT embedding FROM message_vectors").iterate()) void row;});
+stage.binary_decode_ms=time(()=>{for(const row of db.query("SELECT embedding FROM message_vectors").iterate() as Iterable<{embedding:Uint8Array}>) decodeVector(row.embedding,dimension);});
+stage.validated_read_ms=time(()=>{for(const row of db.query(`SELECT v.embedding,f.text FROM message_vectors v JOIN message_lookup k ON k.session_id=v.session_id AND k.message_id=v.message_id JOIN messages_fts f ON f.rowid=k.fts_rowid WHERE v.text=f.text`).iterate()) void row;});
+const decoded=decodeVector(blob,dimension);
+stage.cosine_scan_ms=time(()=>{let sum=0;for(let i=0;i<vectors;i++)sum+=cosine(vector,decoded);return sum;});
+stage.top_k_sort_ms=time(()=>{const ranked:number[]=[];for(let i=0;i<vectors;i++){const score=Math.sin(i*.17);if(score<=0 || ranked.length>=60 && score<=ranked[59])continue;ranked.push(score);ranked.sort((a,b)=>b-a);if(ranked.length>60)ranked.pop();}});
+let cold:number,warm:number[];
+if(httpMode) {
+  const {startHttpServer}=await import("../src/mcp/http");
+  const {Client}=await import("@modelcontextprotocol/sdk/client");
+  const {StreamableHTTPClientTransport}=await import("@modelcontextprotocol/sdk/client/streamableHttp.js");
+  const server=await startHttpServer({port:0,indexPath,canonicalDir:root!,embeddingProvider:provider});
+  const client=new Client({name:"synthetic-benchmark",version:"1.0.0"});
+  try {
+    await client.connect(new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${server.port}/mcp`)));
+    const request=async()=>{
+      const start=performance.now();
+      const result=await client.callTool({name:"search",arguments:{query:"unmatched query"}});
+      if((result.structuredContent as {hits:unknown[]})?.hits?.length!==20) throw new Error("HTTP search lost expected hits");
+      return performance.now()-start;
+    };
+    cold=await request();warm=[];for(let i=0;i<5;i++)warm.push(await request());warm.sort((a,b)=>a-b);
+  } finally {await client.close();await server.stop(true);}
+} else {
+  cold=time(()=>searchMessages(db,"unmatched query",{embeddingProvider:provider}));
+  warm=Array.from({length:5},()=>time(()=>searchMessages(db,"unmatched query",{embeddingProvider:provider}))).sort((a,b)=>a-b);
+}
+console.log(JSON.stringify({mode:httpMode ? "http_mcp" : "direct",messages,vectors,dimension,text_bytes:text.length*messages,stages:stage,cold_ms:cold,warm_median_ms:warm[2],warm_max_ms:warm[4],rss_mib:process.memoryUsage().rss/1024**2}));
+db.close();if(root)rmSync(root,{recursive:true,force:true});
+if(process.argv.includes("--assert") && warm[2]>=300) throw new Error("copy-sized warm search exceeds 300ms");

@@ -1,0 +1,453 @@
+{
+  "date": "2026-10-13",
+  "status": "complete_across_guarded_continuations",
+  "runtime": "existing spike Python 3.12 / litert-lm 0.18.0, CPU only",
+  "model": "litert-community/embeddinggemma-2-740m-litert-lm",
+  "revision": "24d962e906c7d332c6428e71c9676855024569e2",
+  "model_sha256": "e7a8a2204b91e0f96e92960e84a09a89212e1633dcb7575a9bf3378b4df77f4c",
+  "cached_runtime_model_and_compilation_reused": true,
+  "model_downloads": 0,
+  "completed_native_calls_per_case": 1,
+  "production_data_read": false,
+  "reference_npz": [
+    "vec_a_a_text.npz",
+    "vec_a_a_media.npz"
+  ],
+  "completed_cases": {
+    "text_query": {
+      "stage": "text_query",
+      "rss_kib": 364584,
+      "peak_rss_kib": 363696,
+      "cgroup_bytes": 220311552,
+      "cgroup_peak_bytes": 220311552,
+      "loaded": true,
+      "load": [
+        5.90673828125,
+        6.65478515625,
+        7.5234375
+      ],
+      "elapsed_seconds": 1.0385916500817984,
+      "dimensions": 768,
+      "finite": true,
+      "norm": 1.0,
+      "cosine_to_spike": 1.0,
+      "max_abs_delta_to_spike": 0.0
+    },
+    "image": {
+      "stage": "image",
+      "rss_kib": 877664,
+      "peak_rss_kib": 876592,
+      "cgroup_bytes": 624644096,
+      "cgroup_peak_bytes": 624660480,
+      "loaded": true,
+      "load": [
+        5.91455078125,
+        6.6328125,
+        7.5068359375
+      ],
+      "elapsed_seconds": 10.734381126007065,
+      "dimensions": 768,
+      "finite": true,
+      "norm": 0.9999999403953552,
+      "cosine_to_spike": 1.0000001192092896,
+      "max_abs_delta_to_spike": 2.9802322387695312e-08
+    },
+    "audio": {
+      "stage": "audio",
+      "rss_kib": 1182532,
+      "peak_rss_kib": 1181696,
+      "cgroup_bytes": 938536960,
+      "cgroup_peak_bytes": 940683264,
+      "loaded": true,
+      "load": [
+        6.26025390625,
+        6.68212890625,
+        7.509765625
+      ],
+      "elapsed_seconds": 15.017243037931621,
+      "dimensions": 768,
+      "finite": true,
+      "norm": 1.0,
+      "cosine_to_spike": 1.0,
+      "max_abs_delta_to_spike": 1.1920928955078125e-07
+    },
+    "video4s": {
+      "stage": "video4s",
+      "rss_kib": 1019268,
+      "peak_rss_kib": 1018184,
+      "cgroup_bytes": 660385792,
+      "cgroup_peak_bytes": 660385792,
+      "loaded": true,
+      "load": [
+        6.88037109375,
+        6.66064453125,
+        7.30810546875
+      ],
+      "elapsed_seconds": 41.906264909077436,
+      "dimensions": 768,
+      "finite": true,
+      "norm": 0.9999998211860657,
+      "cosine_to_spike": 1.0000001192092896,
+      "max_abs_delta_to_spike": 0.0
+    },
+    "video8s": {
+      "stage": "video8s",
+      "rss_kib": 1479648,
+      "peak_rss_kib": 1486800,
+      "cgroup_bytes": 1124962304,
+      "cgroup_peak_bytes": 1134075904,
+      "loaded": true,
+      "load": [
+        7.09033203125,
+        6.45654296875,
+        7.0224609375
+      ],
+      "elapsed_seconds": 91.82655812497251,
+      "dimensions": 768,
+      "finite": true,
+      "norm": 0.9999999403953552,
+      "frames": 8,
+      "near_2g_limit": false
+    }
+  },
+  "runs": [
+    {
+      "source_log": "native-review-2026-10-13.log",
+      "exit_status": 75,
+      "samples": [
+        {
+          "stage": "caps_verified",
+          "limits": {
+            "memory.max": "2147483648",
+            "memory.swap.max": "0",
+            "cpu.max": "200000 100000",
+            "memory.current": "9433088"
+          }
+        },
+        {
+          "stage": "baseline_before_native",
+          "rss_kib": 16296,
+          "peak_rss_kib": 16128,
+          "cgroup_bytes": 9453568,
+          "cgroup_peak_bytes": 9695232,
+          "loaded": false,
+          "load": [
+            5.90673828125,
+            6.65478515625,
+            7.5234375
+          ]
+        },
+        {
+          "stage": "text_query",
+          "rss_kib": 364584,
+          "peak_rss_kib": 363696,
+          "cgroup_bytes": 220311552,
+          "cgroup_peak_bytes": 220311552,
+          "loaded": true,
+          "load": [
+            5.90673828125,
+            6.65478515625,
+            7.5234375
+          ],
+          "elapsed_seconds": 1.0385916500817984,
+          "dimensions": 768,
+          "finite": true,
+          "norm": 1.0,
+          "cosine_to_spike": 1.0,
+          "max_abs_delta_to_spike": 0.0
+        },
+        {
+          "stage": "image",
+          "rss_kib": 877664,
+          "peak_rss_kib": 876592,
+          "cgroup_bytes": 624644096,
+          "cgroup_peak_bytes": 624660480,
+          "loaded": true,
+          "load": [
+            5.91455078125,
+            6.6328125,
+            7.5068359375
+          ],
+          "elapsed_seconds": 10.734381126007065,
+          "dimensions": 768,
+          "finite": true,
+          "norm": 0.9999999403953552,
+          "cosine_to_spike": 1.0000001192092896,
+          "max_abs_delta_to_spike": 2.9802322387695312e-08
+        },
+        {
+          "stage": "audio",
+          "rss_kib": 1182532,
+          "peak_rss_kib": 1181696,
+          "cgroup_bytes": 938536960,
+          "cgroup_peak_bytes": 940683264,
+          "loaded": true,
+          "load": [
+            6.26025390625,
+            6.68212890625,
+            7.509765625
+          ],
+          "elapsed_seconds": 15.017243037931621,
+          "dimensions": 768,
+          "finite": true,
+          "norm": 1.0,
+          "cosine_to_spike": 1.0,
+          "max_abs_delta_to_spike": 1.1920928955078125e-07
+        },
+        {
+          "stage": "aborted_high_load",
+          "load": [
+            8.138671875,
+            7.09375,
+            7.62451171875
+          ],
+          "rss_kib": 1185452
+        }
+      ],
+      "systemd_runtime": "47.639s",
+      "systemd_cpu_time": "1min 29.161s",
+      "systemd_reported_memory_peak": "320.0K",
+      "systemd_memory_peak_valid": false,
+      "memory_peak_note": "Systemd summary is below measured RSS/cgroup samples; use sampled cgroup memory.peak and ru_maxrss.",
+      "systemd_swap_peak": "0B"
+    },
+    {
+      "source_log": "native-video-review-2026-10-13.log",
+      "exit_status": 75,
+      "samples": [
+        {
+          "stage": "caps_verified",
+          "limits": {
+            "memory.max": "2147483648",
+            "memory.swap.max": "0",
+            "cpu.max": "200000 100000",
+            "memory.current": "9424896"
+          }
+        },
+        {
+          "stage": "baseline_before_native",
+          "rss_kib": 16340,
+          "peak_rss_kib": 16256,
+          "cgroup_bytes": 9445376,
+          "cgroup_peak_bytes": 9687040,
+          "loaded": false,
+          "load": [
+            5.328125,
+            6.43310546875,
+            7.341796875
+          ]
+        },
+        {
+          "stage": "aborted_high_load",
+          "load": [
+            8.197265625,
+            7.01171875,
+            7.50927734375
+          ],
+          "rss_kib": 745384
+        }
+      ],
+      "systemd_runtime": "21.340s",
+      "systemd_cpu_time": "38.133s",
+      "systemd_reported_memory_peak": "324.0K",
+      "systemd_memory_peak_valid": false,
+      "memory_peak_note": "Systemd summary is below measured RSS/cgroup samples; use sampled cgroup memory.peak and ru_maxrss.",
+      "systemd_swap_peak": "0B"
+    },
+    {
+      "source_log": "native-video-final-2026-10-13.log",
+      "exit_status": 75,
+      "samples": [
+        {
+          "stage": "caps_verified",
+          "limits": {
+            "memory.max": "2147483648",
+            "memory.swap.max": "0",
+            "cpu.max": "200000 100000",
+            "memory.current": "9433088"
+          }
+        },
+        {
+          "stage": "baseline_before_native",
+          "rss_kib": 16324,
+          "peak_rss_kib": 16128,
+          "cgroup_bytes": 9453568,
+          "cgroup_peak_bytes": 9695232,
+          "loaded": false,
+          "load": [
+            4.92041015625,
+            6.33349609375,
+            7.2392578125
+          ]
+        },
+        {
+          "stage": "video4s",
+          "rss_kib": 1019268,
+          "peak_rss_kib": 1018184,
+          "cgroup_bytes": 660385792,
+          "cgroup_peak_bytes": 660385792,
+          "loaded": true,
+          "load": [
+            6.88037109375,
+            6.66064453125,
+            7.30810546875
+          ],
+          "elapsed_seconds": 41.906264909077436,
+          "dimensions": 768,
+          "finite": true,
+          "norm": 0.9999998211860657,
+          "cosine_to_spike": 1.0000001192092896,
+          "max_abs_delta_to_spike": 0.0
+        },
+        {
+          "stage": "aborted_high_load",
+          "load": [
+            8.03466796875,
+            6.94677734375,
+            7.3857421875
+          ],
+          "rss_kib": 1030172
+        }
+      ],
+      "systemd_runtime": "1min 6.664s",
+      "systemd_cpu_time": "2min 9.584s",
+      "systemd_reported_memory_peak": "512.0K",
+      "systemd_memory_peak_valid": false,
+      "memory_peak_note": "Systemd summary is below measured RSS/cgroup samples; use sampled cgroup memory.peak and ru_maxrss.",
+      "systemd_swap_peak": "0B"
+    },
+    {
+      "source_log": "native-eight-review-2026-10-13.log",
+      "exit_status": 0,
+      "samples": [
+        {
+          "stage": "caps_verified",
+          "limits": {
+            "memory.max": "2147483648",
+            "memory.swap.max": "0",
+            "cpu.max": "200000 100000",
+            "memory.current": "9474048"
+          }
+        },
+        {
+          "stage": "baseline_before_native",
+          "rss_kib": 16324,
+          "peak_rss_kib": 16256,
+          "cgroup_bytes": 9531392,
+          "cgroup_peak_bytes": 9773056,
+          "loaded": false,
+          "load": [
+            4.89501953125,
+            5.94482421875,
+            6.93115234375
+          ]
+        },
+        {
+          "stage": "video8s",
+          "rss_kib": 1479648,
+          "peak_rss_kib": 1486800,
+          "cgroup_bytes": 1124962304,
+          "cgroup_peak_bytes": 1134075904,
+          "loaded": true,
+          "load": [
+            7.09033203125,
+            6.45654296875,
+            7.0224609375
+          ],
+          "elapsed_seconds": 91.82655812497251,
+          "dimensions": 768,
+          "finite": true,
+          "norm": 0.9999999403953552,
+          "frames": 8,
+          "near_2g_limit": false
+        },
+        {
+          "stage": "media_unload_immediate",
+          "rss_kib": 218848,
+          "peak_rss_kib": 1486800,
+          "cgroup_bytes": 159678464,
+          "cgroup_peak_bytes": 1134075904,
+          "loaded": false,
+          "load": [
+            7.09033203125,
+            6.45654296875,
+            7.0224609375
+          ]
+        },
+        {
+          "stage": "media_unload_settle_1s",
+          "rss_kib": 218848,
+          "peak_rss_kib": 1486800,
+          "cgroup_bytes": 159780864,
+          "cgroup_peak_bytes": 1134075904,
+          "loaded": false,
+          "load": [
+            7.09033203125,
+            6.45654296875,
+            7.0224609375
+          ]
+        },
+        {
+          "stage": "media_unload_settle_4s",
+          "rss_kib": 218848,
+          "peak_rss_kib": 1486800,
+          "cgroup_bytes": 159780864,
+          "cgroup_peak_bytes": 1134075904,
+          "loaded": false,
+          "load": [
+            7.64404296875,
+            6.58203125,
+            7.06005859375
+          ]
+        },
+        {
+          "stage": "media_unload_settle_10s",
+          "rss_kib": 218848,
+          "peak_rss_kib": 1486800,
+          "cgroup_bytes": 159780864,
+          "cgroup_peak_bytes": 1134075904,
+          "loaded": false,
+          "load": [
+            7.169921875,
+            6.513671875,
+            7.0322265625
+          ]
+        },
+        {
+          "stage": "complete",
+          "rss_kib": 218848,
+          "peak_rss_kib": 1486800,
+          "cgroup_bytes": 159780864,
+          "cgroup_peak_bytes": 1134075904,
+          "loaded": false,
+          "load": [
+            7.169921875,
+            6.513671875,
+            7.0322265625
+          ]
+        }
+      ],
+      "systemd_runtime": "1min 48.604s",
+      "systemd_cpu_time": "2min 58.372s",
+      "systemd_reported_memory_peak": "1.3M",
+      "systemd_memory_peak_valid": false,
+      "memory_peak_note": "Systemd summary is below measured RSS/cgroup samples; use sampled cgroup memory.peak and ru_maxrss.",
+      "systemd_swap_peak": "0B"
+    }
+  ],
+  "max_frames_decision": {
+    "retain": 8,
+    "near_limit_threshold_bytes": 1932735283,
+    "eight_frames_rss_peak_kib": 1486800,
+    "eight_frames_cgroup_peak_bytes": 1134075904,
+    "reason": "Neither RSS nor cgroup peak reached 1.8 GiB."
+  },
+  "limits": [
+    "Partial attempts exited 75 when one-minute load exceeded 8; only unfinished cases were resumed.",
+    "Eight-frame video was measured in its own fresh process, not after a completed text/image/audio sequence.",
+    "The first partial run used a 60-second decode deadline; completed video checks used the production 30-second deadline.",
+    "Cosines slightly above 1 reflect float32 rounding, not a meaningful excess.",
+    "One synthetic ten-second video does not establish worst-case memory for all assets or long-term allocator growth.",
+    "Production image build/ABI was not executed; native host uses the existing spike Python runtime."
+  ]
+}

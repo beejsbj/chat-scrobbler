@@ -7,12 +7,13 @@ import type { Database } from "bun:sqlite";
 import type { RawCapture } from "../../shared/src";
 import { getParser } from "../../../src/parsers/registry";
 import { writeSession } from "../../../src/store/sessions";
-import { indexSession, indexSessionWithEmbeddings, type EmbeddingProvider } from "../../../src/indexer/sqlite";
+import { indexSession, type EmbeddingProvider } from "../../../src/indexer/sqlite";
 
 export interface SpineResult {
   session_id: string;
   source: string;
   source_id: string;
+  /** Canonical and FTS are ready. This does not assert model vector coverage. */
   indexed: boolean;
 }
 
@@ -21,6 +22,7 @@ export interface SpineContext {
   db: Database;
   rawRef?: string;
   onParse?: (success: boolean) => void;
+  /** Compatibility option. Capture folding never runs inference. */
   embeddingProvider?: EmbeddingProvider | null;
 }
 
@@ -31,23 +33,17 @@ export function foldCaptureIntoSpine(capture: RawCapture, ctx: SpineContext): Sp
   return sessions.map((session) => {
     if (ctx.rawRef) session.raw_ref = ctx.rawRef;
     writeSession(ctx.canonicalDir, session);
+    // Persist canonical and FTS immediately; missing vectors remain pending for backfill.
     indexSession(ctx.db, session, { canonicalDir: ctx.canonicalDir });
     return { session_id: session.id, source: session.source, source_id: session.source_id, indexed: true };
   });
 }
 
+/** Compatibility entrypoint. All DB work completes synchronously before this
+ * promise resolves, so callers can close their DB after awaiting the fold.
+ * Vector inference is deferred to explicit backfill, even with a provider. */
 export async function foldCaptureIntoSpineWithEmbeddings(capture: RawCapture, ctx: SpineContext): Promise<SpineResult[]> {
-  if (!ctx.embeddingProvider) return foldCaptureIntoSpine(capture, ctx);
-
-  const sessions = parseCapture(capture, ctx);
-  const results: SpineResult[] = [];
-  for (const session of sessions) {
-    if (ctx.rawRef) session.raw_ref = ctx.rawRef;
-    writeSession(ctx.canonicalDir, session);
-    await indexSessionWithEmbeddings(ctx.db, session, { embeddingProvider: ctx.embeddingProvider, canonicalDir: ctx.canonicalDir });
-    results.push({ session_id: session.id, source: session.source, source_id: session.source_id, indexed: true });
-  }
-  return results;
+  return foldCaptureIntoSpine(capture, ctx);
 }
 
 function parseCapture(capture: RawCapture, ctx: SpineContext) {

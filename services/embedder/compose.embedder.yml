@@ -1,0 +1,3 @@
+# Compatibility file. The main Coolify compose now defines the opt-in sidecar.
+# Enable COMPOSE_PROFILES=embeddings or --profile embeddings on the main file.
+services: {}
