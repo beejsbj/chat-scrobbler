@@ -4,8 +4,10 @@
 
 Implemented on `feat/bjs-547-asset-capture`, based on `origin/main`.
 Extension version: **0.3.0 → 0.4.3** (initial 0.4.0, first review 0.4.1, round 2 0.4.2, round 3 0.4.3).
-Round 3 authorizes publishing and ordinary PR merge after verification. No deployment,
-production data operation or authenticated provider access was performed.
+The latest instruction limits this follow-up to Gemini media retention, local
+verification and commits, then stopping for the orchestrator's independent review.
+No merge, deployment, production data operation or authenticated provider access
+was performed in this follow-up.
 
 Assets are downloaded during capture, bounded while reading, hashed before upload,
 and associated with message pointers in archived raw. Parsers rebuild typed media
@@ -203,11 +205,11 @@ timestamps, but acknowledged unchanged payloads skip asset downloads and ingest.
 
 ## Verification
 
-Final round 3 gates passed with Bun 1.3.14 after integrating current main:
+Final gates passed with Bun 1.3.14 after the Gemini media-retention follow-up:
 
 | Command | Result |
 |---|---|
-| `bun test` | **747 pass, 0 fail**, 2,784 assertions across 68 files |
+| `bun test` | **749 pass, 0 fail**, 2,826 assertions across 69 files |
 | `bun x tsc --noEmit` | **PASS** |
 | `bun run build:extension` | **PASS**, output `packages/extension/build`, manifest 0.4.3 |
 | `git diff --check` | **PASS** |
@@ -227,6 +229,10 @@ workers; their model receipts were checked. Separate read-only standards and spe
 reviews also used Sonnet 5.5. Findings were inspected and integrated, including host
 restrictions, recoverable failed media references, quarantine retry and preserved
 provider fetch times. No review substitutes for the manual browser checks above.
+
+The Gemini retention regression additionally exercises DOM audio and video through
+the real ingest handler: on-page capture, off-page recapture, acknowledgement
+expiry, retained latest raw records, `reparse`, stored bytes and backfill discovery.
 
 ## Review fixes
 
@@ -497,3 +503,29 @@ Final 0.4.3 gates are recorded in **Verification** above.
 - Regression probes cover multiple tabs, active-page selection, unlisted pending
   and due failures, cursor progress, and preserving attempts when a hidden chat
   returns to the sidebar. Complete-list cleanup remains for ChatGPT and Claude.
+
+## Final follow-up: Gemini media retention
+
+- **Fixed:** DOM-only Gemini voice notes and videos no longer disappear from
+  canonical media when the next sync runs from Gemini home or another chat with
+  the same API payload. Daily recapture after content-hash expiry retains them too.
+- **Receiver behavior:** The exact incoming capture is archived first. For the
+  same Gemini conversation, account, endpoint and payload, missing prior assets
+  and references are carried into an enriched raw version before parsing. The
+  latest raw version therefore rebuilds the retained links through `reparse`;
+  missing aliases remain discoverable by backfill.
+- **Boundaries:** Newly observed pointers take precedence, including failed
+  downloads, so a fresh observation cannot silently inherit stale bytes. A changed
+  payload or account does not inherit prior media. Other providers use their
+  existing capture behavior. This repair does not scan historical raw versions
+  to recover media already dropped by an earlier build; reopen the affected chat
+  and capture it again. It requires the updated receiver, not just an extension
+  reload. Extension version remains **0.4.3**.
+- **Regression evidence:** Both audio and video reproduced the reviewer's loss
+  before the fix. They now survive off-page sync, 24-hour cache expiry and reparse,
+  with unchanged bytes and no extra download. Removing a test alias leaves the
+  retained reference visible in the backfill page.
+- **Delivery:** Fix committed as `4749954`. Final check results are in
+  **Verification** above. This follow-up stops after local commits and the handoff;
+  no further self-review round, push or merge was started. The orchestrator runs
+  the next independent review.
