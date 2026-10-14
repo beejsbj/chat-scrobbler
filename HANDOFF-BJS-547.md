@@ -207,7 +207,7 @@ Final round 3 gates passed with Bun 1.3.14 after integrating current main:
 
 | Command | Result |
 |---|---|
-| `bun test` | **666 pass, 0 fail**, 2,602 assertions across 64 files |
+| `bun test` | **677 pass, 0 fail**, 2,651 assertions across 65 files |
 | `bun x tsc --noEmit` | **PASS** |
 | `bun run build:extension` | **PASS**, output `packages/extension/build`, manifest 0.4.3 |
 | `git diff --check` | **PASS** |
@@ -386,7 +386,8 @@ verification still requires the manual browser checks above.
   Malformed acknowledgements, including HTTP-200 proxy login pages, also abort
   without counting a chat attempt.
   The popup retains the last error across reopening, including periodic failures.
-- **Status reporting:** Aborts preserve the existing cursor and attempt list and
+- **Status reporting:** Aborts preserve the existing cursor, retain earlier
+  deterministic per-chat attempts without counting the environmental failure, and
   store a categorical last error per provider/install. `/status` accepts the
   additive `last_sync_error` field and returns persisted `sync_errors`. Records
   include only reason, optional HTTP status and timestamp, never response bodies,
@@ -437,3 +438,20 @@ Final 0.4.3 gates are recorded in **Verification** above.
   per message when ownership is known.
 - Regression probes reproduce all four GitHub review findings. The HTTPS
   allowlists and credential boundary above remain intact. Version remains 0.4.3.
+
+#### Follow-up PR review
+
+- Aborted sync responses retain their partial failure snapshot. Deterministic
+  failures already encountered continue toward quarantine across mixed runs;
+  the later receiver/network failure adds no attempt and the cursor stays put.
+  Detail 5xx attempts that escalate to a provider outage are rolled back. The
+  same snapshot policy covers manual retry and listing failures after captures.
+- Manual **Retry failed chats** selects one tab per provider. Several open tabs
+  cannot multiply attempts from one click.
+- Receiver transport retains an independent 128 MiB minimum request limit, while
+  `/assets` still enforces `maxAssetBytes`. A 17 MiB raw capture with a 1 KiB asset
+  limit is archived in a real local HTTP regression; a 2 KiB asset is rejected.
+- The review's suggestion to allow JSON/HTML attachments is **not adopted**:
+  it conflicts with the user's explicit fail-closed credential-document guard.
+  These file types remain unavailable as downloadable assets, including when
+  explicitly attached. Known JSON download wrappers are bounded indirection only.

@@ -82,13 +82,15 @@ captures deduplicate. Provider IDs are encoded without lossy sanitization.
   backoff deadline reopens the conversation. Quarantine retries after 1, 3, then
   7 days while retaining attempt history, including for Gemini without timestamps.
   Network failures, provider 429/503, and receiver auth/config/outage errors stop
-  sync without counting attempts. Only receiver 400/413/422 count per capture.
+  sync without counting the environmental failure. Earlier deterministic attempts
+  survive an abort; provisional detail 5xx attempts are rolled back if they escalate
+  to an outage. Only receiver 400/413/422 count per capture.
   Local parse errors and isolated detail 5xx count per chat. A new three-chat 5xx
   cohort aborts but remembers its IDs and update timestamps in extension storage.
   Repeated cohorts count when other detail requests work; confirmed local cohorts
   also retry behind the cursor. Changed cohorts or all-detail failures without
-  prior local confirmation remain environmental. Aborted runs preserve attempts
-  and cursor. Last errors remain visible in the popup and per-install `/status`
+  prior local confirmation remain environmental. Aborted runs preserve the cursor.
+  Manual retry selects one tab per provider. Last errors remain visible in the popup and per-install `/status`
   `sync_errors` reports; reports are retried after receiver access returns. Asset errors stay within the asset boundary.
   Pending failures for ignored or no-longer-listed chats are removed after listing.
 
