@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { uploadProviderAssets } from "../packages/extension/src/providers/assets";
 import { createGeminiAdapter } from "../packages/extension/src/providers/gemini";
+import { captureHash } from "../packages/extension/src/providers/capture-hash";
 
 for (const status of [429, 503]) test(`asset ${status} stops downloads and reports each failure without failing the chat`, async () => {
   let calls = 0;
@@ -44,4 +45,28 @@ test("a provider stream outage reports an asset failure without failing the chat
   }], { beforeFetch: async () => {}, reportFailure: async f => { failures.push(f); } });
   expect(result).toEqual([]);
   expect(failures).toMatchObject([{ source_id: "c", reason: "asset_download_failed" }]);
+});
+
+test("Gemini re-captures unchanged payloads after the acknowledgement expires to heal receiver restores", async () => {
+  const savedChrome = Object.getOwnPropertyDescriptor(globalThis, "chrome");
+  const storage: Record<string, any> = {};
+  Object.defineProperty(globalThis, "chrome", { configurable: true, value: { storage: { local: {
+    get: (key: string, done: any) => done({ [key]: storage[key] }), set: (values: any, done: any) => { Object.assign(storage, values); done(); },
+  } } } });
+  const originalNow = Date.now;
+  let now = originalNow();
+  Date.now = () => now;
+  try {
+    const payload = [[[["c_c", "r_user"], null, [["prompt"], 1], null]]];
+    const acknowledged = await captureHash("gemini", "c", { payload, pointers: [] });
+    await acknowledged.remember();
+    now += 24 * 60 * 60 * 1000;
+    let captured = 0;
+    const result = await createGeminiAdapter(async () => new Response(JSON.stringify([["wrb.fr", "hNvQHb", JSON.stringify(payload)]])), {
+      readWizData: () => ({ at: "csrf", bl: "b", fSid: "s" }), readConversationDom: () => null, listConversationIds: () => ["c"],
+    }).sync({ emitCapture: async () => { captured++; } });
+    expect(result.captured).toBe(1);
+    expect(captured).toBe(1);
+    expect((await captureHash("gemini", "c", { payload, pointers: [] })).unchanged).toBe(true);
+  } finally { Date.now = originalNow; if (savedChrome) Object.defineProperty(globalThis, "chrome", savedChrome); else delete (globalThis as any).chrome; }
 });
