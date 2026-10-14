@@ -1,3 +1,4 @@
+import { fetchAuthenticatedDetail } from "./authenticated-detail";
 import { DetailFailureStreak } from "./detail-failure-streak";
 import { abortTransientCapture } from "./sync-errors";
 import { logSyncFailure, SyncFailureTracker } from "./sync-failures";
@@ -8,7 +9,6 @@ import {
   asArray,
   asObject,
   fetchJson,
-  fetchDetailJson,
   maxIso,
   shouldCapture,
   type ConversationSummary,
@@ -62,7 +62,7 @@ async function captureChatgptOne(
   const token = await getAccessToken(fetcher);
   const headers = token ? { authorization: `Bearer ${token}` } : undefined;
   const detailEndpoint = `/backend-api/conversation/${encodeURIComponent(id)}`;
-  const payload = await fetchDetailJson(fetcher, detailEndpoint, { headers });
+  const payload = await fetchAuthenticatedDetail(fetcher, detailEndpoint, { headers }, async () => await getAccessToken(fetcher) === token && token !== null);
   const candidates = chatgptAssetCandidates(payload, id, headers);
   const assets = await uploadProviderAssets(
     fetcher,
@@ -133,7 +133,7 @@ async function syncChatgpt(fetcher: FetchLike, options: ProviderSyncOptions): Pr
 
       try {
         const detailEndpoint = `/backend-api/conversation/${encodeURIComponent(item.id)}`;
-        const payload = await fetchDetailJson(fetcher, detailEndpoint, { headers });
+        const payload = await fetchAuthenticatedDetail(fetcher, detailEndpoint, { headers }, async () => await getAccessToken(fetcher) === token && token !== null);
         const candidates = chatgptAssetCandidates(payload, item.id, headers);
         const assets = await uploadProviderAssets(
           fetcher,

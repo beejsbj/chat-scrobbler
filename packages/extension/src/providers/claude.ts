@@ -1,3 +1,4 @@
+import { fetchAuthenticatedDetail } from "./authenticated-detail";
 import { DetailFailureStreak } from "./detail-failure-streak";
 import { abortTransientCapture } from "./sync-errors";
 import { logSyncFailure, SyncFailureTracker } from "./sync-failures";
@@ -8,7 +9,6 @@ import {
   asArray,
   asObject,
   fetchJson,
-  fetchDetailJson,
   maxIso,
   shouldCapture,
   type ConversationSummary,
@@ -71,7 +71,7 @@ async function captureClaudeOne(
 ): Promise<void> {
   const org = await getOrganization(fetcher);
   const detailEndpoint = `/api/organizations/${encodeURIComponent(org.uuid)}/chat_conversations/${encodeURIComponent(id)}?tree=True&rendering_mode=messages&render_all_tools=true`;
-  const payload = await fetchDetailJson(fetcher, detailEndpoint);
+  const payload = await fetchAuthenticatedDetail(fetcher, detailEndpoint, undefined, async () => (await getOrganization(fetcher)).uuid === org.uuid);
   const candidates = claudeAssetCandidates(payload, id, org.uuid);
   const assets = await uploadProviderAssets(
     fetcher,
@@ -134,7 +134,7 @@ async function syncClaude(fetcher: FetchLike, options: ProviderSyncOptions): Pro
       // (see docs/superpowers/specs/2026-06-05-api-vs-export-validation-diff.md).
       try {
         const detailEndpoint = `/api/organizations/${encodeURIComponent(org.uuid)}/chat_conversations/${encodeURIComponent(item.id)}?tree=True&rendering_mode=messages&render_all_tools=true`;
-        const payload = await fetchDetailJson(fetcher, detailEndpoint);
+        const payload = await fetchAuthenticatedDetail(fetcher, detailEndpoint, undefined, async () => (await getOrganization(fetcher)).uuid === org.uuid);
         const candidates = claudeAssetCandidates(payload, item.id, org.uuid);
         const assets = await uploadProviderAssets(
           fetcher,
