@@ -20,14 +20,14 @@ export interface SpineContext {
   canonicalDir: string;
   db: Database;
   rawRef?: string;
+  onParse?: (success: boolean) => void;
   embeddingProvider?: EmbeddingProvider | null;
 }
 
 /** Parse one capture via (source, "api") and persist every session it yields.
  *  Returns one result per canonical session produced (usually exactly one). */
 export function foldCaptureIntoSpine(capture: RawCapture, ctx: SpineContext): SpineResult[] {
-  const parse = getParser(capture.source, "api");
-  const sessions = parse(capture, { raw_ref: ctx.rawRef });
+  const sessions = parseCapture(capture, ctx);
   return sessions.map((session) => {
     if (ctx.rawRef) session.raw_ref = ctx.rawRef;
     writeSession(ctx.canonicalDir, session);
@@ -39,8 +39,7 @@ export function foldCaptureIntoSpine(capture: RawCapture, ctx: SpineContext): Sp
 export async function foldCaptureIntoSpineWithEmbeddings(capture: RawCapture, ctx: SpineContext): Promise<SpineResult[]> {
   if (!ctx.embeddingProvider) return foldCaptureIntoSpine(capture, ctx);
 
-  const parse = getParser(capture.source, "api");
-  const sessions = parse(capture, { raw_ref: ctx.rawRef });
+  const sessions = parseCapture(capture, ctx);
   const results: SpineResult[] = [];
   for (const session of sessions) {
     if (ctx.rawRef) session.raw_ref = ctx.rawRef;
@@ -49,4 +48,14 @@ export async function foldCaptureIntoSpineWithEmbeddings(capture: RawCapture, ct
     results.push({ session_id: session.id, source: session.source, source_id: session.source_id, indexed: true });
   }
   return results;
+}
+
+function parseCapture(capture: RawCapture, ctx: SpineContext) {
+  let sessions;
+  try {
+    sessions = getParser(capture.source, "api")(capture, { raw_ref: ctx.rawRef });
+    if (!sessions.length) throw new Error("capture_parse_empty");
+  } catch (error) { ctx.onParse?.(false); throw error; }
+  ctx.onParse?.(true);
+  return sessions;
 }

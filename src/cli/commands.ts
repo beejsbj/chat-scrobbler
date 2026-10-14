@@ -698,6 +698,10 @@ export async function startServe(cfg: ChatHistoryConfig): Promise<ServeHandles> 
         indexPath: cfg.indexPath,
         ingestToken: cfg.ingestToken ?? undefined,
         maxAssetBytes: cfg.maxAssetBytes,
+        monitorStaleDays: cfg.monitorStaleDays,
+        monitorCoverageThreshold: cfg.monitorCoverageThreshold,
+        monitorRecentHours: cfg.monitorRecentHours,
+        monitorStatePath: cfg.monitorStatePath,
         embeddingProvider,
       });
     },

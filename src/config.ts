@@ -8,12 +8,13 @@
 // a code checkout; env/config-file overrides still win. Browser-safe constants
 // live in packages/shared/src/config.ts and are imported by the extension; this
 // module layers the Node/Bun resolution (env + config file) on top of them.
+import { monitorSettings, type MonitorConfig } from "./monitor/config";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { DEFAULT_INGEST_BASE_URL } from "../packages/shared/src/config";
 
-export interface ChatHistoryConfig {
+export interface ChatHistoryConfig extends MonitorConfig {
   /** Derived canonical session store. One JSON file per session. */
   canonicalDir: string;
   /** Rebuildable SQLite FTS index. */
@@ -69,6 +70,7 @@ export const DEFAULT_CONFIG: ChatHistoryConfig = {
   embeddingModel: null,
   ollamaBaseUrl: "http://127.0.0.1:11434",
   geminiApiKey: null,
+  ...monitorSettings(),
 };
 
 export interface LoadConfigOptions {
@@ -158,6 +160,7 @@ export function loadConfig(opts: LoadConfigOptions = {}): ChatHistoryConfig {
     cfg.ingestBaseUrl = `http://127.0.0.1:${cfg.ingestPort}`;
   }
 
+  Object.assign(cfg, monitorSettings(fileLayer, env));
   return cfg;
 }
 

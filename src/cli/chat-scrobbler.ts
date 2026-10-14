@@ -3,6 +3,7 @@
 // Subcommands: search, get, list, unify, serve, doctor, backup, backups, restore
 // Arg parsing: manual / node:util parseArgs (no extra packages).
 
+import { runMonitorCmd } from "./monitor";
 import { runUnknownTypesCmd } from "./unknown-types";
 import { runReparseCmd } from "./reparse";
 import { parseArgs } from "node:util";
@@ -91,6 +92,7 @@ Operate
     --dry-run              Report planned changes without writing
     --json                 Output a machine-readable summary
 
+  monitor                Quiet health checks for cron; --ack acknowledges current unknown types
   unknown-types          Count unknown content types in canonical sessions
     --source <s>           Filter by provider
     --json                 Output counts for automation
@@ -204,6 +206,14 @@ async function main(argv: string[]): Promise<void> {
           json: values.json as boolean | undefined,
           write,
         });
+        break;
+      }
+
+      case "monitor": {
+        try {
+          const { values } = parseArgs({ args: rest, options: { ack: { type: "boolean", default: false } } });
+          await runMonitorCmd(cfg, write, values.ack);
+        } catch { write("FAILED monitor invalid_arguments"); }
         break;
       }
 

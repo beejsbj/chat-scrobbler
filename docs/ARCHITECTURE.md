@@ -97,7 +97,9 @@ Endpoints:
 
 | Method | Path | Auth | Purpose |
 |--------|------|------|---------|
-| GET | /health | none | write checks for index/stores and bounded embedder probe; 503 if degraded |
+| GET | /health | none | cheap receiver liveness |
+| GET | /health/deep | required bearer | write checks for index/stores and bounded embedder probe |
+| GET | /status/report | required bearer | cheap cached operational state and receipt report |
 | POST | /captures | optional bearer | receive raw captures, parse, store, index |
 | POST | /assets | optional bearer | receive provider-authenticated attachment bytes |
 | GET | /assets?sha256=... | optional bearer | cheap blob existence check |
@@ -162,7 +164,7 @@ server. For deterministic asset rejections or expired URLs, text capture continu
 and the attachment block keeps `local_path: null`. Download, size, and upload failures
 produce structured logs and reports through `/status`, with URLs and provider
 error bodies omitted from logs. Provider or receiver outages abort sync for a later retry.
-Asset failure counts are process-local. Conversation
+Receiver asset failure counts survive restarts in the monitoring state database. Conversation
 failure snapshots are partitioned by persistent extension install ID. Legacy
 unscoped requests aggregate snapshots. Lists are persisted beside the index as
 `<indexPath>.capture-failures.json`.
@@ -315,13 +317,13 @@ queries the `sessions` table ordered by `updated_at DESC`.
 `openIndex` enables WAL and a 5000 ms busy timeout for every writer. Health also
 writes a single `index_health_probe` row. Literal replacement and vector replacement
 use short transactions; embedding calls run outside them. Failed embedding calls
-log categorical reasons and increment process-local counters. Preserved vectors
+log categorical reasons and increment persistent counters when created through the configured provider factory. Preserved vectors
 for changed or deleted message text are excluded from semantic results.
 
 `searchMessagesReport` adds `semantic`, `reason`, and `embedding_failures` to the
 array of hits. MCP keeps the existing text array and adds these fields plus `hits`
 in `structuredContent`, including empty searches. Failed-query hits also carry
-status fields. `/health` tests embedding reachability with a two-second deadline;
+status fields. `/health/deep` tests embedding reachability with a two-second deadline;
 normal provider calls have a ten-second timeout. Each health request embeds a
 fixed diagnostic string, which incurs provider cost when using a paid backend.
 
@@ -466,6 +468,7 @@ The CLI is a thin frontend over the same core functions the MCP uses. Commands:
 | `unify` | Rebuild SQLite index from canonical store |
 | `reparse` | Rebuild from latest raw; `--source`, `--session`, `--dry-run`, `--json` |
 | `unknown-types` | Count opaque content by provider/type; `--source`, `--json` |
+| `monitor` | Quiet cron checks from local stores; `--ack` acknowledges current unknown types |
 | `init` | Scaffold data dirs + starter config file |
 | `serve` | Start ingest receiver + MCP HTTP connector together |
 | `backup` | Snapshot raw, canonical/assets, sessions, and config to all configured targets |
@@ -485,3 +488,101 @@ The CLI is a thin frontend over the same core functions the MCP uses. Commands:
 
 The extension ships alongside the binary so `chat-scrobbler init` can print the exact
 path to load as an unpacked extension in Chrome.
+
+---
+
+## Operations: monitoring
+
+The Cockpit wrapper should run this exact command **inside the container**:
+
+```sh
+/usr/local/bin/chat-scrobbler monitor
+```
+
+Run exec as the container user (`scrobbler`), never with `-u root`. State creation
+refuses an effective UID that differs from the data directory owner. Existing
+state files and SQLite sidecars must have that same owner.
+
+For the checked-in Compose service, the host invocation is:
+
+```sh
+docker compose -f docker-compose.bjslab.yml exec -T scrobbler /usr/local/bin/chat-scrobbler monitor
+```
+
+The CLI exits 0, prints nothing when healthy, and otherwise prints sorted,
+timestamp-free `FAILED <check> <detail>` lines. It reads local raw, canonical and
+index stores without contacting the ingest server, so it works while that server
+is down. It checks directory permissions with access checks, opens the index and
+existing monitoring state read-only, and uses a real embedding probe with a
+ten-second deadline (reported as `slow` after two seconds). Ordinary monitoring
+creates no state or store directories; `--ack` intentionally writes acknowledgement state. It leaves a missing index
+missing. Paid embedding providers incur a diagnostic request per CLI invocation.
+Cockpit delivery and the Hermes schedule are supplied separately.
+
+`GET /status/report` requires a configured `INGEST_TOKEN` and its matching bearer
+header, even on localhost. Authenticated reports return HTTP 200 with `ok` and
+`failures`; callers inspect the body. Reports coalesce concurrent requests and
+cache results for 60 seconds. The HTTP scope is `live`: persisted counters,
+receipts, successful parse times, unresolved recent parser failures and state
+health, with indexed session dates as a bootstrap fallback. `deferred_checks`
+names the archive, vector, asset and provider checks performed only by the CLI.
+HTTP performs no archive scan or embedding call. No titles, chat text, provider URLs, credentials or raw fragments
+are included. The CLI replaces unknown type names with opaque type IDs.
+
+| JSON config key | Environment override | Default |
+|-----------------|----------------------|---------|
+| `monitorStaleDays.chatgpt` | `CHAT_SCROBBLER_MONITOR_STALE_DAYS_CHATGPT` | 7 days |
+| `monitorStaleDays.claude` | `CHAT_SCROBBLER_MONITOR_STALE_DAYS_CLAUDE` | 7 days |
+| `monitorStaleDays.gemini` | `CHAT_SCROBBLER_MONITOR_STALE_DAYS_GEMINI` | 7 days |
+| `monitorCoverageThreshold` | `CHAT_SCROBBLER_MONITOR_COVERAGE_THRESHOLD` | 0.95 |
+| `monitorRecentHours` | `CHAT_SCROBBLER_MONITOR_RECENT_HOURS` | 48 hours |
+| `monitorStatePath` | `CHAT_SCROBBLER_MONITOR_STATE_PATH` | `<indexPath>.monitor.sqlite` |
+
+Freshness prefers capture receipt times and archived `fetched_at`. Without those,
+the CLI falls back to the newest canonical `updated_at` per provider; HTTP uses
+the same metadata projected into the index, with a small read-only aggregate.
+Last successful parse times also fall back to canonical dates until recorded.
+These bootstrap dates show conversation activity, not proof of a recent browser
+poll. An unused provider can have JSON `null` or env `off` for its staleness
+setting. Providers with no history alert until the next sync or that override.
+Invalid threshold values fall back to defaults. Provider overrides merge with the
+other providers' defaults. The bjslab Compose service defaults to ChatGPT 7 days,
+Claude 14 days and Gemini 21 days. Set the corresponding environment variables
+on the host to tune these Compose overrides.
+
+Coverage counts nonempty indexed messages across all branches, requiring valid
+vectors for current text, title, provider, model and dimension. The recent window
+uses message timestamps; messages without timestamps remain in total coverage.
+Low recent coverage alerts. No usable vectors for a nonempty index, an unreachable
+embedder, and explicitly disabled embeddings also alert. An empty recent window
+has coverage 1, but does not hide a dead semantic leg.
+
+The recent window also covers upload failure reports and missing attachment
+blocks. Attachment recency uses session `updated_at` or the latest message time;
+unify/reparse file rewrites do not make old attachments recent. Upload failures
+use hourly buckets, so they can remain recent for up to one extra hour. Lifetime
+totals persist without causing permanent upload alerts. Orphaned raw versions are parsed read-only to distinguish
+parse failures from successful captures missing their canonical projection;
+versions with a canonical session and tombstoned sessions are excluded from that
+legacy orphan check. Actual ingest parser outcomes also persist provider failure
+totals and recent unresolved session IDs, so an existing canonical session cannot
+hide a new format failure. Empty parser results count as failures. Successful
+retries clear that session's unresolved failure, retaining the lifetime count.
+`freshness.parsed.<provider>` checks successful parse timestamps separately from
+receipts. Canonical/index write errors do not increment parser failure totals.
+Recent failure IDs in the report are opaque hashes, limited to 20 per provider;
+the recent counts include all unresolved failures in the configured window.
+
+Inspect unknown tags locally with `chat-scrobbler unknown-types`, then acknowledge
+all currently seen provider/type pairs with:
+
+```sh
+/usr/local/bin/chat-scrobbler monitor --ack
+```
+
+Acknowledgement survives restarts and suppresses only those types. New types still
+alert; all other checks still run. The CLI computes a fresh report after acknowledgement. The state database contains counters, hourly upload buckets, receipt
+times and opaque type IDs only. Keep it when replacing the index directory; it is
+separate from rebuildable index tables and is not included in current backups.
+Sanitized parser contracts and instructions for adding captures live in
+[`test/fixtures/contract/`](../test/fixtures/contract/README.md).

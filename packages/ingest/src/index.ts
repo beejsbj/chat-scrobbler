@@ -26,7 +26,7 @@ if (import.meta.main) {
     hostname: bindHost,
     port,
     maxRequestBodySize: Math.max(cfg.maxAssetBytes, 16 * 1024 * 1024),
-    fetch: (req) => handleIngestRequest(req, { canonicalDir, indexPath, ingestToken, embeddingProvider, maxAssetBytes: cfg.maxAssetBytes }),
+    fetch: (req) => handleIngestRequest(req, { ...cfg, canonicalDir, indexPath, ingestToken, embeddingProvider }),
   });
 
   console.log(`chat scrobbler ingest listening on http://${bindHost}:${port}`);
