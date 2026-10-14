@@ -326,7 +326,7 @@ function indexLiteralSession(db: Database, s: Session, opts: IndexSessionOptions
     db.run("INSERT OR REPLACE INTO message_lookup(session_id,message_id,fts_rowid) VALUES (?,?,?)", [s.id,m.id,result.lastInsertRowid]);
   }
   // Reconciliation belongs to capture indexing, even when inference is deferred.
-  const ids = new Set(s.messages.map(message => message.id));
+  const ids = new Set(s.messages.filter(message => message.text).map(message => message.id));
   for (const table of ["message_vectors", "message_embeddings", "message_vector_chunks", "embedding_pending"]) {
     const rows = db.query(`SELECT DISTINCT message_id FROM ${table} WHERE session_id=?`).all(s.id) as Array<{message_id:string}>;
     for (const row of rows) if (!ids.has(row.message_id))

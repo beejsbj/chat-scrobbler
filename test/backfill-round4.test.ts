@@ -58,3 +58,15 @@ test('a superseded reusable item does not abort the rest of the batch',async()=>
   expect(result.embedded).toBeGreaterThanOrEqual(1);
  }finally{db.close();}
 });
+
+test('a failed call superseded by a committed vector does not defer it or blame the provider',async()=> {
+ const db=openIndex(':memory:');const s=fixture('same');indexSession(db,s);
+ try {
+  const report=await embedBackfill(db,{provider:{...p,embed:async()=>{
+   putTextVector(db,{session_id:s.id,message_id:'m',text:'same',title:s.title,provider_kind:p.kind,provider_model:p.model,dimension:2,embedding:[1,0]});
+   throw Object.assign(new Error('closed'),{code:'ECONNRESET'});
+  }},connectionSequence:{count:1,lastItem:'different'},limit:1,sleep:async()=>{}});
+  expect(report).toMatchObject({stale:1,deferred:0,provider_outage:false});
+  expect(pendingCoverage(db,p)).toMatchObject({embedded:1,deferred:0});
+ }finally{db.close();}
+});
