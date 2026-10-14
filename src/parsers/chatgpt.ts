@@ -102,14 +102,15 @@ export function sessionFromChatgptConversation(conv: RawConversation, opts: Chat
     const location = childLocation({ raw_ref: opts.raw_ref, raw_path: opts.raw_path ?? "" }, "mapping", node.id, "message");
     const recipient = typeof m.recipient === "string" && m.recipient !== "all" ? m.recipient : null;
     const name = recipient ?? (role === "tool" ? m.author?.name : null) ?? "code";
-    const contentBlocks = blocksFromContent(m.content, assets, childLocation(location, "content"));
+    const scoped = assets.scoped([m.id ?? node.id, node.id]);
+    const contentBlocks = blocksFromContent(m.content, scoped, childLocation(location, "content"));
     const seenMedia = linkedPointers(contentBlocks);
     const prose = [m.content?.text, ...(Array.isArray(m.content?.parts) ? m.content.parts : [])].filter(value => typeof value === "string").join("\n");
     for (const match of prose.matchAll(/sandbox:\/[^\s)\]<>"']+/g)) {
       if (seenMedia.has(match[0])) continue;
       seenMedia.add(match[0]);
-      const asset = assets.byPointer(match[0]);
-      contentBlocks.push(mediaBlock(mediaKind(asset?.content_type), match[0], assets, match[0].split("/").at(-1) ?? null, asset?.content_type ?? null));
+      const asset = scoped.byPointer(match[0]);
+      contentBlocks.push(mediaBlock(mediaKind(asset?.content_type), match[0], scoped, match[0].split("/").at(-1) ?? null, asset?.content_type ?? null));
     }
     const blocks = recipient || role === "tool"
       ? [toolCall(name), ...contentBlocks.filter(block => !["text", "reasoning", "tool_call", "tool_result"].includes(block.type))]
@@ -127,7 +128,7 @@ export function sessionFromChatgptConversation(conv: RawConversation, opts: Chat
       else if (entries != null) blocks.push(unknownBlock(entries, childLocation(location, "metadata", key), key));
     }
     const msgId = m.id ?? node.id;
-    blocks.push(...metadataMediaBlocks(m.metadata, blocks, assets));
+    blocks.push(...metadataMediaBlocks(m.metadata, blocks, scoped));
     blocks.push(...capturedAssetBlocks(assets, [msgId, node.id], blocks));
     if (blocks.length === 0) continue;
     rawToEmittedId.set(node.id, msgId);

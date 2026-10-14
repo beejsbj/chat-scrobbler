@@ -5,8 +5,9 @@ import { childLocation, mediaBlock, toolCall, unknownBlock, type PartLocation } 
 import type { RawClaudeMsg } from "./claude";
 
 type Artifact = Extract<Block, { type: "artifact" }>;
-export function blocksFromClaude(m: RawClaudeMsg, assets: AssetLookup = assetLookupFromRaw(null),
+export function blocksFromClaude(m: RawClaudeMsg, allAssets: AssetLookup = assetLookupFromRaw(null),
   loc: PartLocation = { raw_ref: "", raw_path: "" }, artifacts = new Map<string, Artifact>()): Block[] {
+  const assets = allAssets.scoped([m.uuid]);
   const blocks: Block[] = [];
   for (const [i, c] of (m.content ?? []).entries()) {
     const at = childLocation(loc, "content", i);

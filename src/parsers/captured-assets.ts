@@ -15,9 +15,10 @@ export const linkedPointers = (blocks: Block[]): Set<string> =>
   new Set(blocks.flatMap(block => MEDIA.has(block.type) && "pointer" in block ? [block.pointer] : []));
 
 function assetBlock(asset: AssetBackfillReference, lookup: AssetLookup): Block {
-  const uploaded = lookup.byPointer(asset.pointer);
+  const scoped = lookup.scoped([asset.message_id]);
+  const uploaded = scoped.byPointer(asset.pointer);
   const mime = uploaded?.content_type ?? asset.content_type;
-  return mediaBlock(mediaKind(mime), asset.pointer, lookup, uploaded?.filename ?? asset.filename ?? null, mime ?? null);
+  return mediaBlock(mediaKind(mime), asset.pointer, scoped, uploaded?.filename ?? asset.filename ?? null, mime ?? null);
 }
 
 /** Raw-capture assets recorded against `messageIds` that `existing` does not already link. */
@@ -35,13 +36,18 @@ export function capturedAssetBlocks(lookup: AssetLookup, messageIds: Array<strin
 /** Append assets no message links yet: to their message_id, else to `fallbackId` when given. */
 export function addCapturedAssets(messages: Message[], lookup: AssetLookup, fallbackId: string | null): void {
   const byId = new Map(messages.map(message => [message.id, message]));
-  const seen = linkedPointers(messages.flatMap(message => message.blocks));
+  const seenAll = linkedPointers(messages.flatMap(message => message.blocks));
+  const seenByMessage = new Map(messages.map(message => [message, linkedPointers(message.blocks)]));
   for (const asset of lookup.references()) {
-    if (seen.has(asset.pointer)) continue;
-    const target = (asset.message_id ? byId.get(asset.message_id) : null)
-      ?? (fallbackId ? byId.get(fallbackId) ?? messages.at(-1) : null);
+    const owner = asset.message_id ? byId.get(asset.message_id) : null;
+    // Distinct messages may reuse one mutable pointer; only legacy records dedupe globally.
+    if (!asset.message_id && seenAll.has(asset.pointer)) continue;
+    const target = owner ?? (fallbackId ? byId.get(fallbackId) ?? messages.at(-1) : null);
     if (!target) continue;
+    const seen = seenByMessage.get(target)!;
+    if (seen.has(asset.pointer)) continue;
     seen.add(asset.pointer);
+    seenAll.add(asset.pointer);
     target.blocks.push(assetBlock(asset, lookup));
     target.text = renderText(target.blocks);
   }

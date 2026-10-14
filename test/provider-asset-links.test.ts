@@ -155,3 +155,63 @@ test("Gemini retains failed API media references for a later canonical backfill"
   })[0];
   expect(session.messages[0]?.blocks).toContainEqual({ type: "audio", pointer: "https://lh3.googleusercontent.com/voice", filename: "voice.wav", local_path: null, sha256: null, mime_type: "audio/wav" });
 });
+
+const SANDBOX = "sandbox:/mnt/data/plot.png";
+const plot = (id: string, local: string, sha256: string) =>
+  asset(SANDBOX, local, { message_id: id, sha256, content_type: "image/png" });
+const hashes = (blocks: any[]) => media(blocks).map(b => [b.local_path, b.sha256]);
+
+test("ChatGPT links a reused sandbox path to each message's own bytes", () => {
+  const [s] = parseChatgpt(gpt([
+    { id: "a1", role: "assistant", content: { content_type: "text", parts: [`[plot](${SANDBOX})`] } },
+    { id: "a2", role: "assistant", content: { content_type: "text", parts: [`[plot](${SANDBOX})`] } },
+    { id: "a3", role: "assistant", content: { content_type: "text", parts: ["no file here"] } },
+  ], [plot("a1", "assets/chatgpt/c1/one.png", "hash-one"), plot("a2", "assets/chatgpt/c1/two.png", "hash-two")]));
+  expect(hashes(s.messages[0].blocks)).toEqual([["assets/chatgpt/c1/one.png", "hash-one"]]);
+  expect(hashes(s.messages[1].blocks)).toEqual([["assets/chatgpt/c1/two.png", "hash-two"]]);
+  expect(media(s.messages[2].blocks)).toEqual([]);
+});
+
+test("ChatGPT appended references stay message-scoped and an unmatched message gets no foreign hash", () => {
+  const [s] = parseChatgpt(gpt([
+    { id: "a1", role: "assistant", content: { content_type: "text", parts: ["one"] } },
+    { id: "a2", role: "assistant", content: { content_type: "text", parts: ["two"] } },
+    { id: "a3", role: "assistant", content: { content_type: "text", parts: [`[plot](${SANDBOX})`] } },
+  ], [plot("a1", "assets/chatgpt/c1/one.png", "hash-one"), plot("a2", "assets/chatgpt/c1/two.png", "hash-two")]));
+  expect(hashes(s.messages[0].blocks)).toEqual([["assets/chatgpt/c1/one.png", "hash-one"]]);
+  expect(hashes(s.messages[1].blocks)).toEqual([["assets/chatgpt/c1/two.png", "hash-two"]]);
+  expect(hashes(s.messages[2].blocks)).toEqual([[null, null]]);
+});
+
+test("ChatGPT pointer-only fallback applies only to legacy assets without message_id", () => {
+  const [s] = parseChatgpt(gpt([
+    { id: "a1", role: "assistant", content: { content_type: "text", parts: [`[plot](${SANDBOX})`] } },
+  ], [asset(SANDBOX, "assets/chatgpt/c1/legacy.png", { sha256: "hash-legacy" })]));
+  expect(hashes(s.messages[0].blocks)).toEqual([["assets/chatgpt/c1/legacy.png", "hash-legacy"]]);
+});
+
+test("Claude appended references with a reused pointer keep per-message bytes", () => {
+  const [s] = parseClaude(claudeCapture([
+    { uuid: "h1", sender: "human", text: "a", content: [{ type: "text", text: "a" }] },
+    { uuid: "a1", sender: "assistant", parent_message_uuid: "h1", content: [{ type: "text", text: "b" }] },
+    { uuid: "a2", sender: "assistant", parent_message_uuid: "a1", content: [{ type: "text", text: "c" }] },
+  ], [plot("a1", "assets/claude/cl1/one.png", "hash-one"), plot("a2", "assets/claude/cl1/two.png", "hash-two")]));
+  expect(media(s.messages[0].blocks)).toEqual([]);
+  expect(hashes(s.messages[1].blocks)).toEqual([["assets/claude/cl1/one.png", "hash-one"]]);
+  expect(hashes(s.messages[2].blocks)).toEqual([["assets/claude/cl1/two.png", "hash-two"]]);
+});
+
+test("Gemini appended references with a reused pointer keep per-message bytes", () => {
+  const [s] = parseGemini({ source_id: "c", payload: [[[["c_c", "r_u1"], null, [[], 1], null], [["c_c", "r_u2"], null, [[], 1], null]]],
+    assets: [plot("r_u1", "assets/gemini/c/one.png", "hash-one"), plot("r_u2", "assets/gemini/c/two.png", "hash-two")] });
+  expect(hashes(s.messages[0].blocks)).toEqual([["assets/gemini/c/one.png", "hash-one"]]);
+  expect(hashes(s.messages[1].blocks)).toEqual([["assets/gemini/c/two.png", "hash-two"]]);
+});
+
+test("Unmatched message references keep their pointer without borrowing another message's bytes", () => {
+  const [s] = parseGemini({ source_id: "c", payload: [[[["c_c", "r_u1"], null, [[], 1], null], [["c_c", "r_u2"], null, [[], 1], null]]],
+    assets: [plot("r_u1", "assets/gemini/c/one.png", "hash-one"), asset("blob:other", "assets/gemini/c/other.png", { message_id: "r_u2" })],
+    asset_references: [{ pointer: SANDBOX, message_id: "r_gone", filename: null, content_type: "image/png" }] });
+  expect(hashes(s.messages[0].blocks)).toEqual([["assets/gemini/c/one.png", "hash-one"]]);
+  expect(s.messages[1].blocks.filter(b => (b as any).pointer === SANDBOX).map(b => [(b as any).local_path, (b as any).sha256])).toEqual([[null, null]]);
+});
