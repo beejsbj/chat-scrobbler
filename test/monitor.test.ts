@@ -14,6 +14,8 @@ import { storeRawCapture } from "../src/store/raw";
 import { HashEmbeddingProvider } from "../src/indexer/embedding-providers";
 import { indexSession, openIndex } from "../src/indexer/sqlite";
 import { encodeVector, textVectorHash } from "../src/indexer/vector-store";
+import type { BackfillReport } from "../src/indexer/embed-backfill";
+import type { BackfillSchedulerStatus } from "../src/indexer/backfill-scheduler";
 import chatgpt from "./fixtures/chatgpt-api-sample.json";
 import claude from "./fixtures/claude-api-sample.json";
 import gemini from "./fixtures/gemini-api-sample.json";
@@ -254,6 +256,39 @@ test("HTTP snapshots cache small state reads for 60 seconds", async () => {
     const expired = await (await handleIngestRequest(request(), opts)).json();
     expect(expired.assets.recent_upload_failures).toBe(1);
   } finally { Date.now = originalNow; rmSync(root, { recursive: true, force: true }); }
+});
+
+test("authenticated live reports expose fresh backfill progress and last run during the state cache window without inference", async () => {
+  const { root, opts } = setup();
+  let calls = 0;
+  const provider = { kind: "hash", model: "hash-v1", embed() { calls++; throw new Error("must not embed"); } };
+  const progress: BackfillReport = {
+    event: "progress", embedded: 2, converted: 0, skipped: 0, failed: 0, stale: 0, attempted: 2,
+    deferred: 0, retry_scheduled: 0, truncated: 0, provider_outage: false, coverage_at_attempt: 2,
+    text: { total: 9, embedded: 2 }, assets: null, requests: 2, estimated_requests: 9, remaining_requests: 7,
+    estimated_compute_chunks: null, remaining_compute_chunks: null, elapsed_seconds: 4, mean_request_seconds: 2,
+    eta_seconds: 14, eta_basis: "observed",
+  };
+  const status: BackfillSchedulerStatus = {
+    enabled: true, running: true, state: "running", interval_ms: 600_000, batch_size: 5,
+    next_run_at: null, consecutive_failures: 0, progress, lease: null, last_run: null,
+    maintenance: { state: "idle", migration: null },
+  };
+  const liveOpts = { ...opts, embeddingProvider: provider, backfillStatus: () => structuredClone(status) };
+  try {
+    const response = await handleIngestRequest(request(), liveOpts);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ scope: "live", backfill: { running: true, progress: { embedded: 2 }, last_run: null } });
+    status.running = false;
+    status.state = "scheduled";
+    progress.embedded = 3;
+    progress.event = "complete";
+    status.last_run = { started_at: "2026-10-13T12:00:00Z", finished_at: "2026-10-13T12:00:06Z", outcome: "complete", report: progress, lease: null };
+    const next = await (await handleIngestRequest(request(), liveOpts)).json();
+    expect(next).toMatchObject({ backfill: { running: false, progress: { embedded: 3 }, last_run: { outcome: "complete", report: { embedded: 3 } } } });
+    expect(calls).toBe(0);
+    expect(JSON.stringify(next)).not.toContain("report-secret");
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
 test("offline monitor reports a missing index consistently without creating a replacement", () => {

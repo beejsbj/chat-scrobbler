@@ -1,4 +1,5 @@
 import type { IngestServerOptions } from "../../packages/ingest/src/server";
+import { backfillHealth } from "../../packages/ingest/src/health";
 import { providerFreshness } from "./freshness";
 import { parseFailureLines } from "./parse-state";
 import { monitorSettings } from "./config";
@@ -30,14 +31,14 @@ export function liveMonitorReport(opts: IngestServerOptions) {
     if (skipped) failures.push(skipped);
   } catch { failures.push("FAILED index unreadable_or_incompatible"); }
   failures.sort();
-  return { scope: "live", ok: !failures.length, failures, providers, counters: state?.counters ?? {}, parse: state?.parse ?? {}, assets: { upload_failures: state?.counters.asset_failures ?? 0, recent_upload_failures: state?.recentAssets ?? 0 }, state: state ? "available" : "unavailable", deferred_checks: ["raw", "canonical", "unknown_types", "embedding_coverage", "embedding_probe", "attachments", "store_health"] };
+  return { scope: "live", ok: !failures.length, failures, providers, counters: state?.counters ?? {}, parse: state?.parse ?? {}, assets: { upload_failures: state?.counters.asset_failures ?? 0, recent_upload_failures: state?.recentAssets ?? 0 }, backfill: backfillHealth(opts), state: state ? "available" : "unavailable", deferred_checks: ["raw", "canonical", "unknown_types", "embedding_coverage", "embedding_probe", "attachments", "store_health"] };
 }
 
 const cache = new Map<string, { expires: number; report: ReturnType<typeof liveMonitorReport> }>();
 export function cachedLiveMonitorReport(opts: IngestServerOptions) {
   const key = JSON.stringify([opts.indexPath, opts.canonicalDir, monitorSettings(opts), opts.embeddingProvider?.kind?.trim(), opts.embeddingProvider?.model?.trim()]);
   const previous = cache.get(key);
-  if (previous && previous.expires > Date.now()) return previous.report;
+  if (previous && previous.expires > Date.now()) return { ...previous.report, backfill: backfillHealth(opts) };
   for (const [key, entry] of cache) if (entry.expires <= Date.now()) cache.delete(key);
   const report = liveMonitorReport(opts);
   cache.set(key, { expires: Date.now() + 60_000, report });
