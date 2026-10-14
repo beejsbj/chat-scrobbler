@@ -1,13 +1,14 @@
 import {openIndex} from './sqlite';
 import {migrateLegacyVectors} from './vector-store';
-import {acquireBackfillLock} from './backfill-lock';
+import {acquireBackfillLock, type BackfillLeaseStatus} from './backfill-lock';
 import {deferWalCheckpoints} from './background-wal-checkpoint';
 
-export type VectorMigrationReport = ReturnType<typeof migrateLegacyVectors>;
+export type VectorMigrationReport = ReturnType<typeof migrateLegacyVectors> & {lease?: BackfillLeaseStatus};
 export interface BackgroundVectorMigrationOptions {
   signal?: AbortSignal;
   yield?: () => Promise<void>;
-  /** Cumulative counts for this invocation and the durable legacy rowid cursor. */
+  /** Cumulative counts, cursor and lease snapshot. Failures publish one terminal
+   * snapshot after cleanup, so health can retain lease loss/recovery metadata. */
   progress?: (report: VectorMigrationReport) => void;
 }
 
@@ -35,6 +36,7 @@ export async function migrateVectorsInBackground(
   const report: VectorMigrationReport = {scanned: 0, converted: 0, invalid: 0, cursor: 0};
   let lease: ReturnType<typeof acquireBackfillLock> = null;
   let db: ReturnType<typeof openIndex> | undefined;
+  let failed = false;
   const pause = async (signal = opts.signal) => {
     signal?.throwIfAborted();
     await wait(signal, () => opts.yield?.() ?? Bun.sleep(0));
@@ -59,7 +61,7 @@ export async function migrateVectorsInBackground(
         report.invalid += batch.invalid;
         report.cursor = batch.cursor;
         if (!batch.scanned) break;
-        opts.progress?.({...report});
+        opts.progress?.({...report, lease: owner.status()});
         await pause(signal);
         await wal.checkpoint();
         signal.throwIfAborted();
@@ -67,7 +69,20 @@ export async function migrateVectorsInBackground(
       }
       return report;
     } finally {wal.restore();}
+  } catch (error) {
+    failed = true;
+    throw error;
   } finally {
-    try {db?.close();} finally {lease?.release();}
+    try {db?.close();} finally {
+      try {lease?.release();} finally {
+        if (lease) {
+          report.lease = lease.status();
+          if (failed) {
+            // A reporting failure must not mask the original migration error.
+            try {opts.progress?.({...report, lease: {...report.lease}});} catch {}
+          }
+        }
+      }
+    }
   }
 }
