@@ -1,3 +1,4 @@
+import {cooperativeWrite} from './cooperative-write';
 import {openIndex} from './sqlite';
 import {migrateLegacyVectors} from './vector-store';
 import {acquireBackfillLock, type BackfillLeaseStatus} from './backfill-lock';
@@ -55,7 +56,7 @@ export async function migrateVectorsInBackground(
     try {
       while (true) {
         signal.throwIfAborted();
-        const batch = migrateLegacyVectors(writer, {limit: 32, assertLease: () => owner.assertOwned(writer)});
+        const batch = await cooperativeWrite(writer, () => migrateLegacyVectors(writer, {limit: 32, assertLease: () => owner.assertOwned(writer)}), signal);
         report.scanned += batch.scanned;
         report.converted += batch.converted;
         report.invalid += batch.invalid;

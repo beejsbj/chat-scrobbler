@@ -244,3 +244,15 @@ test('a pinned reader makes the WAL target soft without blocking warmup or losin
     rmSync(root, {recursive: true, force: true});
   }
 });
+
+test('warmup yields while another writer is held instead of blocking its release timer',async()=> {
+ const root=mkdtempSync(join(tmpdir(),'warmup-writer-wait-')),path=join(root,'index.db');
+ const db=openIndex(path),writer=openIndex(path);let timer:ReturnType<typeof setTimeout>|undefined;
+ try {
+  indexSession(db,fixture());writer.run('BEGIN IMMEDIATE');
+  timer=setTimeout(()=>{timer=undefined;writer.run('COMMIT');},20);
+  await warmSearchCaches(db,null);
+  expect(searchWarmupStatus(db).state).toBe('ready');
+  expect((db.query('PRAGMA busy_timeout').get() as {timeout:number}).timeout).toBe(5000);
+ }finally{clearTimeout(timer);writer.close();db.close();rmSync(root,{recursive:true,force:true});}
+});

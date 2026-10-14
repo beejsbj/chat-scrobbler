@@ -1,3 +1,4 @@
+import {cooperativeWrite} from './cooperative-write';
 import type {Database} from 'bun:sqlite';
 import type {EmbeddingProvider} from './sqlite';
 import {messageLookupBatch} from './message-lookup';
@@ -56,7 +57,7 @@ export function warmSearchCaches(db:Database,provider:EmbeddingProvider|null,opt
       try {
         // Yield immediately, allowing a request arriving with startup to get FTS recall.
         await pause();
-        while(!messageLookupBatch(db,batchSize))await pause();
+        while(!await cooperativeWrite(db,()=>messageLookupBatch(db,batchSize),opts.signal))await pause();
         state.stage='vectors';operation='vectors';
         if(provider) {
           const kind=provider.kind?.trim() || 'unknown',model=provider.model?.trim() || '';
