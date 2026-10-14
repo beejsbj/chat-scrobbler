@@ -61,3 +61,28 @@ test("a discovered pointer without a download URL is reported, while text captur
   });
   expect(failures).toMatchObject([{ reason: "asset_url_unavailable", source_id: "c" }]);
 });
+
+test("oversize inline base64 is rejected before decoding, while boundary base64 uploads", async () => {
+  const realAtob = globalThis.atob;
+  let decoded = 0;
+  globalThis.atob = ((value: string) => { decoded++; return realAtob(value); }) as typeof atob;
+  try {
+    const failures: unknown[] = [];
+    const uploads: number[] = [];
+    const upload = async (request: { pointer: string; bytes: ArrayLike<number> }) => {
+      uploads.push(request.bytes.length);
+      return { pointer: request.pointer, local_path: "assets/claude/c/hash.png" };
+    };
+    const run = (pointer: string, inlineBase64: string) => uploadProviderAssets(async () => { throw new Error("no fetch"); }, upload,
+      [{ source: "claude", sourceId: "c", pointer, url: null, inlineBase64, contentType: "image/png" }],
+      { maxBytes: 4, beforeFetch: async () => {}, reportFailure: async failure => { failures.push(failure); } });
+    expect(await run("big", btoa("\x89PNG\r\n\x1a\n"))).toEqual([]);
+    expect(decoded).toBe(0);
+    expect(failures).toMatchObject([{ reason: "asset_too_large" }]);
+    expect(await run("edge", btoa("\x89PNG"))).toHaveLength(1);
+    expect(uploads).toEqual([4]);
+    failures.length = 0;
+    expect(await run("bad", "!!!!")).toEqual([]);
+    expect(failures).toMatchObject([{ reason: "asset_download_failed" }]);
+  } finally { globalThis.atob = realAtob; }
+});

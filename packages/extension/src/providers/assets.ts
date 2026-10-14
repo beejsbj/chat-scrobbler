@@ -67,6 +67,7 @@ export async function uploadProviderAssets(
       if (downloadBlock) throw downloadBlock;
       await (options.beforeFetch ?? paceAssetDownload)();
       const url = options.resolveUrl ? await options.resolveUrl(candidate) : candidate.url;
+      if (!candidate.inlineBytes && candidate.inlineBase64 !== undefined && estimatedBase64Bytes(candidate.inlineBase64) > maxBytes) throw new Error("asset_too_large");
       const inlineBytes = candidate.inlineBytes ?? (candidate.inlineBase64 !== undefined
         ? Uint8Array.from(atob(candidate.inlineBase64), char => char.charCodeAt(0)) : undefined);
       if (!inlineBytes && (!url || !candidateUrlAllowed(url, candidate))) throw new Error("asset_url_unavailable");
@@ -114,6 +115,11 @@ export async function uploadProviderAssets(
     }
   }
   return uploaded;
+}
+
+function estimatedBase64Bytes(data: string): number {
+  const padding = data.endsWith("==") ? 2 : data.endsWith("=") ? 1 : 0;
+  return Math.max(0, Math.floor(data.length * 3 / 4) - padding);
 }
 
 async function fetchAssetViaBackground(url: string, maxBytes: number, candidate: ProviderAssetCandidate): Promise<ProviderAssetBytes> {
