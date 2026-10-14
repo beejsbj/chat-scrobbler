@@ -24,6 +24,8 @@ export function ensureMessageLookup(db: Database): void {
 export function messageLookupBatch(db: Database, limit=500): boolean {
   const state=db.query("SELECT cursor,ready FROM message_lookup_state WHERE id=1").get() as {cursor:number;ready:number};
   if(!state.ready) {
+    // Reserve the WAL writer before reading the page. A deferred snapshot cannot
+    // upgrade after another connection commits (SQLITE_BUSY_SNAPSHOT).
     db.transaction(()=> {
       if(state.cursor===0) {
         db.run("DELETE FROM message_lookup");
@@ -34,7 +36,7 @@ export function messageLookupBatch(db: Database, limit=500): boolean {
       const rows=db.query("SELECT rowid,session_id,message_id FROM messages_fts WHERE rowid>? ORDER BY rowid LIMIT ?").all(state.cursor,limit) as Array<{rowid:number;session_id:string;message_id:string}>;
       for(const row of rows) db.run("INSERT OR REPLACE INTO message_lookup VALUES (?,?,?)",[row.session_id,row.message_id,row.rowid]);
       db.run("UPDATE message_lookup_state SET cursor=?,ready=? WHERE id=1",[rows.at(-1)?.rowid ?? state.cursor,rows.length<limit ? 1 : 0]);
-    })();
+    }).immediate();
     return false;
   }
   const dirty=db.query("SELECT session_id FROM message_lookup_dirty LIMIT 1").get() as {session_id:string}|null;
@@ -43,6 +45,6 @@ export function messageLookupBatch(db: Database, limit=500): boolean {
     db.run("DELETE FROM message_lookup WHERE session_id=?",[dirty.session_id]);
     db.run("INSERT OR REPLACE INTO message_lookup SELECT session_id,message_id,rowid FROM messages_fts WHERE session_id=?",[dirty.session_id]);
     db.run("DELETE FROM message_lookup_dirty WHERE session_id=?",[dirty.session_id]);
-  })();
+  }).immediate();
   return false;
 }
