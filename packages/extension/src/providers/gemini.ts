@@ -330,8 +330,8 @@ async function syncGemini(
   }
 
   detailFailures.finish();
-  failures.finishListing();
-  return { source: "gemini", scanned, captured, skipped, failed, captureFailures: failures.list(), detailFailureStreak: detailFailures.snapshot(), maxConversationUpdatedAt: failures.pending ? options.lastSync ?? null : maxConversationUpdatedAt, account: null };
+  failures.finishListing(false); // Sidebar absence cannot confirm deletion.
+  return { source: "gemini", scanned, captured, skipped, failed, captureFailures: failures.list(), detailFailureStreak: detailFailures.snapshot(), maxConversationUpdatedAt: failures.pendingListed ? options.lastSync ?? null : maxConversationUpdatedAt, account: null };
   } catch (error) { return failures.abort(error); }
 }
 
