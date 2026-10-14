@@ -140,6 +140,7 @@ export function deleteIndexedSession(db: Database, source: string, sourceId: str
     db.run(`DELETE FROM message_embeddings WHERE session_id = ?`, [sessionId]);
     db.run(`DELETE FROM message_vectors WHERE session_id = ?`, [sessionId]);
     db.run("DELETE FROM embedding_pending WHERE session_id=?",[sessionId]);
+    db.run("DELETE FROM message_vector_chunks WHERE session_id=?",[sessionId]);
     const hashes=linkedAssetHashes(db,sessionId);
     db.run("DELETE FROM asset_embedding_links WHERE session_id=?", [sessionId]);
     pruneUnownedAssetVectors(db,hashes);
@@ -326,7 +327,7 @@ function indexLiteralSession(db: Database, s: Session, opts: IndexSessionOptions
   }
   // Reconciliation belongs to capture indexing, even when inference is deferred.
   const ids = new Set(s.messages.map(message => message.id));
-  for (const table of ["message_vectors", "message_embeddings", "embedding_pending"]) {
+  for (const table of ["message_vectors", "message_embeddings", "message_vector_chunks", "embedding_pending"]) {
     const rows = db.query(`SELECT DISTINCT message_id FROM ${table} WHERE session_id=?`).all(s.id) as Array<{message_id:string}>;
     for (const row of rows) if (!ids.has(row.message_id))
       db.run(`DELETE FROM ${table} WHERE session_id=? AND message_id=?`, [s.id,row.message_id]);

@@ -26,8 +26,8 @@ test("backfill commits each message, continues after failure, and rejects a stal
   try {
     const s = fixture(); s.messages.push({ ...s.messages[0], id: "m2", text: "second" }); indexSession(db,s);
     const report = await embedBackfill(db, { provider: { ...p, embed: async text => { if (text === "archived words") throw new Error("private text"); return [1,0]; } }, load: () => 0, sleep: async () => {} });
-    expect(report).toMatchObject({ failed: 1, embedded: 1, text: { embedded: 1 } });
-    const stale = await embedBackfill(db, { provider: { ...p, embed: async () => { indexSession(db, fixture("newer text")); return [1,0]; } }, load: () => 0, sleep: async () => {}, limit: 1 });
+    expect(report).toMatchObject({ failed: 0, deferred: 1, embedded: 1, text: { embedded: 1 } });
+    const stale = await embedBackfill(db, { provider: { ...p, embed: async () => { indexSession(db, fixture("newer text")); return [1,0]; } }, load: () => 0, sleep: async () => {}, limit: 1, wallNow:()=>Date.now()+180000 });
     expect(stale).toMatchObject({ stale: 1, embedded: 0 });
   } finally { db.close(); }
 });
@@ -92,7 +92,7 @@ test("deleted queued messages never reach inference", async () => {
   try {
     const s=fixture();s.messages.push({...s.messages[0],id:"second",text:"must not send"});indexSession(db,s);
     const calls:string[]=[];await embedBackfill(db,{provider:{...p,embed:async text=>{calls.push(text);deleteIndexedSession(db,"chatgpt","test");return[1,0];}},load:()=>0,sleep:async()=>{}});
-    expect(calls).toEqual(["archived words"]);
+    expect(calls).toEqual(["must not send"]);
   } finally {db.close();}
 });
 test("normal backfill limits work and leaves unrelated legacy models unconverted", async () => {
@@ -106,7 +106,7 @@ test("normal backfill limits work and leaves unrelated legacy models unconverted
 });
 test("backfill rejects a provider's declared dimension mismatch", async () => {
   const db=openIndex(":memory:");
-  try {indexSession(db,fixture());expect(await embedBackfill(db,{provider:{...p,embed:async()=>[1,0,0]},load:()=>0,sleep:async()=>{}})).toMatchObject({embedded:0,failed:1});expect(db.query("SELECT * FROM message_vectors").all()).toHaveLength(0);}
+  try {indexSession(db,fixture());expect(await embedBackfill(db,{provider:{...p,embed:async()=>[1,0,0]},load:()=>0,sleep:async()=>{}})).toMatchObject({embedded:0,failed:0,deferred:1});expect(db.query("SELECT * FROM message_vectors").all()).toHaveLength(0);}
   finally {db.close();}
 });
 
@@ -118,15 +118,18 @@ test("a deletion during the per-request load wait prevents dispatch", async () =
     expect(dispatched).toBe(0);expect(report).toMatchObject({ stale:1, requests:0, mean_request_seconds:null });
   } finally {db.close();}
 });
-test("limit includes lazy legacy conversions and those writes wait for low load", async () => {
-  const db=openIndex(":memory:");
-  try {
-    const s=fixture();s.messages.push({...s.messages[0],id:"m2",text:"second"});indexSession(db,s);
-    for(const m of s.messages)db.run(`INSERT INTO message_embeddings(session_id,message_id,embedding,text,title,role,source,provider_kind,provider_model,dimension) VALUES (?,?,?,?,?,?,?,?,?,?)`,[s.id,m.id,"[1,0]",m.text,"T","user","chatgpt","test","m",2]);
-    let checks=0,paused=false;
-    const report=await embedBackfill(db,{provider:{...p,embed:async()=>{throw new Error("legacy reuse");}},limit:1,rate:1,loadThreshold:8,load:()=>++checks===2 ? 9 : 0,sleep:async ms=>{if(ms===5000){expect(db.query("SELECT * FROM message_vectors").all()).toHaveLength(0);paused=true;}}});
-    expect(paused).toBe(true);expect(report.attempted).toBe(1);expect(db.query("SELECT * FROM message_vectors").all()).toHaveLength(1);
-  } finally {db.close();}
+test("legacy conversions do not consume the inference budget and fresh work observes the load brake", async () => {
+ const db=openIndex(":memory:");
+ try {
+  const s=fixture();s.messages.push({...s.messages[0],id:"m2",text:"second"});indexSession(db,s);
+  db.run(`INSERT INTO message_embeddings(session_id,message_id,embedding,text,title,role,source,provider_kind,provider_model,dimension)
+   VALUES (?,?,?,?,?,?,?,?,?,?)`,[s.id,s.messages[0].id,"[1,0]",s.messages[0].text,"T","user","chatgpt","test","m",2]);
+  let checks=0,calls=0,paused=false;
+  const report=await embedBackfill(db,{provider:{...p,embed:async()=>{calls++;return [1,0];}},limit:1,rate:1,loadThreshold:8,
+   load:()=>checks++===0 ? 9 : 0,sleep:async ms=>{if(ms===5000){expect(db.query("SELECT * FROM message_vectors").all()).toHaveLength(0);paused=true;}}});
+  expect(paused).toBe(true);expect(calls).toBe(1);expect(report).toMatchObject({attempted:1,embedded:1,converted:0,skipped:1});
+  expect(db.query("SELECT message_id FROM message_vectors").all()).toEqual([{message_id:"m2"}]);
+ }finally{db.close();}
 });
 test("coverage excludes nonfinite text blobs with valid byte lengths", async () => {
   const db=openIndex(":memory:");
@@ -189,7 +192,7 @@ test("backfill ignores host load by default and yields 100 ms between serial req
     });
     expect(report.embedded).toBe(2);
     expect(loadChecks).toBe(0);
-    expect(sent).toEqual(["archived words", "second"]);
+    expect(sent).toEqual(["second", "archived words"]);
     expect(sleeps).toEqual([100]);
   } finally { db.close(); }
 });
@@ -235,11 +238,11 @@ test("backfill reports chunk work and ETA while yielding between every serial ch
       provider, now: () => clock, sleep: async ms => { sleeps.push(ms); clock += ms; },
       progress: report => progress.push(report),
     });
-    expect(progress[0]).toMatchObject({ estimated_requests: 3, remaining_requests: 3, estimated_compute_chunks: 7, remaining_compute_chunks: 7, requests: 0, eta_basis: "assumed_2s_per_compute_chunk" });
-    expect(progress[0].eta_seconds).toBeCloseTo(14.3, 8);
-    expect(report).toMatchObject({ embedded: 2, requests: 3, remaining_requests: 0, elapsed_seconds: 6.2, mean_request_seconds: 2, eta_seconds: 0, eta_basis: "observed" });
-    expect(dispatched).toEqual([0, 2100, 4200]);
-    expect(sleeps).toEqual([100, 100]);
+    expect(progress[0]).toMatchObject({ estimated_requests: 9, remaining_requests: 9, estimated_compute_chunks: 9, remaining_compute_chunks: 9, requests: 0, eta_basis: "assumed_2s_per_compute_chunk" });
+    expect(progress[0].eta_seconds).toBeCloseTo(18.9, 8);
+    expect(report).toMatchObject({ embedded: 2, requests: 9, remaining_requests: 0, elapsed_seconds: 18.8, mean_request_seconds: 2, eta_seconds: 0, eta_basis: "observed" });
+    expect(dispatched).toEqual(Array.from({length:9},(_,i)=>i*2100));
+    expect(sleeps).toEqual(Array(8).fill(100));
     expect(maxActive).toBe(1);
   } finally { globalThis.fetch = originalFetch; db.close(); }
 });
@@ -258,7 +261,7 @@ test("ETA excludes cached vectors, legacy conversions, and blank messages from i
     const report = await embedBackfill(db, {
       provider: { ...p, embed: async () => { throw new Error("no inference expected"); } }, sleep: async () => {},
     });
-    expect(report).toMatchObject({ converted: 1, skipped: 2, estimated_requests: 0, remaining_requests: 0, requests: 0, eta_seconds: 0 });
+    expect(report).toMatchObject({ converted: 0, skipped: 3, estimated_requests: 0, remaining_requests: 0, requests: 0, eta_seconds: 0 });
   } finally { db.close(); }
 });
 
@@ -273,7 +276,7 @@ test("failed document chunks remain in the ETA for a whole-document retry", asyn
       : new Response("fixture unavailable", { status: 503 })) as typeof fetch;
     const provider = new EmbeddingGemmaProvider({ baseUrl: "http://fixture.invalid", model: "test" });
     const report = await embedBackfill(db, { provider, sleep: async () => {} });
-    expect(report).toMatchObject({ failed: 1, embedded: 0, requests: 2, estimated_requests: 2, remaining_requests: 2, text: { total: 1, embedded: 0 } });
+    expect(report).toMatchObject({ failed: 0, deferred:1, embedded: 0, requests: 2, estimated_requests: 8, remaining_requests: 8, text: { total: 1, embedded: 0 } });
   } finally { globalThis.fetch = originalFetch; db.close(); }
 });
 
@@ -376,8 +379,8 @@ test("a fast HTTP failure preserves the initial native chunk ETA until a success
     }) as typeof fetch;
     const provider = new EmbeddingGemmaProvider({ baseUrl:"http://fixture.invalid", model:"test" });
     const report = await embedBackfill(db,{provider,limit:1,now:()=>clock,sleep:async ms=>{clock+=ms;}});
-    expect(report).toMatchObject({ failed:1, requests:1, remaining_requests:3, mean_request_seconds:null, eta_basis:"assumed_2s_per_compute_chunk" });
-    expect(report.eta_seconds).toBeCloseTo(14.3,8);
+    expect(report).toMatchObject({ failed:0, deferred:1, requests:1, remaining_requests:9, mean_request_seconds:null, eta_basis:"assumed_2s_per_compute_chunk" });
+    expect(report.eta_seconds).toBeCloseTo(18.9,8);
   } finally { globalThis.fetch=originalFetch; db.close(); }
 });
 
@@ -395,7 +398,7 @@ test("generic providers without dispatch hooks count calls but sample only succe
       }},
       now:()=>clock,sleep:async ms=>{clock+=ms;},
     });
-    expect(report).toMatchObject({ failed:1, embedded:1, requests:2, mean_request_seconds:2, remaining_requests:1, eta_basis:"observed" });
+    expect(report).toMatchObject({ failed:0, deferred:1, embedded:1, requests:2, mean_request_seconds:2, remaining_requests:1, eta_basis:"observed" });
     expect(report.eta_seconds).toBeCloseTo(2.1,8);
   } finally {db.close();}
 });
@@ -423,30 +426,22 @@ test("deleting an asset during its pacing yield does not count or sample a media
   } finally {globalThis.fetch=originalFetch;db.close();}
 });
 
-test("background skips covered blobs, bounds scanning, yields, and resumes past a covered prefix", async () => {
-  const db = openIndex(":memory:");
-  try {
-    const s = fixture();
-    s.messages = Array.from({ length: 305 }, (_, i) => ({ ...s.messages[0], id: `m${i}`, text: `words ${i}` }));
-    indexSession(db, s);
-    const { putTextVector } = await import("../src/indexer/vector-store");
-    for (const message of s.messages.slice(0, 300)) putTextVector(db, {
-      session_id: s.id, message_id: message.id, text: message.text, title: s.title,
-      role: message.role, created_at: message.created_at, source: s.source,
-      provider_kind: "test", provider_model: "m", dimension: 2, embedding: [1, 0],
-    });
-    // A covered blob with bad coordinates proves background never decodes it.
-    db.run("UPDATE message_vectors SET embedding=?", [new Uint8Array([0, 0, 192, 127, 0, 0, 0, 0])]);
-    let yields = 0, calls = 0;
-    const options = { provider: { ...p, embed: async () => { calls++; return [1, 0]; } }, limit: 2,
-      background: { cursor: 0, scanLimit: 200 }, yieldToQueries: async () => { yields++; }, sleep: async () => {} };
-    const first = await embedBackfill(db, options);
-    expect(first).toMatchObject({ attempted: 0, skipped: 200, text: null, assets: null,
-      scan: { cursor: 200, scanned: 200, exhausted: false } });
-    expect(yields).toBeGreaterThanOrEqual(2);
-    const second = await embedBackfill(db, { ...options, background: { cursor: 200, scanLimit: 200 } });
-    expect(second).toMatchObject({ embedded: 2, attempted: 2, text: null,
-      scan: { cursor: 302, scanned: 102, exhausted: false } });
-    expect(calls).toBe(2);
-  } finally { db.close(); }
+test("background uses indexed pending work without sweeping a covered prefix",async()=> {
+ const db=openIndex(":memory:");
+ try {
+  const s=fixture();s.messages=Array.from({length:305},(_,i)=>({...s.messages[0],id:`m${i}`,text:`words ${i}`}));indexSession(db,s);
+  const {putTextVector}=await import("../src/indexer/vector-store");
+  for(const message of s.messages.slice(0,300))putTextVector(db,{session_id:s.id,message_id:message.id,text:message.text,title:s.title,
+   role:message.role,created_at:message.created_at,source:s.source,provider_kind:"test",provider_model:"m",dimension:2,embedding:[1,0]});
+  const {initializePendingEmbeddings}=await import("../src/indexer/pending-embeddings");await initializePendingEmbeddings(db,p);
+  // After registration, covered blobs are not fetched again by pending passes.
+  db.run("UPDATE message_vectors SET embedding=?",[new Uint8Array([0,0,192,127,0,0,0,0])]);
+  let yields=0,calls=0;
+  const opts={provider:{...p,embed:async()=>{calls++;return [1,0];}},limit:2,
+   background:{cursor:0,scanLimit:200},yieldToQueries:async()=>{yields++;},sleep:async()=>{}};
+  expect(await embedBackfill(db,opts)).toMatchObject({embedded:2,attempted:2,scan:{scanned:2,exhausted:false},text:{embedded:302}});
+  expect(await embedBackfill(db,opts)).toMatchObject({embedded:2,attempted:2,scan:{scanned:2,exhausted:false}});
+  expect(await embedBackfill(db,opts)).toMatchObject({embedded:1,scan:{scanned:1,exhausted:true}});
+  expect(calls).toBe(5);expect(yields).toBeGreaterThanOrEqual(5);
+ }finally{db.close();}
 });

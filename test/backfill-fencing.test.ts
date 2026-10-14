@@ -27,7 +27,7 @@ test("a fenced text holder retains prior commits, discards its in-flight result 
       return [1,0];
     }},assertLease:()=>lease.assertOwned(db),sleep:async()=>{}})).rejects.toThrow("backfill lease lost");
     expect(calls).toBe(2);
-    expect(db.query("SELECT message_id FROM message_vectors").all()).toEqual([{message_id:"m0"}]);
+    expect(db.query("SELECT message_id FROM message_vectors").all()).toEqual([{message_id:"m2"}]);
     replacement.lease!.assertOwned(db);
   } finally {lease.release();replacement.lease?.release();db.close();rmSync(root,{recursive:true,force:true});}
 });

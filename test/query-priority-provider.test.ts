@@ -35,7 +35,7 @@ test("wrapped Gemma preserves native request hooks, chunk estimates, title, and 
     indexSession(db,fixture("x".repeat(9000)));
     const abort=new AbortController();
     const report=await embedBackfill(db,{provider,limit:1,signal:abort.signal,sleep:async()=>{},background:{cursor:0,scanLimit:100}});
-    expect(report).toMatchObject({embedded:1,requests:2});expect(calls).toBe(2);
+    expect(report).toMatchObject({embedded:1,requests:8});expect(calls).toBe(8);
     expect(signals.every(signal=>signal instanceof AbortSignal)).toBe(true);
   } finally {globalThis.fetch=originalFetch;db.close();}
 });
@@ -59,4 +59,21 @@ test("native Gemma queries dispatch while a chunked document call is still activ
     expect(order).toEqual(["document","query"]);
     expect(provider).toBe(raw);
   } finally {release();await Promise.all([document,query]);globalThis.fetch=originalFetch;}
+});
+
+test('an Ollama query overtakes the next chunk of an active long message',async()=> {
+ const db=openIndex(':memory:');let enter!:()=>void,release!:()=>void;
+ const entered=new Promise<void>(resolve=>{enter=resolve;}),blocked=new Promise<void>(resolve=>{release=resolve;});
+ const order:string[]=[];
+ const provider=queryPriorityProvider({kind:'ollama',model:'m',dimensions:2,embed:async(text,context)=>{
+  order.push(context!.kind);if(order.length===1){enter();await blocked;}
+  if(context!.kind==='document')expect(text.length).toBeLessThanOrEqual(1500);
+  return [1,0];
+ }});
+ let backfill:ReturnType<typeof embedBackfill>|undefined;
+ try {
+  indexSession(db,fixture('x'.repeat(3000)));backfill=embedBackfill(db,{provider,sleep:async()=>{}});
+  await entered;const query=provider.embed('needle',{kind:'query'});release();
+  await Promise.all([backfill,query]);expect(order).toEqual(['document','query','document']);
+ }finally{release();await backfill;db.close();}
 });
