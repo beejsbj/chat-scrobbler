@@ -1,0 +1,140 @@
+import {expect, test} from 'bun:test';
+import {Database} from 'bun:sqlite';
+import {mkdtempSync, rmSync, statSync} from 'node:fs';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
+import {openIndex} from '../src/indexer/sqlite';
+import {warmSearchCaches, searchWarmupStatus} from '../src/indexer/search-warmup';
+
+const autocheckpoint = (db: ReturnType<typeof openIndex>) =>
+  (db.query('PRAGMA wal_autocheckpoint').get() as {wal_autocheckpoint: number}).wal_autocheckpoint;
+
+test('warmup disables commit checkpoints across lookup and literal yields, then restores the caller setting', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'warmup-wal-'));
+  const db = openIndex(join(root, 'index.db'));
+  try {
+    db.transaction(() => {
+      for (let i = 0; i < 65; i++) db.run(
+        'INSERT INTO messages_fts(session_id,message_id,text,source) VALUES (?,?,?,?)',
+        ['chatgpt:test', String(i), 'archived words', 'chatgpt']);
+    })();
+    db.run('PRAGMA wal_autocheckpoint=7');
+    const stages = new Set<string>();
+    let yields = 0;
+    await warmSearchCaches(db, null, {batchSize: 4, yield: async () => {
+      expect(autocheckpoint(db)).toBe(0);
+      stages.add(searchWarmupStatus(db).stage);
+      yields++;
+      await Bun.sleep(0);
+    }});
+    expect(yields).toBeGreaterThan(16);
+    expect(stages.has('lookup')).toBe(true);
+    expect(stages.has('literal')).toBe(true);
+    expect(autocheckpoint(db)).toBe(7);
+    expect(searchWarmupStatus(db).state).toBe('ready');
+  } finally {
+    db.close();
+    rmSync(root, {recursive: true, force: true});
+  }
+});
+
+test('warmup caps oversized lookup batches so startup still yields after at most 64 rows', async () => {
+  const db = openIndex(':memory:');
+  try {
+    db.transaction(() => {
+      for (let i = 0; i < 257; i++) db.run(
+        'INSERT INTO messages_fts(session_id,message_id,text,source) VALUES (?,?,?,?)',
+        ['chatgpt:test', String(i), 'stored words', 'chatgpt']);
+    })();
+    let previous = 0, largest = 0;
+    await warmSearchCaches(db, null, {batchSize: 1024, yield: async () => {
+      const {cursor} = db.query('SELECT cursor FROM message_lookup_state WHERE id=1').get() as {cursor: number};
+      largest = Math.max(largest, cursor - previous);
+      previous = cursor;
+    }});
+    expect(largest).toBeGreaterThan(0);
+    expect(largest).toBeLessThanOrEqual(64);
+  } finally {db.close();}
+});
+
+test('warmup restores autocheckpoint after yield failure and cancellation, including an already aborted signal', async () => {
+  for (const failure of ['yield', 'cancel', 'already-aborted']) {
+    const db = openIndex(':memory:');
+    const abort = new AbortController();
+    const reason = new Error(failure);
+    try {
+      db.run('PRAGMA wal_autocheckpoint=23');
+      if (failure === 'already-aborted') abort.abort(reason);
+      await expect(warmSearchCaches(db, null, {signal: abort.signal, yield: async () => {
+        expect(autocheckpoint(db)).toBe(0);
+        if (failure === 'yield') throw reason;
+        abort.abort(reason);
+      }})).rejects.toThrow(failure);
+      expect(autocheckpoint(db)).toBe(23);
+      expect(searchWarmupStatus(db).state).toBe('failed');
+      // A failed job must release its deduplication slot, too.
+      await warmSearchCaches(db, null);
+      expect(searchWarmupStatus(db).state).toBe('ready');
+      expect(autocheckpoint(db)).toBe(23);
+    } finally {db.close();}
+  }
+});
+
+test('warmup checkpoints a large WAL between batches while keeping the request loop live', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'warmup-wal-bound-'));
+  const path = join(root, 'index.db');
+  const db = openIndex(path);
+  try {
+    db.run('PRAGMA wal_autocheckpoint=0');
+    db.run('INSERT INTO messages_fts(session_id,message_id,text,source) VALUES (?,?,?,?)',
+      ['chatgpt:test', 'm', 'stored words', 'chatgpt']);
+    // A disposable, already committed WAL backlog, without a large chat scan.
+    db.run('CREATE TABLE checkpoint_fixture(payload BLOB)');
+    db.run('INSERT INTO checkpoint_fixture VALUES (zeroblob(5242880))');
+    expect(statSync(`${path}-wal`).size).toBeGreaterThan(4 * 1024 * 1024);
+    db.run('PRAGMA wal_autocheckpoint=13');
+    let ticks = 0;
+    const timer = setInterval(() => {ticks++;}, 1);
+    try {
+      await warmSearchCaches(db, null, {batchSize: 1, yield: async () => {
+        expect(autocheckpoint(db)).toBe(0);
+        await Bun.sleep(0);
+      }});
+    } finally {clearInterval(timer);}
+    expect(ticks).toBeGreaterThan(0);
+    expect(statSync(`${path}-wal`).size).toBeLessThan(4 * 1024 * 1024);
+    expect(autocheckpoint(db)).toBe(13);
+    expect(db.query('SELECT length(payload) AS n FROM checkpoint_fixture').get()).toEqual({n: 5242880});
+  } finally {
+    db.close();
+    rmSync(root, {recursive: true, force: true});
+  }
+});
+
+test('a pinned reader makes the WAL target soft without blocking warmup or losing data', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'warmup-reader-'));
+  const path = join(root, 'index.db');
+  const db = openIndex(path);
+  const reader = new Database(path, {readonly: true});
+  try {
+    db.run('CREATE TABLE checkpoint_fixture(payload BLOB)');
+    db.run('PRAGMA wal_checkpoint(TRUNCATE)');
+    reader.run('BEGIN');
+    reader.query('SELECT * FROM checkpoint_fixture').all();
+    db.run('PRAGMA wal_autocheckpoint=0');
+    db.run('INSERT INTO checkpoint_fixture VALUES (zeroblob(5242880))');
+    db.run('PRAGMA wal_autocheckpoint=19');
+    await warmSearchCaches(db, null);
+    expect(searchWarmupStatus(db).state).toBe('ready');
+    expect(autocheckpoint(db)).toBe(19);
+    expect(statSync(`${path}-wal`).size).toBeGreaterThan(4 * 1024 * 1024);
+    reader.run('COMMIT');
+    await warmSearchCaches(db, null);
+    expect(statSync(`${path}-wal`).size).toBeLessThan(4 * 1024 * 1024);
+    expect(autocheckpoint(db)).toBe(19);
+  } finally {
+    reader.close();
+    db.close();
+    rmSync(root, {recursive: true, force: true});
+  }
+});
