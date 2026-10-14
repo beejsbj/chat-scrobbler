@@ -55,13 +55,13 @@ async function runBackfill(db:Database,opts:BackfillOptions):Promise<BackfillRep
   signal?.addEventListener('abort',abort,{once:true});
  });});
  let embedded=0,skipped=0,failed=0,stale=0,attempted=0,deferred=0,permanently_skipped=0,truncated=0,requests=0;
- let requestMs=0,measured=0,completedRequests=0,needsPacing=false,provider_outage=false,prepared=false;
+ let requestMs=0,measured=0,needsPacing=false,provider_outage=false,prepared=false;
  let estimated:number|null=null;
  const sequence=opts.connectionSequence ?? {count:0,lastItem:null};
  const guard=()=>{signal?.throwIfAborted();opts.assertLease?.();};
  const report=(event:BackfillReport['event']):BackfillReport=> {
   const coverage=prepared ? pendingCoverage(db,provider) : null;
-  const remaining=estimated===null ? null : Math.max(0,estimated-completedRequests),mean=measured ? requestMs/measured/1000 : null;
+  const remaining=estimated===null ? null : pendingWorkEstimate(db,provider),mean=measured ? requestMs/measured/1000 : null;
   return {event,embedded,converted:0,skipped,failed,stale,attempted,deferred,permanently_skipped,truncated,provider_outage,
    ...(coverage ? {queue:{pending:coverage.pending,deferred:coverage.deferred,skipped:coverage.skipped,empty:coverage.empty,reasons:coverage.reasons}} : {}),
    coverage_at_attempt:coverage ? attempted : null,text:coverage ? {total:coverage.total,embedded:coverage.embedded} : null,
@@ -81,8 +81,9 @@ async function runBackfill(db:Database,opts:BackfillOptions):Promise<BackfillRep
  await initializePendingEmbeddings(db,provider,{signal,yield:pause,assertLease:opts.assertLease});prepared=true;
  const coverage=pendingCoverage(db,provider);
  if(!opts.background) {
-  skipped=coverage.embedded+coverage.empty;estimated=pendingWorkEstimate(db,provider);
+  skipped=coverage.embedded+coverage.empty;
  }
+ estimated=pendingWorkEstimate(db,provider);
  opts.progress?.(report('progress'));
  const infer=async(call:(context:EmbeddingGemmaContext)=>number[]|Promise<number[]>,check:()=>void,title?:string|null)=> {
   const hooks=provider instanceof EmbeddingGemmaProvider;let startedAt:number|null=null;
@@ -106,7 +107,6 @@ async function runBackfill(db:Database,opts:BackfillOptions):Promise<BackfillRep
     const live=current(row);if(!live || textVectorHash(live.text)!==row.input_hash || live.title!==row.title)throw new StaleEmbeddingInput();
    };
    if(row.type!=='text' && (!provider.embedAsset || !opts.canonicalDir)){skipped++;discard(row);continue;}
-   const requestsBefore=requests;
    try {
     check();
     if(row.type==='text' && row.reason!=='chunk_set_rebuild' && reusableTextVector(db,row.session_id,row.message_id,row.text,row.title,provider)) {
@@ -125,7 +125,7 @@ async function runBackfill(db:Database,opts:BackfillOptions):Promise<BackfillRep
      await embedAsset(db,row.message_id,assetBlobPath(opts.canonicalDir!,row.message_id),requestProvider,signal,opts.assertLease);
      db.transaction(()=>{guard();completePendingEmbedding(db,row);guard();}).immediate();
     }
-    embedded++;completedRequests+=requests-requestsBefore;sequence.count=0;sequence.lastItem=null;
+    embedded++;sequence.count=0;sequence.lastItem=null;
    } catch(error) {
     guard();if(error instanceof BackfillLeaseLost)throw error;
     if(error instanceof StaleEmbeddingInput){stale++;discard(row);continue;}

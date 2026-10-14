@@ -156,7 +156,7 @@ export function loadConfig(opts: LoadConfigOptions = {}): ChatHistoryConfig {
   applyNullableString(cfg, "mcpPublicBaseUrl", env.MCP_PUBLIC_BASE_URL ?? env.CHAT_SCROBBLER_MCP_PUBLIC_BASE_URL);
   applyEmbeddingProvider(cfg, env.CHAT_SCROBBLER_EMBED_PROVIDER ?? env.EMBED_PROVIDER);
   applyNullableString(cfg, "embeddingModel", env.CHAT_SCROBBLER_EMBED_MODEL ?? env.EMBED_MODEL);
-  const chunkChars=env.CHAT_SCROBBLER_EMBED_CHUNK_CHARS ?? cfg.embeddingChunkChars;
+  const chunkChars=env.CHAT_SCROBBLER_EMBED_CHUNK_CHARS?.trim() || cfg.embeddingChunkChars;
   cfg.embeddingChunkChars=chunkChars===null || chunkChars===undefined ? null : Number(chunkChars);
   if(cfg.embeddingChunkChars!==null && (!Number.isInteger(cfg.embeddingChunkChars)||cfg.embeddingChunkChars<16)) throw new Error("invalid embedding chunk size");
   cfg.embeddingMaxChunks=Number(env.CHAT_SCROBBLER_EMBED_MAX_CHUNKS ?? cfg.embeddingMaxChunks);

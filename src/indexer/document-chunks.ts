@@ -1,6 +1,11 @@
+type ChunkProvider={kind?:string;chunkChars?:number|null;maxChunks?:number|null};
+export function documentChunkBudget(provider:ChunkProvider) {
+ const chars=provider.chunkChars ?? (provider.kind==='ollama' ? 750 : provider.kind==='embeddinggemma' ? 1200 : 1500);
+ return {chars,bytes:provider.kind==='embeddinggemma' ? 1200 : chars,maxChunks:provider.maxChunks ?? 16};
+}
 /** Storage chunks are independent vectors. Queries are never split or pooled. */
-export function documentChunks(text:string,provider:{kind?:string;chunkChars?:number|null;maxChunks?:number|null}) {
-  const room=provider.chunkChars ?? (provider.kind==='embeddinggemma' ? 1200 : 1500),cap=provider.maxChunks ?? 16;
+export function documentChunks(text:string,provider:ChunkProvider) {
+  const budget=documentChunkBudget(provider),room=budget.chars,cap=budget.maxChunks;
   if(!Number.isInteger(room)||room<16||!Number.isInteger(cap)||cap<1||cap>16) throw new Error('invalid embedding chunk controls');
   const chunks:string[]=[];let start=0;
   while(start<text.length && chunks.length<cap) {
@@ -8,7 +13,7 @@ export function documentChunks(text:string,provider:{kind?:string;chunkChars?:nu
     while(end<text.length) {
       const point=text.codePointAt(end)!,width=point>0xffff ? 2 : 1;
       const size=Buffer.byteLength(String.fromCodePoint(point));
-      if(end-start+width>room || provider.kind==='embeddinggemma' && bytes+size>1200) break;
+      if(end-start+width>room || bytes+size>budget.bytes) break;
       bytes+=size;end+=width;
     }
     if(end<text.length) {

@@ -1,3 +1,5 @@
+import {documentChunkBudget} from './document-chunks';
+import {cooperativeWrite} from './cooperative-write';
 import type {Database} from 'bun:sqlite';
 import {reconcilePendingChanges} from './pending-reconciliation';
 import type {Session} from '../schema/types';
@@ -100,10 +102,10 @@ function seedAssets(db:Database,kind:string,model:string,session?:string) {
  * partial pending index; captures maintain the markers in their transaction. */
 export async function initializePendingEmbeddings(db:Database,provider:EmbeddingProvider,opts:{signal?:AbortSignal;yield?:()=>Promise<void>;batchSize?:number;assertLease?:()=>void}={}) {
  const [kind,model]=scope(provider),batch=opts.batchSize ?? 64;
- db.run('INSERT OR IGNORE INTO embedding_models(provider_kind,provider_model,media,pending_revision) VALUES (?,?,?,(SELECT revision FROM search_revision WHERE id=1))',[kind,model,provider.embedAsset ? 1 : 0]);
+ await cooperativeWrite(db,()=>db.run('INSERT OR IGNORE INTO embedding_models(provider_kind,provider_model,media,pending_revision) VALUES (?,?,?,(SELECT revision FROM search_revision WHERE id=1))',[kind,model,provider.embedAsset ? 1 : 0]),opts.signal);
  while(true) {
   opts.signal?.throwIfAborted();
-  const done=db.transaction(()=> {
+  const done=await cooperativeWrite(db,()=>db.transaction(()=> {
    opts.assertLease?.();
    const state=db.query('SELECT cursor,seeded FROM embedding_models WHERE provider_kind=? AND provider_model=?').get(kind,model) as {cursor:number;seeded:number};
    if(state.seeded)return true;
@@ -127,7 +129,7 @@ export async function initializePendingEmbeddings(db:Database,provider:Embedding
    db.run('UPDATE embedding_models SET cursor=?,seeded=? WHERE provider_kind=? AND provider_model=?',
     [rows.at(-1)?.rowid ?? state.cursor,rows.length<batch ? 1 : 0,kind,model]);
    opts.assertLease?.();return rows.length<batch;
-  }).immediate();
+  }).immediate(),opts.signal);
   if(done)break;
   await (opts.yield?.() ?? Bun.sleep(0));
  }
@@ -173,9 +175,8 @@ export function deferPendingEmbedding(db:Database,row:PendingEmbeddingRow,failur
 
 /** Estimate from small pending records; no archived text/blob decoding on CLI passes. */
 export function pendingWorkEstimate(db:Database,provider:EmbeddingProvider):number {
- const [kind,model]=scope(provider),room=provider.chunkChars ?? (kind==='embeddinggemma' ? 1200 : 1500),cap=provider.maxChunks ?? 16;
- const bytes=kind==='embeddinggemma' ? 'MAX((input_chars+?-1)/?,(input_bytes+1199)/1200)' : '(input_chars+?-1)/?';
- return (db.query(`SELECT COALESCE(SUM(CASE WHEN type='text' THEN MIN(?,MAX(1,${bytes})) ELSE 1 END),0) AS n
+ const [kind,model]=scope(provider),budget=documentChunkBudget(provider),room=budget.chars,bytes=budget.bytes,cap=budget.maxChunks;
+ return (db.query(`SELECT COALESCE(SUM(CASE WHEN type='text' THEN MIN(?,MAX(1,(input_chars+?-1)/?,(input_bytes+?-1)/?)) ELSE 1 END),0) AS n
   FROM embedding_pending WHERE provider_kind=? AND provider_model=? AND state IN ('pending','deferred')`)
-  .get(cap,room,room,kind,model) as {n:number}).n;
+  .get(cap,room,room,bytes,bytes,kind,model) as {n:number}).n;
 }

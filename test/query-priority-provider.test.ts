@@ -65,7 +65,7 @@ test('an Ollama query overtakes the next chunk of an active long message',async(
  const db=openIndex(':memory:');let enter!:()=>void,release!:()=>void;
  const entered=new Promise<void>(resolve=>{enter=resolve;}),blocked=new Promise<void>(resolve=>{release=resolve;});
  const order:string[]=[];
- const provider=queryPriorityProvider({kind:'ollama',model:'m',dimensions:2,embed:async(text,context)=>{
+ const provider=queryPriorityProvider({kind:'ollama',model:'m',dimensions:2,chunkChars:1500,embed:async(text,context)=>{
   order.push(context!.kind);if(order.length===1){enter();await blocked;}
   if(context!.kind==='document')expect(text.length).toBeLessThanOrEqual(1500);
   return [1,0];

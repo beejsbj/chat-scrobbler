@@ -22,3 +22,17 @@ test('chunk controls are provider configurable through config and environment',(
  expect(documentChunks('x'.repeat(4000),provider)).toEqual({chunks:Array(4).fill('x'.repeat(500)),truncated:true});
  expect(DEFAULT_CONFIG.embeddingChunkChars).toBeNull();
 });
+
+test('capped Ollama defaults to short byte-bounded chunks for query latency',()=> {
+ const result=documentChunks('x'.repeat(1500),{kind:'ollama'});
+ expect(result.chunks.map(chunk=>chunk.length)).toEqual([750,750]);
+ const unicode=documentChunks('🪷'.repeat(500),{kind:'ollama'});
+ expect(unicode.chunks.join('')).toBe('🪷'.repeat(500));
+ expect(unicode.chunks.every(chunk=>Buffer.byteLength(chunk)<=750)).toBe(true);
+});
+
+test('empty Compose chunk override retains each provider default',()=> {
+ const cfg=loadConfig({configPath:null,env:{CHAT_SCROBBLER_EMBED_PROVIDER:'ollama',CHAT_SCROBBLER_EMBED_CHUNK_CHARS:''}});
+ expect(cfg.embeddingChunkChars).toBeNull();
+ expect(documentChunks('x'.repeat(1500),embeddingProviderFromConfig(cfg)!).chunks).toHaveLength(2);
+});

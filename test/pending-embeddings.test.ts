@@ -148,7 +148,7 @@ test(`adding ${missing.join('+')} resets seeding and backfills sizes without res
   await initializePendingEmbeddings(db,p);
   expect(db.query('SELECT input_chars,input_bytes FROM embedding_pending').get()).toEqual({input_chars:3000,input_bytes:6000});
   expect(db.query('SELECT state,attempts,retry_at,reason FROM embedding_pending').get()).toEqual(retry);
-  expect(pendingWorkEstimate(db,p)).toBe(2);
+  expect(pendingWorkEstimate(db,p)).toBe(4);
   const seeded=db.query('SELECT cursor,seeded FROM embedding_models').get();
   createPendingTables(db);
   expect(db.query('SELECT cursor,seeded FROM embedding_models').get()).toEqual(seeded);

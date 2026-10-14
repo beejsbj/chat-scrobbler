@@ -4,7 +4,7 @@ import {embedBackfill} from '../src/indexer/embed-backfill';
 import {pendingEmbeddingRows,pendingCoverage} from '../src/indexer/pending-embeddings';
 import {putTextVector,putTextChunks} from '../src/indexer/vector-store';
 import {fixture} from './support/embedding-fixture';
-const p={kind:'ollama',model:'test',dimensions:2,embed:async()=>[1,0]};
+const p={kind:'ollama',model:'test',dimensions:2,chunkChars:1500,embed:async()=>[1,0]};
 
 test('backfill stores separate bounded chunks and a timeout does not starve healthy messages',async()=> {
  const db=openIndex(':memory:');const sent:string[]=[];
@@ -90,7 +90,10 @@ test('persistent skip reasons remain visible after a later empty pass',async()=>
  const db=openIndex(':memory:');indexSession(db,fixture('timeout'));
  try {
   const provider={...p,embed:async()=>{throw new DOMException('timeout','TimeoutError');}};
-  for(const time of [1000,200000,500000])await embedBackfill(db,{provider,wallNow:()=>time,limit:1,sleep:async()=>{}});
+  for(const time of [1000,200000,500000]) {
+   const pass=await embedBackfill(db,{provider,wallNow:()=>time,limit:1,sleep:async()=>{}});
+   if(time===500000)expect(pass).toMatchObject({remaining_requests:0,eta_seconds:0});
+  }
   const report=await embedBackfill(db,{provider,wallNow:()=>999999,limit:1,sleep:async()=>{}});
   expect(report).toMatchObject({attempted:0,queue:{pending:0,deferred:0,skipped:1,reasons:{retry_exhausted_request_timeout:1}}});
  }finally{db.close();}
