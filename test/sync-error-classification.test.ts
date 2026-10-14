@@ -46,6 +46,17 @@ for (const source of ["chatgpt", "claude", "gemini"] as const) test(`${source}: 
   }
 });
 
+for (const source of ["chatgpt", "claude", "gemini"] as const) test(`${source}: detail outage rolls back only provisional 5xx attempts`, async () => {
+  try {
+    await adapterFor(source, ["missing", "a", "b", "c"], async id => new Response("unavailable", { status: id === "missing" ? 404 : 500 })).sync({ emitCapture: async () => {} });
+    throw new Error("outage should abort");
+  } catch (error) {
+    expect(error).toMatchObject({ name: "ProviderDetailOutageError" });
+    expect(syncErrorResponse(error).captureFailures).toMatchObject([{ source_id: "missing", attempts: 1 }]);
+    expect(syncErrorResponse(error).captureFailures).toHaveLength(1);
+  }
+});
+
 for (const source of ["chatgpt", "claude", "gemini"] as const) test(`${source}: an isolated permanent detail 500 does not starve the next chat over five syncs`, async () => {
   let badCalls = 0;
   let goodCaptures = 0;
