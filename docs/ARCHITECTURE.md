@@ -81,10 +81,15 @@ captures deduplicate. Provider IDs are encoded without lossy sanitization.
   are reported through `/status`. A changed provider timestamp, manual retry, or
   backoff deadline reopens the conversation. Quarantine retries after 1, 3, then
   7 days while retaining attempt history, including for Gemini without timestamps.
-  Network failures, provider 429/503, and receiver 5xx stop sync without counting
-  attempts. Other errors count per chat, including receiver 4xx and isolated
-  detail 5xx. Three consecutive detail 5xx escalate to an outage; aborted runs
-  leave saved failure state intact. Asset errors stay within the asset boundary.
+  Network failures, provider 429/503, and receiver auth/config/outage errors stop
+  sync without counting attempts. Only receiver 400/413/422 count per capture.
+  Local parse errors and isolated detail 5xx count per chat. A new three-chat 5xx
+  cohort aborts but remembers its IDs and update timestamps in extension storage.
+  Repeated cohorts count when other detail requests work; confirmed local cohorts
+  also retry behind the cursor. Changed cohorts or all-detail failures without
+  prior local confirmation remain environmental. Aborted runs preserve attempts
+  and cursor. Last errors remain visible in the popup and per-install `/status`
+  `sync_errors` reports; reports are retried after receiver access returns. Asset errors stay within the asset boundary.
   Pending failures for ignored or no-longer-listed chats are removed after listing.
 
 ---
@@ -163,11 +168,13 @@ asset URLs in the authenticated page context, then uploads bytes to the local in
 server. For deterministic asset rejections or expired URLs, text capture continues
 and the attachment block keeps `local_path: null`. Download, size, and upload failures
 produce structured logs and reports through `/status`, with URLs and provider
-error bodies omitted from logs. Provider or receiver outages abort sync for a later retry.
+error bodies omitted from logs. Asset failures preserve text; environmental
+conversation/receiver errors abort sync for a later retry.
 Receiver asset failure counts survive restarts in the monitoring state database. Conversation
 failure snapshots are partitioned by persistent extension install ID. Legacy
 unscoped requests aggregate snapshots. Lists are persisted beside the index as
-`<indexPath>.capture-failures.json`.
+`<indexPath>.capture-failures.json`. Categorical last sync errors are stored
+separately in `<indexPath>.sync-errors.json`; they never count as chat attempts.
 
 Both extension and receiver default to 100 MiB per asset, checked while reading
 streams and before upload. Set the extension limit in the popup and the receiver's
@@ -175,7 +182,8 @@ streams and before upload. Set the extension limit in the popup and the receiver
 Downloads are bounded but still buffered in memory. Large page-origin assets use
 1 MiB runtime-message chunks; cross-origin media can be downloaded and uploaded in
 the background worker. Provider cookies and bearer headers are never sent to ingest. Asset fetches enforce
-source-specific download URL and credential policies, refuse redirects, and reject
+source-specific download URL and credential policies, validate every visible
+redirect hop, refuse opaque redirects, and reject
 JSON/HTML documents before upload. The exact policies are in the BJS-547 handoff.
 
 Provider limits:

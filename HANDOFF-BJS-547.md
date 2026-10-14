@@ -3,8 +3,9 @@
 ## State
 
 Implemented on `feat/bjs-547-asset-capture`, based on `origin/main`.
-Extension version: **0.3.0 → 0.4.2** (initial implementation 0.4.0, first review 0.4.1, round 2 fixes 0.4.2). Commits are local. Nothing was pushed,
-deployed, or run against production data or provider accounts.
+Extension version: **0.3.0 → 0.4.3** (initial 0.4.0, first review 0.4.1, round 2 0.4.2, round 3 0.4.3).
+Round 3 authorizes publishing and ordinary PR merge after verification. No deployment,
+production data operation or authenticated provider access was performed.
 
 Assets are downloaded during capture, bounded while reading, hashed before upload,
 and associated with message pointers in archived raw. Parsers rebuild typed media
@@ -52,7 +53,8 @@ A skipped/failed discovered asset produces an `asset_capture_failed` event with
 source, session, message and one of `asset_download_failed`, `asset_too_large`,
 `asset_upload_failed`, `asset_url_unavailable`, or `asset_expired`. The extension
 reports the failure through `/status`; provider URLs and error bodies are omitted
-from logs. Asset failure counts are process-local. Backfill also shows saved and
+from logs. Extension asset counters are process-local; receiver counts now persist in the
+BJS-546 monitoring state database. Backfill also shows saved and
 unavailable counts in the popup.
 
 ## Endpoint verification
@@ -137,7 +139,7 @@ timestamps, but acknowledged unchanged payloads skip asset downloads and ingest.
 1. Build output is ready at `packages/extension/build`. Open `chrome://extensions`,
    enable Developer mode, and load that directory as an unpacked extension, or
    reload your existing unpacked install after pointing it at this build. Confirm
-   **0.4.2**. Accept the added media-host permissions if Chrome requests them.
+   **0.4.3**. Accept the added media-host permissions if Chrome requests them.
 2. Reload provider tabs so they use the new content script. Remain logged in.
    Existing provider auth stays on provider requests; ingest receives only its own
    optional bearer token. Allowlisted Google media downloads can use the browser's Google
@@ -201,13 +203,13 @@ timestamps, but acknowledged unchanged payloads skip asset downloads and ingest.
 
 ## Verification
 
-Final gates passed on 2026-10-13 with Bun 1.3.14:
+Final round 3 gates passed with Bun 1.3.14 after integrating current main:
 
 | Command | Result |
 |---|---|
-| `bun test` | **586 pass, 0 fail**, 2,075 assertions across 61 files |
+| `bun test` | **649 pass, 0 fail**, 2,509 assertions across 64 files |
 | `bun x tsc --noEmit` | **PASS** |
-| `bun run build:extension` | **PASS**, output `packages/extension/build`, manifest 0.4.2 |
+| `bun run build:extension` | **PASS**, output `packages/extension/build`, manifest 0.4.3 |
 | `git diff --check` | **PASS** |
 
 The real-handler integration test passed alongside the complete suite. No live
@@ -228,7 +230,7 @@ provider fetch times. No review substitutes for the manual browser checks above.
 
 ## Review fixes
 
-The reviewed build is **0.4.2**. Reload the unpacked extension and provider tabs;
+The reviewed build is **0.4.3**. Reload the unpacked extension and provider tabs;
 checking the version distinguishes it from both earlier builds.
 
 ### Final download allowlists
@@ -282,9 +284,13 @@ unavailable media blocks.
   errors or interrupted acknowledgements, and receiver 5xx/429. They abort without
   adding an attempt. Auth/listing 5xx also abort because no conversation run is
   possible. Unknown/local errors default to counted per-chat failures, including
-  parse errors, local TypeError/DOMException, ingest 4xx other than 429, and an
-  isolated detail 5xx other than 503. Three consecutive detail 5xx escalate to an
-  environmental outage. Automatic and manual runs preserve saved state on abort.
+  parse errors, local TypeError/DOMException, ingest 400/413/422, and an
+  isolated detail 5xx other than 503. Receiver 401/403/404/405/407/408 and all other
+  non-success rejections are environmental. Three consecutive new detail 5xx
+  escalate to an outage, remembering the identities for the next run. A repeated
+  cohort can count and continue when other chats respond; a confirmed local
+  cohort can retry behind the cursor. Different cohorts and all-detail failures
+  with no prior local confirmation remain environmental. Automatic and manual runs preserve saved state on abort.
 - Asset errors never fail the chat, including decoding, network, stream, lookup and
   upload failures. Each is reported, and raw text still captures. Asset 429/503
   retains RateLimitError classification across the background boundary, stops
@@ -352,13 +358,13 @@ no provider account was accessed. Opaque redirects cannot be safely followed whe
 Chrome withholds Location. The final allowlists above retain the existing HTTPS
 credential-exfiltration guards and add only the explicitly scoped DOM blob path.
 
-For the manual check, confirm **0.4.2**, reload provider tabs, keep the Gemini
+For the manual check, confirm **0.4.3**, reload provider tabs, keep the Gemini
 media chat open, then click **Sync open tabs now**. Inspect hashes/files as above.
 For sandbox outputs, overwrite a path with different contents or use the same path
 in two chats, capture again, and check that the resulting media hashes differ.
 Read categorical asset failures for unsupported, expired or opaque redirects.
 
-Final round 2 gates on the complete 0.4.2 tree:
+Previous round 2 gates on the complete 0.4.2 tree:
 
 | Command | Result |
 |---|---|
@@ -367,6 +373,46 @@ Final round 2 gates on the complete 0.4.2 tree:
 | `bun run build:extension` | **PASS**, built manifest confirms **0.4.2** |
 | `git diff --check` | **PASS** |
 
-All fixes are local commits on the same branch. No push, deployment, provider login
-or production-data operation was performed. Live endpoint verification still
-requires the manual browser checks above.
+Those round 2 results preceded the round 3 merge authorization. Live endpoint
+verification still requires the manual browser checks above.
+
+
+### Round 3
+
+- **Receiver configuration:** Only capture-specific 400/413/422 responses count
+  toward quarantine. 401/403/404/405/407/408, 429/5xx, network failures and all
+  other non-success receiver responses abort without counting an attempt.
+  Auth failures name the ingest token; route failures name the URL/proxy setting.
+  Malformed acknowledgements, including HTTP-200 proxy login pages, also abort
+  without counting a chat attempt.
+  The popup retains the last error across reopening, including periodic failures.
+- **Status reporting:** Aborts preserve the existing cursor and attempt list and
+  store a categorical last error per provider/install. `/status` accepts the
+  additive `last_sync_error` field and returns persisted `sync_errors`. Records
+  include only reason, optional HTTP status and timestamp, never response bodies,
+  URLs or credentials. If a bad token or broken route also blocks `/status`, the
+  error remains local and is sent with the next completed sync after access is
+  repaired. Query with `install_id` for one browser or omit it to aggregate.
+- **Repeated detail cohorts:** Streak state survives aborted runs, worker restarts
+  and fresh adapters. Identity includes chat ID and update timestamp, rather than
+  a process-local count. The reviewer's three adjacent permanent-500 probe now
+  completes over four runs: one environmental abort remembers the cohort, then
+  three counted runs quarantine it and reach the following healthy chat. New or
+  different failing cohorts abort. When all detail requests fail and the cohort
+  has never been confirmed alongside a responding chat, runs stay environmental.
+  Previously confirmed local cohorts retain backoff when retrying behind the
+  cursor. Saved cursors never move backwards. Manual retry uses the same policy.
+- **Integration:** BJS-546 from current `main` was merged into this branch.
+  Conflicts preserve both monitoring configuration and asset-size settings,
+  server monitoring receipts plus asset/sync reports, and both configuration test
+  suites. No embedding implementation was edited by this slice.
+- **Manual verification:** Load build **0.4.3**, reload provider tabs, and use
+  **Sync open tabs now**. If the receiver token or route is wrong, fix the named
+  setting in the popup and sync again. There should be no new quarantined chats
+  from that configuration failure; authenticated `/status` will expose the
+  categorical last error after reporting becomes available. Earlier asset checks
+  and final URL allowlists remain unchanged. The user's round 3 adversarial review
+  verified N2/N3 and the credential boundary as safe to load in a logged-in browser;
+  actual provider asset endpoint coverage remains live-unverified here.
+
+Final 0.4.3 gates are recorded in **Verification** above.
