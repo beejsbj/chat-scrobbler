@@ -1,8 +1,122 @@
 # BJS-548 implementation handoff
 
-Branch: `feat/bjs-548-embeddinggemma`. Updated 2026-10-13 after independent review.
+Branch: `feat/bjs-548-embeddinggemma`. Updated 2026-10-13 (2026-10-14 UTC receipts) for review round 4.
 Production data and services were not changed. Nothing was deployed or pushed.
 The production compose still defaults to Ollama and `nomic-embed-text`.
+
+## Review fixes, round 4
+
+Round 4 adds chunked backfill for every provider and durable, indexed work state.
+The current architecture and retry contract are detailed under Backfill below.
+It preserves both model sets and retained JSON. Canonical schema and parsers were
+not changed. Explicit synchronous/async indexing used by `unify` and `reparse` also chunks
+new document calls and preserves already-reusable binary chunk sets. Matching
+legacy JSON can still convert without inference. A partial newer chunk set is
+rebuilt rather than overwritten with a pooled legacy row.
+
+Successful chunks commit as one message set; one item failure never
+rolls back another message. Search uses the highest chunk similarity per message.
+
+`serve` first runs a separate JSON-to-binary migration, 32 rows per yielding
+transaction under the shared lease. It then seeds pending metadata in 64-row
+pages. The embedding batch budget counts inference items only, prioritises newest
+messages, and continues due backlog after one second, including full batches.
+An empty/delayed-retry queue polls at the configured interval (default ten minutes).
+`/health/deep` progress and CLI reports retain queue totals and aggregated reasons
+for deferred/skipped work, so an empty later batch cannot hide exhausted retries.
+
+The indexed session revision feed catches writes made by rollback executables.
+Each model has a watermark; catch-up snapshots an upper revision and uses indexed
+identity/FTS rowid reads and 64-message/prune pages. Later captures stay for the
+next pass. Capture indexing prunes disappeared and newly empty messages in all
+sets. Pending outcomes also check the FTS generation, hash and title; older calls
+cannot delete a recaptured marker or demote completed work. Corrupt or incomplete
+chunk sets preserve extra rows and queue a full rebuild instead of silently
+replacing them with an older pooled legacy snapshot.
+
+Warmup disables automatic WAL checkpoints on its writer connection and restores
+the original policy in `finally`. Between batches it checkpoints in a worker at
+a soft 4 MiB WAL threshold; pinned readers can delay truncation. Coordination
+connections also disable automatic checkpoints. A real-copy diagnostic caught
+`SQLITE_BUSY` during lookup warmup concurrent with startup migration. A two-
+connection regression reproduced `SQLITE_BUSY_SNAPSHOT`: a deferred lookup page
+read before reserving the writer. Lookup now reserves it with `IMMEDIATE` before
+reading, then releases between pages. Sanitized warmup diagnostics expose only
+error name/code, stage and operation, without chat text or identifiers.
+
+### End-to-end measurement and gates
+
+The bounded run at `8ca52d4` used an online **read-only** backup of the live
+index: 35,718 messages and 31,143 nomic legacy rows. All changes were confined to
+the temporary copy, which was deleted after the finite loopback service stopped.
+Ollama kept its existing **1 CPU / 1.2 GB** caps; the temporary client/server unit
+had 2 CPUs, 2 GiB, no swap and nice 19. Start load was 3.76. No archive contents,
+IDs or secrets are in the receipt.
+
+| End-to-end observation | Result |
+| --- | --- |
+| Completed messages during 90.64 s | **62**, about **2,462/hour** extrapolated |
+| Semantic searches, 500 ms pause between responses | **61/61 available**, zero request failures |
+| Search median / p95 / maximum | **791 ms / 2,214 ms / 3,676 ms** |
+| Native HTTP query median / p95 | 103 / 195 ms |
+| Native HTTP document median / p95 / maximum | 599 / 2,598 / 3,666 ms |
+| Document call size | at most **750 characters and 750 UTF-8 bytes** |
+| Largest warmup timer gap after first-open query | **140 ms** |
+| Largest timer gap during measured backfill | **112 ms** |
+| First cold query / its schema-work timer gap | 875 ms, `warming` / 802 ms |
+| Time to first semantic result, including concurrent startup maintenance | 56.83 s |
+| Startup pure migration | 31,143 converted, zero invalid |
+| Process RSS after measurement | **370.45 MiB** |
+| Whole temporary cgroup peak / swap | about **1,020 MiB / zero** |
+
+Native request profiles cover the whole run; the search/throughput window starts
+after maintenance and warmup. The first query includes additive schema opening.
+It is not a claim that cold first-open schema work is asynchronous. After that,
+warming queries use literal recall while caches and pure maintenance yield.
+The native timings exclude the client priority queue, while search timings include
+queue wait, inference, literal recall, matrix ranking, hydration and MCP transport.
+The maximum search tracks one short document call; inference is not preempted.
+
+The earlier valid 1,500-character run completed 62 messages in 90.00 s but had
+**4.68 s search p95**, a 1.29 s startup timer gap and 366.61 MiB RSS. A small
+synthetic size probe then measured 1.61 s for 750 ASCII characters versus 3.49 s
+for 1,500. The final default therefore halves Ollama's chunk budget and also
+bounds UTF-8 bytes. With 16 chunks, it semantically indexes at most about 12 KB
+of an ASCII message instead of 24 KB; original text and literal recall remain
+complete. Larger configured chunks trade query waiting time for more context.
+Bulk transactions also now use a zero SQLite busy timeout with cooperative retry,
+restoring the caller's timeout after each attempt. A held-writer regression first
+blocked its release timer for five seconds, then passed with responsive retries.
+The lease still fences every vector commit.
+
+These are short observations on a contended host, not sustained throughput or
+quality guarantees. The backlog is 4,513 in the final temporary copy; 62 messages
+had committed. At that sample rate the original 4,575-row backlog would take about
+1.9 hours, but message sizes, query traffic, skipped/deferred items, provider
+contention and the initial production ten-minute delay can change that greatly.
+The probe uses a one-second initial interval so work occurs within its short
+window; continuing due backlog has the same one-second pacing in production.
+Existing valid pooled nomic rows are converted, not re-embedded. A full chunked
+rebuild has a different compute and memory budget and still needs quality review.
+
+Receipts: `services/embedder/verification/backfill-round4-2026-10-14.json` and
+`backfill-round4-1500-2026-10-14.json`. Reproduce only with an approved disposable
+copy using `scripts/measure-backfill-round4.ts`; it checks load before starting,
+requires semantic availability, logs only metrics and deletes the copy in `finally`.
+All transient units ended; no new persistent service was created.
+
+Final gates at `b23ed5c`: **601 Bun tests**, zero failures, 71 files, 2,496
+assertions in 11.38 s; TypeScript passes; Python **45 local passes**, zero skips
+in 7.568 s; compiled binary (288 modules) and `embed-backfill --help` pass.
+The final disposable compute job is `dr-20261014-013505-2823a4f6`; every functional
+gate exited zero. Its initial runner returned 2 while asynchronous deletion was
+pending; explicit cancellation subsequently verified cleanup after HTTP 404.
+Cloud Python has 43 passes plus two Docker Compose skips. No native
+Gemma inference or image deployment was repeated in this round.
+
+The old 29.30 ms timer gap remains a historical synthetic result, not a bound on
+real-index warmup. Two invalid diagnostic runs were rejected because semantic
+search was unavailable; their literal-only timings are not used as search evidence.
 
 ## Heartbeat lease follow-up
 
@@ -47,7 +161,7 @@ Authenticated deep-health tests show stale then recovered state; CLI tests fence
 a stolen token and preserve pending work. The crash test shortens timing to
 250 ms / 40 ms; a deterministic test verifies the production 60 s expiry.
 
-Final verification at runtime commit `d0501c0`: **533 Bun tests pass**, zero
+Historical verification at runtime commit `d0501c0`: **533 Bun tests pass**, zero
 failures, 61 files and 2,090 assertions in **9.31 s**; TypeScript, compilation
 (279 modules) and the compiled help command pass. Python has **45 local passes**,
 zero skips in **8.148 s**; cloud discovers 45 with two Docker Compose skips.
@@ -68,7 +182,7 @@ No native inference, real-index benchmark or production backfill was repeated
 for this coordination fix. Prior latency/RSS evidence below remains historical;
 new cross-connection regressions cover preserving the active matrix cache.
 
-## Review fixes, round 2
+## Review fixes, round 2 (historical)
 
 Rebased onto `origin/main` at `d28ab40` (PR #12, typed parts). Conflicts preserved
 reparse/unknown-types commands, opaque-message counts, and canonical tombstone
@@ -155,11 +269,15 @@ freshness and merging. There are 35,718 messages, 31,143 vectors, 768 dimensions
 | --- | --- |
 | Background warmup wall time | 5.73 s |
 | Query while warming | 2.92 ms, literal hit, `semantic: warming` |
-| Largest timer gap during warmup | 29.30 ms, 2,062 timer ticks |
+| Largest timer gap during that synthetic warmup | 29.30 ms, 2,062 timer ticks |
 | Warm search median / maximum, five runs | 80.30 / 127.11 ms |
 | Search after 5 / 30 / 300 vector writes in distinct sessions | 91.38 / 93.11 / 238.79 ms |
 | Other-model write | 93.05 ms, zero sessions refreshed |
 | Total process RSS after explicit benchmark GC | 326.63 MiB |
+
+The 29.30 ms synthetic result did not bound real-index warmup. Independent real-copy
+review subsequently measured 1.7–4.8 s stalls; round 4 addresses checkpoints and
+reports a new real-copy measurement above.
 
 Earlier local stress passes exposed 551 and 462 ms for 300 whole-session
 refreshes; message-level invalidation and primary identity lookups removed that
@@ -317,7 +435,9 @@ text, title, model, and dimensions.
 old executable writes FTS during rollback. New indexing maintains mappings and
 clears its marker; a later search/coverage pass catches up old-writer changes.
 A first-open migration no longer builds the whole lookup under one long writer
-transaction. Busy timeout remains five seconds per connection.
+transaction. Ordinary connections retain a five-second busy timeout. Bulk warmup, migration
+and pending maintenance temporarily set it to zero and yield on contention,
+restoring the original value after each transaction attempt.
 
 Search lazily loads **one active model matrix per open index**, normalizing once.
 Its matrix for 31,143 x 768 is 95,671,296 bytes, about **91.2 MiB** used, with 93 MiB allocated in 1024-row blocks, plus identity
@@ -381,9 +501,12 @@ pinned Bun 1.3.14. The assertion checks a five-run warm median below 300 ms.
 
 Ingest persists raw, canonical, FTS, and asset ownership before acknowledgement.
 It never calls a model inside `POST /captures`, even when one is configured.
-Missing or stale vectors themselves are the durable pending marker. The serve
-scheduler processes them automatically; manual backfill handles initial rebuilds
-and full coverage/ETA checks. A hanging embedder cannot delay a capture.
+An additive `embedding_pending` table is the durable queue, scoped by provider and
+model. Registration seeds it once in yielding pages; capture transactions maintain
+markers for all registered models. Due work uses the indexed queue, newest first,
+without repeatedly reading chat text or decoding covered vectors. The serve job
+processes it automatically; manual backfill handles initial rebuilds and ETA checks.
+A hanging embedder cannot delay a capture.
 
 ```sh
 chat-scrobbler embed-backfill \
@@ -400,26 +523,45 @@ inside the embedder's capped cgroup. Only one backfill request is outstanding;
 responses/back-pressure determine throughput. `--rate` defaults to 10 requests/s
 and yields 100 ms between responses, including adapter chunks, rather than adding
 five seconds per message. The optional `--load-threshold 32` is an emergency brake;
-there is no load guard by default. Migration-only needs no inference/load gate. Lazy JSON conversions inside a normal
-backfill still obey its optional emergency gate, but never call the model. Abort waits and requests with SIGINT/SIGTERM; completed
-rows survive. A request already computing safely drains.
+there is no load guard by default. Migration-only needs no inference/load gate.
+`serve` converts legacy JSON to binary in a separate startup task, 32 rows per
+transaction with event-loop yields. Conversions never consume the 25-item
+inference budget. CLI migration remains resumable. Abort with SIGINT/SIGTERM;
+completed transactions survive.
 
-Every message/asset commits separately. Indexing also retains successful messages
-if another message in the session fails. Retry skips valid current vectors, while
-failed/missing/stale rows remain pending. Whitespace-only messages count as skipped
-and are excluded from eligible coverage. Changed text/title or deletion during a
-request prevents stale writeback or resurrection. FTS rowids can move during
-capture, so repeat a pass until coverage settles.
+Each text message is split before dispatch for every provider. Default Ollama chunks are 750 UTF-16 characters and 750 UTF-8 bytes. Gemini and
+hash default to 1,500 characters/bytes; Gemma defaults to 1,200 characters and
+always caps the body at 1,200 UTF-8 bytes to fit one native request. Configure
+`CHAT_SCROBBLER_EMBED_CHUNK_CHARS` and `CHAT_SCROBBLER_EMBED_MAX_CHUNKS`
+(default/max 16). Word boundaries are preferred; Unicode boundaries are preserved.
+Beyond the cap, text is truncated for semantic indexing and reported with
+`chunk_limit_truncated`; canonical text and literal search remain complete.
 
-Progress reports embedded, converted, skipped, failed, stale, attempted, current
-text/asset coverage, request counts, estimated native chunks, request latency,
-elapsed time, and ETA. Initial ETA assumes two seconds per native text chunk plus
-pacing; later ETA uses observed request response time. It is approximate for word
-boundaries, configured chunk budgets, load pauses, media, and concurrent captures.
-The supplied budget of about 53k chunks is **29.4 hours of compute**, plus pacing,
-pauses, and retries. Limits apply to attempted missing/changed rows, including
-conversion and failures. Genuine failures produce a nonzero exit; whitespace does
-not. Load-pause reports reuse their last coverage snapshot.
+One chunk is one provider call, with query priority checked between calls. The
+first vector stays in `message_vectors`; additional indices live in additive
+`message_vector_chunks`. All chunks for a message commit atomically under the
+lease fence. Message score is its best chunk, and results deduplicate messages.
+Existing pooled legacy vectors remain valid; optional model rebuilds replace them.
+There is no destructive JSON conversion. Chunk-policy changes under the same model
+identity require an explicit rebuild to replace already-complete vectors.
+
+Timeouts and item errors are durable `deferred` work with individual 2-minute
+exponential retries capped at one hour. Three non-connection failures permanently
+skip the unchanged input with a reason. HTTP 5xx/429 and connection failures keep
+retrying. Only consecutive connection failures on different items trigger global
+provider backoff. Successful work, skipped empty text, and item errors reset that
+sequence. Late failures cannot demote a completed or newly recaptured generation.
+Changed text/title resets the item's retry state. Whitespace counts as skipped,
+not failed; delete/recapture cannot resurrect stale vectors.
+
+Reports include embedded, deferred, permanently skipped, truncated, stale,
+attempted, outage state, current queue coverage, requests, elapsed time and ETA.
+Coverage/ETA use small metadata records rather than repeated archive scans. ETA
+assumes two seconds per chunk initially and then observed successful request time;
+word boundaries, pacing, retries, media and concurrent captures make it approximate.
+About 53k chunks is 29.4 hours of compute before pacing and retries. Limits apply
+to attempted inference items, not conversions or already-complete rows. Deferred
+and explicitly skipped items do not make CLI exit nonzero; run/lease failures do.
 
 ## Multimodal ownership
 
@@ -516,14 +658,15 @@ service/dependency. The nomic set remains intact. Backfill nomic for messages
 captured/changed during the Gemma interval; literal recall works meanwhile.
 Disable the embeddings profile after callers switch. Old application binaries
 can use retained JSON but require nomic rebuild for recent binary-only messages.
-Returning to this branch catches up its lookup through the rollback change markers.
+Returning to this branch catches up its lookup and pending queue through durable
+session revision markers.
 
 ## Verification and open risks
 
-Final checks are green at `d0501c0`, in disposable Daytona compute with Bun 1.3.14
-and frozen dependencies:
+Final round-4 checks are green at `b23ed5c`, in disposable Daytona compute with
+Bun 1.3.14 and frozen dependencies:
 
-- **533 Bun tests pass, zero failures**, 61 files and 2,090 assertions.
+- **601 Bun tests pass, zero failures**, 71 files and 2,496 assertions.
 - **`bun x tsc --noEmit` passes**.
 - Python discovers 45 tests: cloud has 43 pass and two Docker Compose renderer
   skips; **local has all 45 pass, zero skips**, including deployment rendering.
@@ -531,19 +674,22 @@ and frozen dependencies:
   binary runs **`embed-backfill --help` with exit 0**. The suite also exercises
   CLI serve shutdown during an active backfill request.
 - The earlier capped host benchmark at `8e2f29b` passed warming/coverage and
-  under-300-ms warm/refresh assertions. The heartbeat follow-up did not repeat
-  that benchmark; it verifies coordination commits keep the active matrix cached.
-  Independent bounded review found no remaining concrete lease/fencing issues.
+  under-300-ms warm/refresh assertions. Round 4 additionally measured actual
+  MCP search during chunked backfill against a temporary real-index copy and the
+  existing capped Ollama service; see the metrics above. Coordination regressions
+  still verify the lease does not dirty the active matrix.
 
 Run `sh scripts/verify-bjs-548.sh` on disposable compute for all portable gates.
 Local Python: `python3 -m unittest discover -s services/embedder/tests -v`.
-Heartbeat receipt: `test-results-lease-2026-10-13.json`.
+Round-4 receipt: `test-results-round4-2026-10-14.json`.
+Historical heartbeat receipt: `test-results-lease-2026-10-13.json`.
 Round-2 receipts: `test-results-round2-2026-10-13.json` and
 `search-round2-2026-10-13.json` under `services/embedder/verification/`.
 Earlier `*-review-2026-10-13.json` receipts preserve the round-1 native, RSS,
 search and test evidence. No native model inference was repeated in round 2.
 Tests use fake engines and synthetic ffmpeg fixtures. Cloud sandbox deletion was
-verified; all host benchmark units ended and removed their synthetic databases.
+verified; all host benchmark units ended and removed their temporary databases, including
+the approved real-index copies.
 
 Regressions cover title normalization/UTF-8, whitespace skip and exit behavior,
 load and migration exemptions, chunk/request ETA, success-only latency samples,
@@ -556,10 +702,13 @@ between vector ranking and hydration: the original snapshot retained correct
 provenance, and the following search observed deletion.
 
 Remaining operational gates: actual Docker build/start smoke, Coolify profile
-propagation and effective limits, real-archive quality/latency, and phone agreement.
+propagation and effective limits, real-archive retrieval quality, sustained backfill/latency, and phone agreement.
 Cold matrix loading still costs seconds in total but now yields in the background; early serve queries use literal recall. Asset vectors still use a bounded
 streaming scan; production currently has none. Very large sessions cost more to
-refresh incrementally. Model/preprocessing changes under an unchanged identity
+refresh incrementally. Extra chunk vectors use 3,072 bytes each at 768 dimensions;
+a 53k-chunk set needs about 155 MiB for the matrix instead of 93 MiB for
+31k pooled vectors. Ollama's smaller default can grow the full rebuild beyond
+53k chunks. Model/preprocessing changes under an unchanged identity
 require rebuilding the affected set; ordinary freshness cannot detect that policy
 change. Long audio/video and large blobs need segmentation. Native close retains
 allocator memory, and sustained query traffic can delay backfill or expire its
