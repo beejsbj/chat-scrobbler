@@ -1,6 +1,6 @@
 import {expect,test} from 'bun:test';
 import {openIndex,indexSession} from '../src/indexer/sqlite';
-import {initializePendingEmbeddings,pendingEmbeddingRows,pendingCoverage,deferPendingEmbedding} from '../src/indexer/pending-embeddings';
+import {initializePendingEmbeddings,pendingEmbeddingRows,pendingCoverage,completePendingEmbedding,deferPendingEmbedding} from '../src/indexer/pending-embeddings';
 import {fixture} from './support/embedding-fixture';
 const p={kind:'test',model:'m',dimensions:2,embed:()=>[1,0]};
 
@@ -70,5 +70,39 @@ test('CLI work estimates use pending size metadata, including the chunk cap',asy
   expect(pendingWorkEstimate(db,p)).toBe(4);
   indexSession(db,fixture('x'.repeat(60000)));
   expect(pendingWorkEstimate(db,p)).toBe(16);
+ }finally{db.close();}
+});
+
+test('completion and deferral cannot change an identical recapture with a newer FTS rowid',async()=> {
+ const db=openIndex(':memory:');
+ try {
+  const s=fixture();indexSession(db,s);
+  const other=fixture('other');other.id='chatgpt:other';other.source_id='other';indexSession(db,other);
+  await initializePendingEmbeddings(db,p);
+  const old=pendingEmbeddingRows(db,p,25).find(row=>row.session_id===s.id)!;
+  indexSession(db,s);
+  const fresh=pendingEmbeddingRows(db,p,25).find(row=>row.session_id===s.id)!;
+  expect(fresh.fts_rowid).not.toBe(old.fts_rowid);
+  completePendingEmbedding(db,old,true);
+  expect(pendingEmbeddingRows(db,p,25).find(row=>row.session_id===s.id)).toMatchObject({state:'pending',attempts:0});
+  expect(deferPendingEmbedding(db,old,{kind:'timeout',reason:'request_timeout'},1000)).toBeNull();
+  expect(deferPendingEmbedding(db,fresh,{kind:'timeout',reason:'request_timeout'},1000)).toMatchObject({state:'deferred',attempts:1});
+  completePendingEmbedding(db,fresh,true);
+  expect(db.query('SELECT state,truncated,reason FROM embedding_pending WHERE session_id=?').get(s.id))
+   .toEqual({state:'complete',truncated:1,reason:'chunk_limit_truncated'});
+ }finally{db.close();}
+});
+
+test('late failures cannot demote completed work or reopen permanently skipped work',async()=> {
+ const db=openIndex(':memory:');
+ try {
+  indexSession(db,fixture());await initializePendingEmbeddings(db,p);
+  const selected=pendingEmbeddingRows(db,p,1)[0];
+  completePendingEmbedding(db,selected);
+  expect(deferPendingEmbedding(db,selected,{kind:'timeout',reason:'request_timeout'},1000)).toBeNull();
+  expect(pendingCoverage(db,p)).toMatchObject({embedded:1,deferred:0});
+  db.run("UPDATE embedding_pending SET state='skipped',attempts=3,reason='retry_exhausted_request_timeout'");
+  expect(deferPendingEmbedding(db,selected,{kind:'connection',reason:'connection_unavailable'},1000)).toBeNull();
+  expect(db.query('SELECT state,attempts,reason FROM embedding_pending').get()).toEqual({state:'skipped',attempts:3,reason:'retry_exhausted_request_timeout'});
  }finally{db.close();}
 });

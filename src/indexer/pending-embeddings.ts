@@ -134,17 +134,19 @@ export function pendingCoverage(db:Database,provider:EmbeddingProvider) {
 }
 export function completePendingEmbedding(db:Database,row:PendingEmbeddingRow,truncated=false) {
  db.run(`UPDATE embedding_pending SET state='complete',attempts=0,retry_at=0,truncated=?,reason=?
-  WHERE session_id=? AND message_id=? AND provider_kind=? AND provider_model=? AND input_hash=? AND title IS ?`,
- [truncated ? 1 : 0,truncated ? 'chunk_limit_truncated' : null,row.session_id,row.message_id,row.provider_kind,row.provider_model,row.input_hash,row.title]);
+  WHERE session_id=? AND message_id=? AND provider_kind=? AND provider_model=? AND input_hash=? AND title IS ? AND fts_rowid=?`,
+ [truncated ? 1 : 0,truncated ? 'chunk_limit_truncated' : null,row.session_id,row.message_id,row.provider_kind,row.provider_model,row.input_hash,row.title,row.fts_rowid]);
 }
 export function deferPendingEmbedding(db:Database,row:PendingEmbeddingRow,failure:EmbeddingFailure,now:number) {
- const current=db.query(`SELECT attempts FROM embedding_pending WHERE session_id=? AND message_id=? AND provider_kind=? AND provider_model=? AND input_hash=? AND title IS ?`)
-  .get(row.session_id,row.message_id,row.provider_kind,row.provider_model,row.input_hash,row.title) as {attempts:number}|null;
+ const current=db.query(`SELECT attempts FROM embedding_pending WHERE session_id=? AND message_id=? AND provider_kind=? AND provider_model=? AND input_hash=? AND title IS ? AND fts_rowid=?
+  AND state IN ('pending','deferred')`)
+  .get(row.session_id,row.message_id,row.provider_kind,row.provider_model,row.input_hash,row.title,row.fts_rowid) as {attempts:number}|null;
  if(!current)return null;
  const retry=failureRetry(failure.kind,current.attempts+1,now,failure.reason);
  const result=db.query(`UPDATE embedding_pending SET state=?,attempts=attempts+1,retry_at=?,reason=?
-  WHERE session_id=? AND message_id=? AND provider_kind=? AND provider_model=? AND input_hash=? AND title IS ? RETURNING attempts,state,retry_at,reason`)
- .get(retry.state,retry.retry_at,retry.reason,row.session_id,row.message_id,row.provider_kind,row.provider_model,row.input_hash,row.title) as {attempts:number;state:string;retry_at:number;reason:string}|null;
+  WHERE session_id=? AND message_id=? AND provider_kind=? AND provider_model=? AND input_hash=? AND title IS ? AND fts_rowid=?
+  AND state IN ('pending','deferred') RETURNING attempts,state,retry_at,reason`)
+ .get(retry.state,retry.retry_at,retry.reason,row.session_id,row.message_id,row.provider_kind,row.provider_model,row.input_hash,row.title,row.fts_rowid) as {attempts:number;state:string;retry_at:number;reason:string}|null;
  return result;
 }
 
