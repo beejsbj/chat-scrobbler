@@ -20,3 +20,17 @@ test('rollback executable session writes are caught through durable change revis
   expect(pendingCoverage(db,provider)).toMatchObject({total:0});
  }finally{db.close();}
 });
+
+test('catch-up stops at its starting revision despite captures arriving on every yield',async()=> {
+ const db=openIndex(':memory:');const s=fixture('before');indexSession(db,s);let yields=0;
+ try {
+  await initializePendingEmbeddings(db,provider);
+  db.run('UPDATE sessions SET updated_at=? WHERE id=?',['2026-10-14',s.id]);
+  await initializePendingEmbeddings(db,provider,{yield:async()=>{
+   if(++yields>10)throw new Error('catch-up chased subsequent captures');
+   s.updated_at='2026-10-15';s.messages[0].text='capture '+yields;indexSession(db,s);await Bun.sleep(0);
+  }});
+  expect(yields).toBeLessThanOrEqual(10);
+  expect(pendingEmbeddingRows(db,provider,1)[0].text).toBe('capture '+yields);
+ }finally{db.close();}
+});
