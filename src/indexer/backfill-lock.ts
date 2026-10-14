@@ -58,6 +58,9 @@ export function acquireBackfillLock(indexPath:string,opts:{now?:()=>number;lease
   let transferred=false;
   try {
     db.run("PRAGMA busy_timeout=5000");
+    // Coordination must not checkpoint unrelated bulk warmup/migration writes.
+    // Archive writers retain checkpoint policy; bulk jobs use a worker.
+    db.run("PRAGMA wal_autocheckpoint=0");
     createBackfillLockTable(db);
     const token=randomUUID();
     const acquired=db.transaction(()=> {

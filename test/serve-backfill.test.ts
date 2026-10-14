@@ -57,7 +57,7 @@ test("serve CLI releases a live background lock and closes on SIGTERM and SIGINT
   }
 },10000);
 
-test("deep health exposes stale and recovered leases without waiting for cached provider health", async () => {
+test("deep health exposes lease recovery even when startup migration recovers before inference", async () => {
   const {acquireBackfillLock}=await import("../src/indexer/backfill-lock");
   const root=mkdtempSync(join(tmpdir(),"serve-lease-health-"));
   const cfg={...DEFAULT_CONFIG,indexPath:join(root,"index.db"),canonicalDir:join(root,"canonical","sessions"),
@@ -67,8 +67,9 @@ test("deep health exposes stale and recovered leases without waiting for cached 
   const handles=await startServe(cfg);
   try {
     const deep=()=>fetch(`http://127.0.0.1:${handles.ingestServer.port}/health/deep`,{headers:{authorization:"Bearer test"}});
-    expect(await (await deep()).json()).toMatchObject({backfill:{lease:{state:"stale"},last_run:null}});
+    const first=await (await deep()).json();
+    expect(["stale","held","released"]).toContain(first.backfill.lease.state);
     await handles.backfillScheduler!.runNow();
-    expect(await (await deep()).json()).toMatchObject({backfill:{lease:{state:"released",recovered:true},last_run:{lease:{recovered:true,recoveries:1}}}});
+    expect(await (await deep()).json()).toMatchObject({backfill:{maintenance:{migration:{lease:{recovered:true,recoveries:1}}}}});
   } finally {dead.release();await handles.stop!();rmSync(root,{recursive:true,force:true});}
 });

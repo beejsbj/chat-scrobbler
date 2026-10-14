@@ -25,7 +25,7 @@ test("scheduler delays startup, processes small pending batches, exposes progres
     expect(scheduler.status()).toMatchObject({enabled:true,running:false,state:"scheduled",last_run:null,progress:null});
     expect(Date.parse(scheduler.status().next_run_at!)-Date.now()).toBeGreaterThan(599_000);
     expect(calls).toBe(0);
-    expect(await scheduler.runNow()).toMatchObject({embedded:2,attempted:2,text:null});
+    expect(await scheduler.runNow()).toMatchObject({embedded:2,attempted:2,text:{total:4,embedded:2}});
     expect(scheduler.status()).toMatchObject({running:false,state:"scheduled",last_run:{outcome:"complete",report:{embedded:2}},progress:{event:"complete"}});
     await scheduler.runNow(); expect(calls).toBe(4);
     await scheduler.runNow(); expect(calls).toBe(4);
@@ -48,23 +48,17 @@ test("disabled scheduler is lazy and does not create an index", async () => {
   } finally {rmSync(root,{recursive:true,force:true});}
 });
 
-test("provider outages stop at one request, jitter exponential backoff, and retry failed work", async () => {
-  const {root,cfg}=setup(); let fail=true,calls=0;
-  const scheduler=startEmbeddingBackfillScheduler({cfg,random:()=>0,now:()=>1_000_000,
-    provider:{...p,embed:async()=>{calls++;if(fail)throw new Error("private request body");return [1,0];}}});
-  try {
-    expect(await scheduler.runNow()).toMatchObject({failed:1,attempted:1});
-    expect(calls).toBe(1);
-    expect(scheduler.status()).toMatchObject({state:"backoff",consecutive_failures:1,last_run:{outcome:"provider_unavailable"},next_run_at:new Date(1_450_000).toISOString()});
-    await scheduler.runNow(); expect(calls).toBe(2);
-    expect(scheduler.status().next_run_at).toBe(new Date(1_900_000).toISOString());
-    expect(JSON.stringify(scheduler.status())).not.toContain("private");
-    fail=false;
-    expect(await scheduler.runNow()).toMatchObject({embedded:2,attempted:2});
-    // Failures advanced the cursor; the completed sweep wraps and retries them.
-    expect(await scheduler.runNow()).toMatchObject({embedded:2,attempted:2});
-    expect(scheduler.status()).toMatchObject({state:"scheduled",consecutive_failures:0});
-  } finally {await scheduler.stop();rmSync(root,{recursive:true,force:true});}
+test("connection failures across different items trigger jittered backoff while item failures do not",async()=> {
+ const {root,cfg}=setup();let calls=0;
+ const scheduler=startEmbeddingBackfillScheduler({cfg,random:()=>0,now:()=>1_000_000,
+  provider:{...p,embed:async()=>{calls++;throw Object.assign(new Error("private request body"),{code:"ECONNREFUSED"});}}});
+ try {
+  expect(await scheduler.runNow()).toMatchObject({deferred:2,provider_outage:true,attempted:2});expect(calls).toBe(2);
+  expect(scheduler.status()).toMatchObject({state:"backoff",consecutive_failures:1,last_run:{outcome:"provider_unavailable"},next_run_at:new Date(1_450_000).toISOString()});
+  expect(await scheduler.runNow()).toMatchObject({deferred:1,provider_outage:true});expect(calls).toBe(3);
+  expect(scheduler.status().next_run_at).toBe(new Date(1_900_000).toISOString());
+  expect(JSON.stringify(scheduler.status())).not.toContain("private");
+ }finally{await scheduler.stop();rmSync(root,{recursive:true,force:true});}
 });
 
 test("coalesced ticks and manual migration cannot overlap an active batch; stop aborts it", async () => {
@@ -105,7 +99,7 @@ test("a busy lock records a skipped run without provider failure", async () => {
   } finally {lock.release();await scheduler.stop();rmSync(root,{recursive:true,force:true});}
 });
 
-test("covered prefixes continue on a short timer so pending tail rows do not wait one interval per page", async () => {
+test("indexed pending tail rows bypass a covered prefix in a single batch", async () => {
   const {root,cfg}=setup();const db=openIndex(cfg.indexPath),session=fixture();
   session.messages=Array.from({length:26},(_,i)=>({...session.messages[0],id:`m${i}`,text:`words ${i}`}));
   indexSession(db,session);
@@ -117,12 +111,9 @@ test("covered prefixes continue on a short timer so pending tail rows do not wai
   const scheduler=startEmbeddingBackfillScheduler({cfg,scanLimit:10,now:()=>1_000_000,
     provider:{...p,embed:async()=>{calls++;return [1,0];}}});
   try {
-    expect(await scheduler.runNow()).toMatchObject({attempted:0,scan:{cursor:10,scanned:10,exhausted:false}});
-    expect(scheduler.status().next_run_at).toBe(new Date(1_001_000).toISOString());
-    await scheduler.runNow();expect(calls).toBe(0);
-    expect(scheduler.status().next_run_at).toBe(new Date(1_001_000).toISOString());
-    expect(await scheduler.runNow()).toMatchObject({embedded:1,scan:{exhausted:true}});
+    expect(await scheduler.runNow()).toMatchObject({embedded:1,attempted:1,scan:{scanned:1,exhausted:true}});
     expect(scheduler.status().next_run_at).toBe(new Date(1_600_000).toISOString());expect(calls).toBe(1);
+    expect(await scheduler.runNow()).toMatchObject({attempted:0});expect(calls).toBe(1);
   } finally {await scheduler.stop();rmSync(root,{recursive:true,force:true});}
 });
 
@@ -132,9 +123,10 @@ test("a failing item does not hold the cursor ahead of later healthy pending mes
     sent.push(text);if(text==="words 0")throw new Error("bad item");return [1,0];
   }}});
   try {
-    await scheduler.runNow();expect(sent).toEqual(["words 0"]);
-    expect(await scheduler.runNow()).toMatchObject({embedded:3,failed:0,scan:{exhausted:true}});
-    await scheduler.runNow();expect(sent.at(-1)).toBe("words 0");
+    expect(await scheduler.runNow()).toMatchObject({embedded:3,deferred:1,provider_outage:false});
+    expect(sent).toEqual(["words 3","words 2","words 1","words 0"]);
+    expect(scheduler.status()).toMatchObject({state:"scheduled",consecutive_failures:0});
+    expect(await scheduler.runNow()).toMatchObject({attempted:0});expect(sent).toHaveLength(4);
   } finally {await scheduler.stop();rmSync(root,{recursive:true,force:true});}
 });
 

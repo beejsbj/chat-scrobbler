@@ -739,7 +739,7 @@ export async function startServe(cfg: ChatHistoryConfig): Promise<ServeHandles> 
     warmSearchCaches: true,
   }); } catch(error) {ingestServer.stop(true);throw error;}
 
-  backfillScheduler=startEmbeddingBackfillScheduler({cfg,provider:embeddingProvider});
+  backfillScheduler=startEmbeddingBackfillScheduler({cfg,provider:embeddingProvider,startupMaintenance:true});
   const stopIngest=ingestServer.stop.bind(ingestServer);
   ingestServer.stop=(closeActiveConnections?: boolean)=> {
     void backfillScheduler!.stop();
