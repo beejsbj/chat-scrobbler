@@ -1,4 +1,5 @@
 import type {Database} from 'bun:sqlite';
+import {reconcilePendingChanges} from './pending-reconciliation';
 import type {Session} from '../schema/types';
 import type {EmbeddingProvider} from './sqlite';
 import {reusableTextVector,reusableBinaryTextVector,putTextVector,vectorScope,decodeVector,textVectorHash} from './vector-store';
@@ -29,6 +30,8 @@ export function createPendingTables(db:Database) {
  db.run(`CREATE INDEX IF NOT EXISTS embedding_pending_due_v2 ON embedding_pending(provider_kind,provider_model,priority DESC,fts_rowid DESC)
    WHERE state IN ('pending','deferred')`);
  db.run('CREATE INDEX IF NOT EXISTS embedding_pending_coverage_v2 ON embedding_pending(provider_kind,provider_model,type,state,reason)');
+ if(!(db.query('PRAGMA table_info(embedding_models)').all() as Array<{name:string}>).some(row=>row.name==='pending_revision'))
+  db.run('ALTER TABLE embedding_models ADD COLUMN pending_revision INTEGER NOT NULL DEFAULT 0');
 }
 export function createPendingVectorTriggers(db:Database) {
  for(const event of ['INSERT','UPDATE'])db.run(`CREATE TRIGGER IF NOT EXISTS pending_vector_${event.toLowerCase()}
@@ -97,7 +100,7 @@ function seedAssets(db:Database,kind:string,model:string,session?:string) {
  * partial pending index; captures maintain the markers in their transaction. */
 export async function initializePendingEmbeddings(db:Database,provider:EmbeddingProvider,opts:{signal?:AbortSignal;yield?:()=>Promise<void>;batchSize?:number;assertLease?:()=>void}={}) {
  const [kind,model]=scope(provider),batch=opts.batchSize ?? 64;
- db.run('INSERT OR IGNORE INTO embedding_models(provider_kind,provider_model,media) VALUES (?,?,?)',[kind,model,provider.embedAsset ? 1 : 0]);
+ db.run('INSERT OR IGNORE INTO embedding_models(provider_kind,provider_model,media,pending_revision) VALUES (?,?,?,(SELECT revision FROM search_revision WHERE id=1))',[kind,model,provider.embedAsset ? 1 : 0]);
  while(true) {
   opts.signal?.throwIfAborted();
   const done=db.transaction(()=> {
@@ -125,9 +128,11 @@ export async function initializePendingEmbeddings(db:Database,provider:Embedding
     [rows.at(-1)?.rowid ?? state.cursor,rows.length<batch ? 1 : 0,kind,model]);
    opts.assertLease?.();return rows.length<batch;
   }).immediate();
-  if(done)return;
+  if(done)break;
   await (opts.yield?.() ?? Bun.sleep(0));
  }
+ await reconcilePendingChanges(db,kind,model,{...opts,upsert:row=>upsertText(db,row,kind,model),
+  assets:provider.embedAsset ? session=>seedAssets(db,kind,model,session) : undefined});
 }
 export function pendingEmbeddingRows(db:Database,provider:EmbeddingProvider,limit:number,now=Date.now()):PendingEmbeddingRow[] {
  const [kind,model]=scope(provider);
