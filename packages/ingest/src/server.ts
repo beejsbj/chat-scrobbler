@@ -1,3 +1,4 @@
+import { syncIssueReports } from "./sync-issues";
 import { recordParseOutcome } from "../../../src/monitor/parse-state";
 import { monitorWrite } from "../../../src/monitor/state-fault";
 import { persistEmbeddingStatus } from "../../../src/indexer/embedding-status";
@@ -11,6 +12,7 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { foldCaptureIntoSpine, type SpineResult } from "./pipeline";
 import { recordAssetFailures } from "./asset-failures";
+import { captureFailureReports } from "./capture-failures";
 import { conversationStatuses } from "./status";
 import {
   ASSET_INGEST_PATH,
@@ -23,8 +25,12 @@ import {
 } from "../../shared/src";
 import { deleteIndexedSession, openIndex } from "../../../src/indexer/sqlite";
 import { MAX_ASSET_BYTES, storeCanonicalAsset } from "../../../src/store/assets";
+import { AssetBlobMissingError, lookupAssetBlob, referenceExistingAsset } from "../../../src/store/asset-dedup";
+import { BodyTooLargeError, readBoundedBody } from "./bounded-body";
+import { handleAssetBackfill } from "./asset-backfill";
 import { captureJsonEntries } from "../../../src/store/raw-json";
-import { rawDirForCanonicalDir, storeRawCapture } from "../../../src/store/raw";
+import { rawDirForCanonicalDir } from "../../../src/store/raw";
+import { archiveCaptureWithGeminiMedia } from "./gemini-media-retention";
 import { deleteSessionArchive } from "../../../src/store/delete";
 import { isSessionDeleted } from "../../../src/store/tombstones";
 import type { EmbeddingProvider } from "../../../src/indexer/sqlite";
@@ -48,6 +54,8 @@ export interface IngestServerOptions extends MonitorConfig {
   rawDir?: string;
   /** Used by deep health checks. Captures defer vector inference to backfill. */
   embeddingProvider?: EmbeddingProvider | null;
+  /** Max accepted POST /assets body; defaults to MAX_ASSET_BYTES (100MB). */
+  maxAssetBytes?: number;
   /** Live background coverage progress, only exposed through authenticated deep health. */
   backfillStatus?: () => BackfillSchedulerStatus;
 }
@@ -127,8 +135,11 @@ export async function handleIngestRequest(req: Request, opts: IngestServerOption
   const isCapture = req.method === "POST" && url.pathname === CAPTURE_INGEST_PATH;
   const isDeleteCapture = req.method === "DELETE" && url.pathname === CAPTURE_INGEST_PATH;
   const isAsset = req.method === "POST" && url.pathname === ASSET_INGEST_PATH;
+  const isAssetLookup = req.method === "GET" && url.pathname === ASSET_INGEST_PATH;
+  const isAssetReference = req.method === "POST" && url.pathname === `${ASSET_INGEST_PATH}/reference`;
   const isStatus = req.method === "POST" && url.pathname === STATUS_PATH;
-  if (!isCapture && !isDeleteCapture && !isAsset && !isStatus) {
+  const isBackfill = (req.method === "GET" || req.method === "POST") && url.pathname === `${ASSET_INGEST_PATH}/backfill`;
+  if (!isBackfill && !isCapture && !isDeleteCapture && !isAsset && !isAssetLookup && !isAssetReference && !isStatus) {
     return json({ ok: false, error: "Not found" }, 404);
   }
 
@@ -141,6 +152,12 @@ export async function handleIngestRequest(req: Request, opts: IngestServerOption
   }
 
   const fat = fatMode(opts);
+
+  if (isBackfill) {
+    if (!fat) return json({ ok: false, error: "asset endpoint requires canonicalDir + indexPath" }, 400);
+    const rawDir = opts.rawDir ?? rawDirForCanonicalDir(fat.canonicalDir);
+    return handleAssetBackfill(req, url, { canonicalDir: fat.canonicalDir, rawDir, db: indexFor(fat.indexPath), readSource }, json);
+  }
 
   if (isDeleteCapture) {
     if (!fat) return json({ ok: false, error: "delete endpoint requires canonicalDir + indexPath" }, 400);
@@ -162,6 +179,34 @@ export async function handleIngestRequest(req: Request, opts: IngestServerOption
     }
   }
 
+  if (isAssetLookup || isAssetReference) {
+    if (!fat) return json({ ok: false, error: "asset endpoint requires canonicalDir + indexPath" }, 400);
+    try {
+      const sha256 = url.searchParams.get("sha256") ?? "";
+      if (!/^[a-f0-9]{64}$/.test(sha256)) return json({ ok: false, error: "sha256 must be 64 lowercase hex characters" }, 400);
+      if (isAssetLookup) {
+        const found = lookupAssetBlob(fat.canonicalDir, sha256);
+        return json(found ? { ok: true, exists: true, sha256, size_bytes: found.size_bytes } : { ok: true, exists: false, sha256 });
+      }
+      const source = readSource(url.searchParams.get("source"));
+      const sourceId = requiredParam(url, "source_id");
+      const pointer = requiredParam(url, "pointer");
+      if (isSessionDeleted(fat.canonicalDir, source, sourceId)) return json({ ok: false, error: "session was deleted" }, 410);
+      const stored = referenceExistingAsset({
+        canonicalDir: fat.canonicalDir,
+        source,
+        sourceId,
+        sha256,
+        filename: url.searchParams.get("filename"),
+        contentType: url.searchParams.get("content_type"),
+      });
+      return json({ ok: true, pointer, ...stored } satisfies AssetUploadResponse);
+    } catch (error) {
+      if (error instanceof AssetBlobMissingError) return json({ ok: false, error: error.message }, 404);
+      return json({ ok: false, error: error instanceof Error ? error.message : String(error) }, 400);
+    }
+  }
+
   if (isAsset) {
     if (!fat) return json({ ok: false, error: "asset endpoint requires canonicalDir + indexPath" }, 400);
     try {
@@ -171,11 +216,8 @@ export async function handleIngestRequest(req: Request, opts: IngestServerOption
       const pointer = requiredParam(url, "pointer");
       const filename = url.searchParams.get("filename");
       const contentType = req.headers.get("content-type") ?? url.searchParams.get("content_type");
-      const contentLength = req.headers.get("content-length");
-      if (contentLength && Number(contentLength) > MAX_ASSET_BYTES) {
-        return json({ ok: false, error: `asset exceeds ${MAX_ASSET_BYTES} byte limit` }, 413);
-      }
-      const bytes = new Uint8Array(await req.arrayBuffer());
+      const maxBytes = opts.maxAssetBytes ?? MAX_ASSET_BYTES;
+      const bytes = await readBoundedBody(req, maxBytes);
       const stored = storeCanonicalAsset({
         canonicalDir: fat.canonicalDir,
         source,
@@ -186,6 +228,7 @@ export async function handleIngestRequest(req: Request, opts: IngestServerOption
         originalUrl: url.searchParams.get("original_url"),
         contentType,
         bytes,
+        maxBytes,
       });
       return json({
         ok: true,
@@ -193,6 +236,7 @@ export async function handleIngestRequest(req: Request, opts: IngestServerOption
         ...stored,
       } satisfies AssetUploadResponse);
     } catch (error) {
+      if (error instanceof BodyTooLargeError) return json({ ok: false, error: error.message }, 413);
       return json({ ok: false, error: error instanceof Error ? error.message : String(error) }, 400);
     }
   }
@@ -200,14 +244,23 @@ export async function handleIngestRequest(req: Request, opts: IngestServerOption
   if (isStatus) {
     if (!fat) return json({ ok: false, error: "status endpoint requires canonicalDir + indexPath" }, 400);
     try {
-      const body = await req.json() as { source?: string; asset_failures?: unknown; conversations?: Array<{ id: string; updated_at?: string | null }> };
+      const body = await req.json() as {
+        source?: string;
+        install_id?: string;
+        asset_failures?: unknown;
+        capture_failures?: unknown;
+        last_sync_error?: unknown;
+        conversations?: Array<{ id: string; updated_at?: string | null }>;
+      };
       if (typeof body.source !== "string" || !Array.isArray(body.conversations)) {
         return json({ ok: false, error: "status requires { source, conversations[] }" }, 400);
       }
       const source = readSource(body.source);
+      const capture_failures = captureFailureReports(fat.indexPath, source, body.capture_failures, body.install_id);
+      const sync_errors = syncIssueReports(fat.indexPath, source, body.last_sync_error, body.install_id);
       const count = recordAssetFailures(fat.indexPath, source, body.asset_failures, opts.monitorStatePath);
       const statuses = conversationStatuses(indexFor(fat.indexPath), source, body.conversations);
-      return json({ ok: true, statuses, ...(body.asset_failures === undefined ? {} : { asset_failures: count }) });
+      return json({ ok: true, statuses, capture_failures, sync_errors, ...(body.asset_failures === undefined ? {} : { asset_failures: count }) });
     } catch (error) {
       return json({ ok: false, error: error instanceof Error ? error.message : String(error) }, 400);
     }
@@ -226,15 +279,16 @@ export async function handleIngestRequest(req: Request, opts: IngestServerOption
       }
       return [{ capture, serialized: entries[i] }];
     });
-    const captures = accepted.map(entry => entry.capture);
     const rawDir = opts.rawDir ?? (opts.canonicalDir ? rawDirForCanonicalDir(opts.canonicalDir) : null);
     if (!rawDir) return json({ ok: false, error: "raw store is not configured" }, 503);
-    let rawRefs: string[];
-    try { rawRefs = captures.map((capture, i) => storeRawCapture(rawDir, capture, accepted[i].serialized)); }
+    let archived: Array<{ capture: RawCapture; rawRef: string }>;
+    try { archived = accepted.map(entry => archiveCaptureWithGeminiMedia(rawDir, entry.capture, entry.serialized)); }
     catch {
       console.error(JSON.stringify({ event: "raw_capture_store_failed", reason: "raw_store_write_failed" }));
       return json({ ok: false, error: "raw_store_write_failed" }, 503);
     }
+    const captures = archived.map(entry => entry.capture);
+    const rawRefs = archived.map(entry => entry.rawRef);
     if (opts.indexPath && captures.length) {
       const path = monitorStatePath(opts.indexPath, opts.monitorStatePath);
       monitorWrite(path, () => {

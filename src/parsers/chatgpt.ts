@@ -2,14 +2,15 @@
 // Shared builders + live capture parser for ChatGPT.
 // Historical canonical files may carry capture_method "export"; this file only
 // WRITES capture_method "api" for new captures.
-import type { Session, Message, CaptureMethod } from "../schema/types";
+import type { Session, Message, Block, CaptureMethod } from "../schema/types";
 import { SCHEMA_VERSION, makeSessionId } from "../schema/types";
 import { assetLookupFromRaw, type AssetLookup } from "./assets";
 import { renderText } from "./render";
 import { blocksFromContent } from "./chatgpt-parts";
 import { blocksFromCanvas, canvasAncestor, type CanvasArtifact } from "./chatgpt-artifacts";
 export { blocksFromContent } from "./chatgpt-parts";
-import { childLocation, limitUnknownJson, toolCall, unknownBlock, type ParserContext } from "./parts";
+import { childLocation, limitUnknownJson, mediaBlock, toolCall, unknownBlock, type ParserContext } from "./parts";
+import { addCapturedAssets, capturedAssetBlocks, linkedPointers, mediaKind } from "./captured-assets";
 
 export interface RawNode { id: string; message: any | null; parent: string | null; children?: string[]; }
 export interface RawConversation {
@@ -101,7 +102,16 @@ export function sessionFromChatgptConversation(conv: RawConversation, opts: Chat
     const location = childLocation({ raw_ref: opts.raw_ref, raw_path: opts.raw_path ?? "" }, "mapping", node.id, "message");
     const recipient = typeof m.recipient === "string" && m.recipient !== "all" ? m.recipient : null;
     const name = recipient ?? (role === "tool" ? m.author?.name : null) ?? "code";
-    const contentBlocks = blocksFromContent(m.content, assets, childLocation(location, "content"));
+    const scoped = assets.scoped([m.id ?? node.id, node.id]);
+    const contentBlocks = blocksFromContent(m.content, scoped, childLocation(location, "content"));
+    const seenMedia = linkedPointers(contentBlocks);
+    const prose = [m.content?.text, ...(Array.isArray(m.content?.parts) ? m.content.parts : [])].filter(value => typeof value === "string").join("\n");
+    for (const match of prose.matchAll(/sandbox:\/[^\s)\]<>"']+/g)) {
+      if (seenMedia.has(match[0])) continue;
+      seenMedia.add(match[0]);
+      const asset = scoped.byPointer(match[0]);
+      contentBlocks.push(mediaBlock(mediaKind(asset?.content_type), match[0], scoped, match[0].split("/").at(-1) ?? null, asset?.content_type ?? null));
+    }
     const blocks = recipient || role === "tool"
       ? [toolCall(name), ...contentBlocks.filter(block => !["text", "reasoning", "tool_call", "tool_result"].includes(block.type))]
       : contentBlocks;
@@ -117,8 +127,10 @@ export function sessionFromChatgptConversation(conv: RawConversation, opts: Chat
         blocks.push(unknownBlock(entry, childLocation(location, "metadata", key, i), key)));
       else if (entries != null) blocks.push(unknownBlock(entries, childLocation(location, "metadata", key), key));
     }
-    if (blocks.length === 0) continue;
     const msgId = m.id ?? node.id;
+    blocks.push(...metadataMediaBlocks(m.metadata, blocks, scoped));
+    blocks.push(...capturedAssetBlocks(assets, [msgId, node.id], blocks));
+    if (blocks.length === 0) continue;
     rawToEmittedId.set(node.id, msgId);
     // parent_id: walk up raw node parents through filtered-out nodes until we
     // find one that was emitted, or reach the root.
@@ -157,6 +169,7 @@ export function sessionFromChatgptConversation(conv: RawConversation, opts: Chat
     cur = conv.mapping[cur].parent ?? null;
   }
 
+  addCapturedAssets(messages, assets, null);
   const created = epochToIso(conv.create_time) ?? new Date(0).toISOString();
   return limitUnknownJson({
     id: makeSessionId("chatgpt", sourceId),
@@ -199,4 +212,27 @@ export function parseChatgpt(raw: unknown, context: ParserContext = {}): Session
     if (session) sessions.push(session);
   }
   return sessions;
+}
+
+const bareId = (pointer: string) => pointer.replace(/^(?:sediment|file-service):\/\//, "");
+
+/** Retain downloadable references even when bytes failed, so backfill can retry them. */
+function metadataMediaBlocks(metadata: any, existing: Block[], assets: AssetLookup): Block[] {
+  const refs: Array<{ pointer: string; filename: string | null; mime: string | null }> = [];
+  if (Array.isArray(metadata?.attachments)) for (const a of metadata.attachments) if (typeof a?.id === "string") {
+    refs.push({ pointer: a.id, filename: a.name ?? null, mime: a.mime_type ?? null });
+  }
+  if (Array.isArray(metadata?.aggregate_result?.messages)) {
+    for (const r of metadata.aggregate_result.messages) if (typeof r?.image_url === "string"
+      && assets.references().some(ref => ref.pointer === r.image_url)) refs.push({ pointer: r.image_url, filename: null, mime: "image/png" });
+  }
+  const seen = linkedPointers(existing);
+  return refs.flatMap(ref => {
+    const asset = assets.all().find(a => a.pointer === ref.pointer || bareId(a.pointer) === bareId(ref.pointer));
+    const pointer = asset?.pointer ?? ref.pointer;
+    if (seen.has(pointer) || [...seen].some(p => bareId(p) === bareId(pointer))) return [];
+    seen.add(pointer);
+    const mime = asset?.content_type ?? ref.mime;
+    return [mediaBlock(mediaKind(mime), pointer, assets, asset?.filename ?? ref.filename, mime)];
+  });
 }

@@ -204,6 +204,12 @@ test("config file embeddingProvider is validated before being applied", () => {
   }
 });
 
+test("asset size limit is configurable and rejects invalid bounds", () => {
+  expect(loadConfig({ env: {}, configPath: null }).maxAssetBytes).toBe(100 * 1024 * 1024);
+  expect(loadConfig({ env: { CHAT_SCROBBLER_MAX_ASSET_BYTES: "7" }, configPath: null }).maxAssetBytes).toBe(7);
+  expect(loadConfig({ env: { CHAT_SCROBBLER_MAX_ASSET_BYTES: "-1" }, configPath: null }).maxAssetBytes).toBe(100 * 1024 * 1024);
+});
+
 test("monitor thresholds merge provider overrides and reject malformed values", () => {
   const root = mkdtempSync(join(tmpdir(), "monitor-config-"));
   const path = join(root, "config.json");

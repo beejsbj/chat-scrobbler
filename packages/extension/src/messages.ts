@@ -1,4 +1,4 @@
-import type { AssetFailure, ProviderSource, RawCapture } from "../../shared/src";
+import type { AssetFailure, ProviderSource, RawCapture, ConversationCaptureFailure, AssetBackfillPage, AssetBackfillCommit, UploadedAsset, SyncIssue, DetailFailureIdentity } from "../../shared/src";
 import type { ProviderSyncResult } from "./providers";
 import type { CaptureKind } from "./recent-captures";
 
@@ -6,6 +6,9 @@ export interface SyncRequest {
   type: "SCROBBLER_SYNC_REQUEST";
   provider: ProviderSource;
   lastSync?: string | null;
+  captureFailures?: ConversationCaptureFailure[];
+  detailFailureStreak?: DetailFailureIdentity[];
+  retryFailed?: boolean;
 }
 
 export interface CaptureReadyMessage {
@@ -21,12 +24,16 @@ export interface AssetUploadRequest {
   pointer: string;
   filename?: string | null;
   contentType?: string | null;
-  bytes: number[];
+  bytes: number[] | Uint8Array;
 }
 
 export interface AssetUploadMessage {
   type: "SCROBBLER_ASSET_UPLOAD";
   asset: AssetUploadRequest;
+}
+export interface AssetLookupMessage {
+  type: "SCROBBLER_ASSET_LOOKUP";
+  asset: Omit<AssetUploadRequest, "bytes"> & { sha256?: string | null };
 }
 
 export interface AssetFailureMessage {
@@ -37,9 +44,12 @@ export interface AssetFailureMessage {
 export interface AssetFetchMessage {
   type: "SCROBBLER_ASSET_FETCH";
   url: string;
+  maxBytes?: number;
+  upload?: Omit<AssetUploadRequest, "bytes">;
 }
 
 export interface AssetFetchResponse {
+  asset?: UploadedAsset;
   bytes: number[];
   filename?: string | null;
   contentType?: string | null;
@@ -69,6 +79,7 @@ export interface SaveSettingsMessage {
   ingestToken?: string | null;
   /** When true, opening a provider tab auto-captures not-yet-synced conversations. */
   autoSync?: boolean;
+  maxAssetBytes?: number;
 }
 
 /** Content -> background: resolve spine state for the sidebar's visible chats.
@@ -118,7 +129,23 @@ export interface CaptureLoggedMessage {
   kind: CaptureKind;
 }
 
+export interface BackfillRequest { type: "SCROBBLER_BACKFILL_ASSETS"; provider: ProviderSource; page: AssetBackfillPage; }
+export interface BackfillOpenTabsMessage { type: "SCROBBLER_BACKFILL_OPEN_TABS"; }
+export interface RetryFailedMessage { type: "SCROBBLER_RETRY_FAILED_OPEN_TABS"; }
+export interface BackfillCommitMessage { type: "SCROBBLER_BACKFILL_COMMIT"; value: AssetBackfillCommit; }
+
+export interface AssetUploadStart { type: "SCROBBLER_ASSET_UPLOAD_START"; asset: Omit<AssetUploadRequest, "bytes">; sizeBytes: number; }
+export interface AssetUploadChunk { type: "SCROBBLER_ASSET_UPLOAD_CHUNK"; uploadId: string; offset: number; bytes: number[]; }
+export interface AssetUploadFinish { type: "SCROBBLER_ASSET_UPLOAD_FINISH"; uploadId: string; }
+export interface AssetUploadCancel { type: "SCROBBLER_ASSET_UPLOAD_CANCEL"; uploadId: string; }
+
 export type RuntimeMessage =
+  | AssetLookupMessage
+  | AssetUploadStart | AssetUploadChunk | AssetUploadFinish | AssetUploadCancel
+  | BackfillRequest
+  | BackfillOpenTabsMessage
+  | BackfillCommitMessage
+  | RetryFailedMessage
   | SyncRequest
   | CaptureReadyMessage
   | AssetFailureMessage
@@ -149,6 +176,9 @@ export interface ContentSyncResponse extends ProviderSyncResult {
 export interface ErrorResponse {
   ok: false;
   error: string;
+  syncIssue?: SyncIssue;
+  detailFailureStreak?: DetailFailureIdentity[];
+  captureFailures?: ConversationCaptureFailure[];
 }
 
 export type SyncResponse = ContentSyncResponse | ErrorResponse;

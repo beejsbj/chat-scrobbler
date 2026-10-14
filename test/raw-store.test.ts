@@ -148,3 +148,14 @@ test("unknown blocks from ingest point into the actual archived raw version", as
     expect(fragment).toEqual(capture.payload.mapping.n3.message.content);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
+
+test("raw store retains newly discovered asset references even when payload and blobs are unchanged", async () => {
+  const root = mkdtempSync(join(tmpdir(), "raw-asset-refs-"));
+  try {
+    const capture = buildRawCapture({ source: "gemini", sourceId: "c", endpoint: "/rpc", payload: [], fetchedAt: "2026-01-01T00:00:00Z" });
+    const first = storeRawCapture(root, capture);
+    const next = storeRawCapture(root, { ...capture, asset_references: [{ pointer: "p", message_id: "m", content_type: "audio/wav", filename: null }] });
+    expect(next).not.toBe(first);
+    expect(readRawCapture(root, next).asset_references).toHaveLength(1);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});

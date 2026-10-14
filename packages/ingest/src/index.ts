@@ -1,4 +1,5 @@
 import { handleIngestRequest } from "./server";
+import { ingestMaxRequestBodySize } from "./request-body-limit";
 import { embeddingProviderFromConfig } from "../../../src/indexer/embedding-providers";
 import { loadConfig } from "../../../src/config";
 import { assertTokenForExposedBind } from "../../../src/core/network";
@@ -25,6 +26,7 @@ if (import.meta.main) {
   Bun.serve({
     hostname: bindHost,
     port,
+    maxRequestBodySize: ingestMaxRequestBodySize(cfg.maxAssetBytes),
     fetch: (req) => handleIngestRequest(req, { ...cfg, canonicalDir, indexPath, ingestToken, embeddingProvider }),
   });
 

@@ -56,6 +56,45 @@ captures deduplicate. Provider IDs are encoded without lossy sanitization.
   the SQLite index for each conversation id and compares `updated_at`.
 - Optional bearer auth: set `ingestToken` in the popup and `INGEST_TOKEN` env on the
   server; both sides must match.
+- Assets are downloaded during capture. Provider helpers discover API media before
+  Gemini's DOM fallback, resolve file pointers, and report failed downloads without
+  stopping text capture for any asset failure. Asset throttling stops further downloads
+  in that batch, reports skipped assets, and still captures text.
+  Gemini DOM audio/video blob URLs are fetched only in the currently loaded
+  provider page, without credentials or headers. API-injected blobs and background
+  blob fetches are rejected. HTTPS media redirects are followed only when every
+  visible Location passes the source allowlist; opaque redirects fail closed.
+  Raw `assets` holds successful hashes and aliases;
+  `asset_references` also retains discoveries whose bytes could not be downloaded.
+- The extension hashes bytes before uploading. `GET /assets?sha256=...` and
+  `POST /assets/reference` avoid sending bytes the server already owns. A persistent
+  pointer-to-hash cache verifies receiver blob existence before downloading immutable
+  file IDs, Claude file UUIDs, or explicit SHA-256 pointers. Paths, sandbox links,
+  inline slots, and ordinary URLs are downloaded again; receiver hash lookup
+  prevents duplicate uploads. Acknowledged unchanged Gemini payloads skip downloads
+  and ingest. Against an older receiver, a missing lookup endpoint falls back to the original byte upload.
+- The popup has a resumable asset backfill action and a separate failed-chat retry
+  action. Backfill scans 25 archived sessions per provider per click, with one second
+  between downloads, and reports saved and unavailable assets.
+- Three deterministic failures at the same conversation update time quarantine that conversation
+  and let the sync cursor advance. Failure records persist in extension storage and
+  are reported through `/status`. A changed provider timestamp, manual retry, or
+  backoff deadline reopens the conversation. Quarantine retries after 1, 3, then
+  7 days while retaining attempt history, including for Gemini without timestamps.
+  Network failures, provider 429/503, and receiver auth/config/outage errors stop
+  sync without counting the environmental failure. Earlier deterministic attempts
+  survive an abort; provisional detail 5xx attempts are rolled back if they escalate
+  to an outage. Only receiver 400/413/422 count per capture.
+  Local parse errors and isolated detail 5xx count per chat. A new three-chat 5xx
+  cohort aborts but remembers its IDs and update timestamps in extension storage.
+  Repeated cohorts count when other detail requests work; confirmed local cohorts
+  also retry behind the cursor. Changed cohorts or all-detail failures without
+  prior local confirmation remain environmental. Aborted runs preserve the cursor.
+  Open-tab actions select one tab per provider, preferring an active page for DOM
+  media. Last errors remain visible in the popup and per-install `/status`
+  `sync_errors` reports; reports are retried after receiver access returns. Asset errors stay within the asset boundary.
+  Ignored failures are removed. Complete listings remove absent retryable failures;
+  Gemini retains unseen records from its partial sidebar, without holding its cursor.
 
 ---
 
@@ -72,7 +111,11 @@ Endpoints:
 | GET | /status/report | required bearer | cheap cached operational state and receipt report |
 | POST | /captures | optional bearer | receive raw captures, parse, store, index |
 | POST | /assets | optional bearer | receive provider-authenticated attachment bytes |
-| POST | /status | optional bearer | conversation state and optional asset failure reports |
+| GET | /assets?sha256=... | optional bearer | cheap blob existence check |
+| POST | /assets/reference | optional bearer | attach an existing hash to a session without uploading bytes |
+| GET | /assets/backfill?source=...&after=...&limit=25 | optional bearer | page through canonical media that needs bytes |
+| POST | /assets/backfill | optional bearer | link uploaded hashes into existing sessions and archived raw |
+| POST | /status | optional bearer | conversation state, asset failure reports, and durable capture failure lists |
 
 `pipeline.ts` (`foldCaptureIntoSpine`) is the hot path for POST /captures: it picks
 the right parser from the registry, writes the canonical session file, and indexes it
@@ -126,20 +169,53 @@ shared blobs. Blob collection and full archive erasure are separate concerns.
 
 Asset capture is best-effort and local-only. The browser extension fetches provider
 asset URLs in the authenticated page context, then uploads bytes to the local ingest
-server. If a provider rejects or expires an asset URL, text capture continues and the
-attachment block keeps `local_path: null`. Download, size, and upload failures
+server. For deterministic asset rejections or expired URLs, text capture continues
+and the attachment block keeps `local_path: null`. Download, size, and upload failures
 produce structured logs and reports through `/status`, with URLs and provider
-error bodies omitted from logs. Failure counts survive restarts in the monitoring state database.
+error bodies omitted from logs. Asset failures preserve text; environmental
+conversation/receiver errors abort sync for a later retry.
+Receiver asset failure counts survive restarts in the monitoring state database. Conversation
+failure snapshots are partitioned by persistent extension install ID. Legacy
+unscoped requests aggregate snapshots. Lists are persisted beside the index as
+`<indexPath>.capture-failures.json`. Categorical last sync errors are stored
+separately in `<indexPath>.sync-errors.json`; they never count as chat attempts.
+
+Both extension and receiver default to 100 MiB per asset, checked while reading
+streams and before upload. Set the extension limit in the popup and the receiver's
+`maxAssetBytes` JSON field or `CHAT_SCROBBLER_MAX_ASSET_BYTES` environment variable.
+Downloads are bounded but still buffered in memory. Large page-origin assets use
+1 MiB runtime-message chunks; cross-origin media can be downloaded and uploaded in
+the background worker. Provider cookies and bearer headers are never sent to ingest. Asset fetches enforce
+source-specific download URL and credential policies, validate every visible
+redirect hop, refuse opaque redirects, and reject
+JSON/HTML documents before upload. The exact policies are in the BJS-547 handoff.
 
 Provider limits:
 
-- ChatGPT: maps known `file-service://...` pointers to the backend file download route
-  and also accepts direct URL/path pointers.
-- Claude: maps `files[]` and legacy `attachments[]` UUIDs to the organization file
-  download route.
-- Gemini: the verified `hNvQHb` conversation RPC remains text-first. The extension only
-  uploads rendered DOM image URLs when visible; otherwise Gemini attachments stay as
-  provider metadata until a stable API attachment shape is verified.
+- ChatGPT: resolves `sediment://` and `file-service://` through JSON download-link
+  routes; discovers image generation, uploads, interpreter outputs, and exposed
+  audio/video pointers. Interpreter download routing still needs live verification.
+- Claude: prefers exposed download, preview, and document URLs; supports inline
+  base64 visuals and exposed sandbox files. A UUID-only fallback endpoint still
+  needs live verification. Text artifacts remain canonical text.
+- Gemini: scans upload metadata and generated image, video, and music slots in API
+  payloads. Explicit download/export descriptors are eligible too. The media
+  selectors need live verification against this account's `hNvQHb` response. DOM
+  images, audio, video, and download anchors are a fallback for the loaded chat only.
+  Missing WIZ bootstrap data aborts as environmental; no unsupported DOM text
+  substitute is emitted. Blob backfill re-verifies the pointer in the current
+  chat's audio/video/source elements before reading it without credentials.
+
+See [BJS-547 handoff](../HANDOFF-BJS-547.md) for coverage, endpoint evidence and
+manual browser checks. A binary that has no exposed download URL cannot be captured.
+
+Backfill reads canonical pointers, including legacy sessions without archived raw.
+Successful backfill enriches a new raw version before updating canonical links, so
+`reparse` can rebuild them. It preserves the original `fetched_at` and records
+`asset_backfilled_at` separately. Legacy sessions remain without invented provider
+raw; `reparse` retains them. Backfill refreshes Claude conversation metadata and
+resolves ChatGPT pointers; Gemini currently retries archived URLs directly. Expired
+Gemini links can require a fresh conversation capture.
 
 ---
 
@@ -303,6 +379,7 @@ Config file auto-discovery order:
 | `mcpPublicBaseUrl` | `null` (no printed public connector URL) |
 | `ingestBaseUrl` | `http://127.0.0.1:4318` (tracks `ingestPort` unless overridden) |
 | `ingestToken` | `null` (no auth) |
+| `maxAssetBytes` | `104857600` (100 MiB) |
 | `backupTargets` | `["~/.local/share/chat-scrobbler/backups"]` |
 
 **Environment variable overrides:**
@@ -317,6 +394,7 @@ Config file auto-discovery order:
 | `MCP_PUBLIC_BASE_URL` or `CHAT_SCROBBLER_MCP_PUBLIC_BASE_URL` | `mcpPublicBaseUrl` |
 | `INGEST_BASE_URL` | `ingestBaseUrl` |
 | `INGEST_TOKEN` | `ingestToken` |
+| `CHAT_SCROBBLER_MAX_ASSET_BYTES` | `maxAssetBytes` |
 | `BACKUP_TARGET` | `backupTargets` (comma-separated list) |
 
 ---

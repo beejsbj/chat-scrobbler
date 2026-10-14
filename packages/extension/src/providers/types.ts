@@ -1,8 +1,11 @@
-import type { ProviderSource, RawCapture, UploadedAsset } from "../../../shared/src";
+import type { ProviderSource, RawCapture, UploadedAsset, ConversationCaptureFailure, DetailFailureIdentity, AssetBackfillReference } from "../../../shared/src";
 import type { AssetUploadRequest } from "../messages";
+import { DeterministicCaptureError, ProviderDetailError, TransientSyncError } from "./sync-errors";
 
 export interface ProviderSyncOptions {
   lastSync?: string | null;
+  captureFailures?: ConversationCaptureFailure[];
+  detailFailureStreak?: DetailFailureIdentity[];
   emitCapture: (capture: RawCapture) => Promise<EmitCaptureResult>;
   shouldIgnore?: (source: ProviderSource, sourceId: string) => boolean;
   uploadAsset?: (asset: AssetUploadRequest) => Promise<UploadedAsset>;
@@ -18,6 +21,8 @@ export interface ProviderSyncResult {
   captured: number;
   skipped: number;
   failed?: number;
+  captureFailures?: ConversationCaptureFailure[];
+  detailFailureStreak?: DetailFailureIdentity[];
   maxConversationUpdatedAt: string | null;
   account: string | null;
 }
@@ -25,6 +30,7 @@ export interface ProviderSyncResult {
 export interface ProviderAdapter {
   source: ProviderSource;
   sync(options: ProviderSyncOptions): Promise<ProviderSyncResult>;
+  backfillAssets?(id: string, references: AssetBackfillReference[], options: { uploadAsset: ProviderSyncOptions["uploadAsset"]; beforeFetch: () => Promise<void> }): Promise<UploadedAsset[]>;
   /** List recent conversations (id + updatedAt) for sidebar badge reconciliation.
    *  `pages` caps pagination (default 1 = the most-recent page). */
   listConversations?(pages?: number): Promise<ConversationSummary[]>;
@@ -39,7 +45,7 @@ export interface ConversationSummary {
   updatedAt: string | null;
 }
 
-export class RateLimitError extends Error {
+export class RateLimitError extends TransientSyncError {
   readonly status: number;
   readonly retryAfterMs: number | null;
 
@@ -81,12 +87,26 @@ export function maxIso(a: string | null, b: string | null): string | null {
 }
 
 export async function fetchJson(fetcher: FetchLike, input: string, init?: RequestInit): Promise<unknown> {
-  const res = await fetcher(input, { credentials: "include", ...init });
+  return readJson(fetcher, input, init, false);
+}
+export async function fetchDetailJson(fetcher: FetchLike, input: string, init?: RequestInit): Promise<unknown> {
+  return readJson(fetcher, input, init, true);
+}
+async function readJson(fetcher: FetchLike, input: string, init: RequestInit | undefined, detail: boolean): Promise<unknown> {
+  let res: Response;
+  try { res = await fetcher(input, { credentials: "include", ...init }); }
+  catch { throw new TransientSyncError("Provider network unavailable"); }
   if (res.status === 429 || res.status === 503) {
     throw new RateLimitError(input, res.status, parseRetryAfterMs(res.headers.get("retry-after")));
   }
-  if (!res.ok) throw new Error(`${input} failed with HTTP ${res.status}`);
-  return res.json();
+  if (res.status >= 500 && detail) throw new ProviderDetailError(res.status);
+  if (res.status >= 500) throw new TransientSyncError(`Provider temporarily unavailable (${res.status})`);
+  if (!res.ok) throw new DeterministicCaptureError(`Provider rejected capture (${res.status})`, res.status);
+  try { return await res.json(); }
+  catch (error) {
+    if (error instanceof SyntaxError) throw error;
+    throw new TransientSyncError("Provider response interrupted");
+  }
 }
 
 export function asObject(value: unknown): Record<string, unknown> {

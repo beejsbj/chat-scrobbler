@@ -6,6 +6,8 @@ export function blocksFromContent(content: any, assets: AssetLookup = assetLooku
   loc: PartLocation = { raw_ref: "", raw_path: "" }): Block[] {
   if (content == null) return [];
   const ct = content.content_type;
+  const rootMedia = voiceMedia(content, assets);
+  if (rootMedia.length) return rootMedia;
   if (ct === "text" || ct === "multimodal_text") {
     if (!Array.isArray(content.parts)) return [...proseBlocks(content), unknownBlock(content, loc)];
     const blocks: Block[] = ct === "text" ? proseBlocks(content) : [];
@@ -16,11 +18,8 @@ export function blocksFromContent(content: any, assets: AssetLookup = assetLooku
       if (part?.content_type === "image_asset_pointer" && typeof part.asset_pointer === "string") {
         return [mediaBlock("image", part.asset_pointer, assets)];
       }
-      // Audio pointers are only decoded for the known audio content types.
-      if (["audio", "input_audio", "input_audio_buffer", "audio_unconditional"].includes(part?.content_type)) {
-        const pointer = part.asset_pointer ?? part.audio_asset_pointer?.asset_pointer;
-        if (typeof pointer === "string") return [mediaBlock("audio", pointer, assets)];
-      }
+      const audioVideo = voiceMedia(part, assets);
+      if (audioVideo.length) return audioVideo;
       return [...proseBlocks(part), unknownBlock(part, at)];
     })];
   }
@@ -45,4 +44,15 @@ function proseBlocks(content: any): Block[] {
   const strings = Array.isArray(content?.parts) ? content.parts.filter((part: unknown) => typeof part === "string") : [];
   const text = [typeof content?.text === "string" ? content.text : "", ...strings].filter(Boolean).join("\n").trim();
   return text ? [{ type: "text", text }] : [];
+}
+
+function voiceMedia(part: any, assets: AssetLookup): Block[] {
+  if (!["audio", "input_audio", "input_audio_buffer", "audio_unconditional", "audio_asset_pointer",
+    "real_time_user_audio_video_asset_pointer", "video", "video_asset_pointer"].includes(part?.content_type)) return [];
+  const audio = part.asset_pointer ?? (typeof part.audio_asset_pointer === "string" ? part.audio_asset_pointer : part.audio_asset_pointer?.asset_pointer);
+  const video = typeof part.video_container_asset_pointer === "string" ? part.video_container_asset_pointer : part.video_container_asset_pointer?.asset_pointer;
+  const out: Block[] = [];
+  if (typeof audio === "string") out.push(mediaBlock(part.content_type.startsWith("video") ? "video" : "audio", audio, assets));
+  if (typeof video === "string") out.push(mediaBlock("video", video, assets));
+  return out;
 }

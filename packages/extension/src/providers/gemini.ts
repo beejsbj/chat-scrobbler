@@ -1,4 +1,6 @@
-import { logSyncFailure } from "./sync-failures";
+import { DetailFailureStreak } from "./detail-failure-streak";
+import { ProviderDetailError, DeterministicCaptureError, TransientSyncError } from "./sync-errors";
+import { logSyncFailure, SyncFailureTracker } from "./sync-failures";
 /**
  * Gemini scrobbler provider.
  *
@@ -18,10 +20,9 @@ import { logSyncFailure } from "./sync-failures";
  *    The parsed response payload (inner JSON array from parseBatchExecuteResponse)
  *    is stored directly in RawCapture.payload and parsed by src/parsers/gemini.ts.
  *
- *    DOM FALLBACK: if wizData is unavailable or the RPC fails, ships the rendered
- *    conversation text from the DOM. Only works when the target conversation is
- *    currently loaded in the page. The gemini:api parser ignores dom_fallback
- *    payloads (they do not match the expected hNvQHb array structure).
+ *    DOM MEDIA FALLBACK: supplements API media from the current conversation page.
+ *    Missing WIZ bootstrap data aborts as an environmental failure, because the
+ *    API parser cannot ingest a rendered DOM text substitute.
  *
  * RISKS / FOLLOW-UPS:
  * - WIZ_global_data field names (SNlM0e/cfb2h/FdrFJe) are obfuscated and may
@@ -35,9 +36,14 @@ import { logSyncFailure } from "./sync-failures";
  */
 
 import { buildRawCapture } from "../../../shared/src";
-import { uploadProviderAssets, type ProviderAssetCandidate } from "./assets";
+import { assetReferences, uploadProviderAssets, type ProviderAssetCandidate } from "./assets";
+import { geminiApiAssetCandidates } from "./gemini-assets";
+import { captureHash } from "./capture-hash";
+import { isGeminiPageBlob } from "./gemini-page-blob";
 import {
   maxIso,
+  parseRetryAfterMs,
+  RateLimitError,
   shouldCapture,
   type ConversationSummary,
   type FetchLike,
@@ -69,7 +75,7 @@ export interface GeminiPageContext {
   /** Optionally reads rendered conversation text from the current page DOM. */
   readConversationDom(id: string): string | null;
   /** Best-effort rendered asset URLs from the current page DOM. */
-  readConversationAssets?(id: string): Array<{ pointer: string; url: string; filename?: string | null; contentType?: string | null }>;
+  readConversationAssets?(id: string): Array<{ pointer: string; url: string; filename?: string | null; contentType?: string | null; providerPageBlob?: boolean }>;
 }
 
 export interface WizData {
@@ -143,12 +149,15 @@ export function createBrowserPageContext(): GeminiPageContext {
     },
     readConversationAssets(id: string) {
       if (typeof document === "undefined") return [];
-      const conversationEl = document.querySelector(`[data-conversation-id="${id}"]`);
+      const conversationEl = document.querySelector(`[data-conversation-id="${id}"]`)
+        ?? (typeof location !== "undefined" && location.pathname === `/app/${id}` ? document.querySelector("main") : null);
       if (!conversationEl) return [];
-      return Array.from(conversationEl.querySelectorAll<HTMLImageElement>("img[src]")).flatMap((img) => {
-        const url = img.getAttribute("src");
-        if (!url || url.startsWith("data:")) return [];
-        return [{ pointer: url, url, filename: null }];
+      return [...Array.from(conversationEl.querySelectorAll<HTMLElement>("img[src]")),
+        ...Array.from(conversationEl.querySelectorAll<HTMLElement>("audio[src], video[src], source[src], a[download][href]"))].flatMap((element) => {
+        const url = element.getAttribute("src") ?? element.getAttribute("href");
+        if (!url) return [];
+        return [{ pointer: url, url, filename: element.getAttribute("download") || null, contentType: element.getAttribute("type") ?? undefined,
+          providerPageBlob: ["AUDIO", "VIDEO", "SOURCE"].includes(element.tagName) && isGeminiPageBlob(url, id) }];
       });
     },
   };
@@ -160,9 +169,20 @@ export function createGeminiAdapter(
 ): ProviderAdapter {
   return {
     source: "gemini",
+    backfillAssets: (id, references, options) => {
+      const liveBlobs = new Set(geminiAssetCandidates(pageCtx, id)
+        .filter(asset => asset.providerPageBlob && asset.url && isGeminiPageBlob(asset.url, id)).map(asset => asset.url));
+      return uploadProviderAssets(fetcher, options.uploadAsset, references.map(ref => ({
+      source: "gemini", sourceId: id, pointer: ref.pointer, messageId: ref.message_id,
+      url: /^(https?:|data:|blob:|\/)/.test(ref.pointer) ? ref.pointer : null,
+      filename: ref.filename, contentType: ref.content_type,
+      providerPageBlob: liveBlobs.has(ref.pointer),
+      fetchViaBackground: /^https?:/.test(ref.pointer) && !ref.pointer.startsWith("https://gemini.google.com/"),
+      })), { beforeFetch: options.beforeFetch });
+    },
     sync: (options) => syncGemini(fetcher, pageCtx, options),
     listConversations: (pages = 1) => listGemini(pageCtx, pages),
-    captureOne: (id, updatedAt, options) => captureGeminiOne(fetcher, pageCtx, id, updatedAt, options),
+    captureOne: async (id, updatedAt, options) => { await captureGeminiOne(fetcher, pageCtx, id, updatedAt, options); },
   };
 }
 
@@ -177,8 +197,8 @@ async function listGemini(pageCtx: GeminiPageContext, _pages: number): Promise<C
 }
 
 /**
- * Captures a single conversation: tries the batchexecute hNvQHb RPC first and
- * falls back to the rendered DOM text. Shared by the badge-reconciliation
+ * Captures a single conversation through batchexecute, supplementing DOM media.
+ * Shared by the badge-reconciliation
  * captureOne hook and the per-id loop in syncGemini so both paths stay in sync.
  */
 async function captureGeminiOne(
@@ -187,52 +207,44 @@ async function captureGeminiOne(
   id: string,
   updatedAt: string | null,
   options: ProviderCaptureOneOptions,
-): Promise<void> {
+  skipUnchanged = false,
+): Promise<boolean> {
   const wizData = pageCtx.readWizData();
+  if (!wizData) throw new TransientSyncError("Gemini bootstrap data unavailable; reload the provider page");
   const fetchedAt = new Date().toISOString();
 
   // PRIMARY PATH: batchexecute hNvQHb RPC.
   if (wizData) {
-    let payload: unknown;
-    try { payload = await fetchConversationRpc(fetcher, id, wizData); }
-    catch { /* Fall through to DOM only when the provider RPC fails. */ }
+    const payload = await fetchConversationRpc(fetcher, id, wizData);
     if (payload !== undefined) {
+      const apiCandidates = geminiApiAssetCandidates(payload, id);
+      const apiPointers = new Set(apiCandidates.map(candidate => candidate.pointer));
+      const candidates = [...apiCandidates, ...geminiAssetCandidates(pageCtx, id).filter(candidate => !apiPointers.has(candidate.pointer))];
+      const hash = await captureHash("gemini", id, { payload, pointers: candidates.map(c => c.pointer) });
+      if (skipUnchanged && hash.unchanged) return false;
       const assets = await uploadProviderAssets(
         fetcher,
         options.uploadAsset,
-        geminiAssetCandidates(pageCtx, id),
+        candidates,
       );
-      await options.emitCapture(buildRawCapture({
+      const emitted = await options.emitCapture(buildRawCapture({
         source: "gemini",
         sourceId: id,
         // endpoint includes the RPC id so the spine parser knows which RPC
         endpoint: `${BATCHEXECUTE_PATH}?rpcids=${CONVERSATION_RPC_ID}`,
         payload,
         assets,
+        assetReferences: assetReferences(candidates),
         fetchedAt,
         conversationUpdatedAt: updatedAt,
         rawUrl: `https://gemini.google.com/app/${id}`,
       }));
-      return;
+      if (emitted !== false) await hash.remember();
+      return emitted !== false;
     }
   }
 
-  // DOM FALLBACK: if RPC failed or wizData was unavailable, ship the rendered
-  // conversation text from the DOM. SPECULATIVE — only works when the target
-  // conversation is the currently rendered page. The gemini:api parser ignores
-  // dom_fallback payloads.
-  const domText = pageCtx.readConversationDom(id);
-  const assets = await uploadProviderAssets(fetcher, options.uploadAsset, geminiAssetCandidates(pageCtx, id));
-  await options.emitCapture(buildRawCapture({
-    source: "gemini",
-    sourceId: id,
-    endpoint: `dom://gemini.google.com/app/${id}`,
-    payload: { dom_fallback: true, text: domText ?? "" },
-    assets,
-    fetchedAt,
-    conversationUpdatedAt: updatedAt,
-    rawUrl: `https://gemini.google.com/app/${id}`,
-  }));
+  throw new SyntaxError("Gemini conversation RPC returned no payload");
 }
 
 function geminiAssetCandidates(pageCtx: GeminiPageContext, sourceId: string): ProviderAssetCandidate[] {
@@ -243,7 +255,8 @@ function geminiAssetCandidates(pageCtx: GeminiPageContext, sourceId: string): Pr
     url: asset.url,
     filename: asset.filename ?? null,
     contentType: asset.contentType ?? null,
-    fetchViaBackground: true,
+    providerPageBlob: asset.providerPageBlob === true,
+    fetchViaBackground: /^https?:/.test(asset.url) && !asset.url.startsWith("https://gemini.google.com/"),
   }));
 }
 
@@ -252,6 +265,8 @@ async function syncGemini(
   pageCtx: GeminiPageContext,
   options: ProviderSyncOptions,
 ): Promise<ProviderSyncResult> {
+  const failures = new SyncFailureTracker((options.captureFailures ?? []).filter(f => !options.shouldIgnore?.("gemini", f.source_id)));
+  const detailFailures = new DetailFailureStreak((options.detailFailureStreak ?? []).filter(f => !options.shouldIgnore?.("gemini", f.source_id)));
   let scanned = 0;
   let captured = 0;
   let skipped = 0;
@@ -260,9 +275,12 @@ async function syncGemini(
 
   const ids = pageCtx.listConversationIds();
 
+  try {
   for (const id of ids) {
+    failures.observed(id);
     scanned += 1;
     if (options.shouldIgnore?.("gemini", id)) {
+      failures.succeeded(id);
       skipped += 1;
       continue;
     }
@@ -282,6 +300,7 @@ async function syncGemini(
     //
     // A future improvement: capture the list RPC (MaZiqc etc.) which likely
     // contains timestamps, replacing the DOM enumeration path.
+    if (failures.isQuarantined(id, null)) { skipped++; continue; }
     if (!shouldCapture(null, options.lastSync)) {
       skipped += 1;
       continue;
@@ -292,21 +311,28 @@ async function syncGemini(
     // path + DOM fallback; the cursor watermark advances using fetch time.
     const fetchedAt = new Date().toISOString();
     try {
-      let didCapture = true;
-      await captureGeminiOne(fetcher, pageCtx, id, null, {
-        emitCapture: async capture => { const result = await options.emitCapture(capture); didCapture = result !== false; return result; },
+      const didCapture = await captureGeminiOne(fetcher, pageCtx, id, null, {
+        emitCapture: options.emitCapture,
         uploadAsset: options.uploadAsset,
-      });
-      if (!didCapture) { skipped++; continue; }
+      }, true);
+      detailFailures.succeeded(id);
+      failures.succeeded(id);
+      if (!didCapture) { skipped++; maxConversationUpdatedAt = maxIso(maxConversationUpdatedAt, fetchedAt); continue; }
       captured += 1;
       maxConversationUpdatedAt = maxIso(maxConversationUpdatedAt, fetchedAt);
-    } catch {
+    } catch (error) {
+      detailFailures.failed(error, id, null);
       failed++;
+      failures.failed(id, null, error);
+      if (failures.isQuarantined(id, null)) maxConversationUpdatedAt = maxIso(maxConversationUpdatedAt, fetchedAt);
       logSyncFailure("gemini", id);
     }
   }
 
-  return { source: "gemini", scanned, captured, skipped, failed, maxConversationUpdatedAt: failed ? options.lastSync ?? null : maxConversationUpdatedAt, account: null };
+  detailFailures.finish();
+  failures.finishListing(false); // Sidebar absence cannot confirm deletion.
+  return { source: "gemini", scanned, captured, skipped, failed, captureFailures: failures.list(), detailFailureStreak: detailFailures.snapshot(), maxConversationUpdatedAt: failures.pendingListed ? options.lastSync ?? null : maxConversationUpdatedAt, account: null };
+  } catch (error) { return failures.abort(error); }
 }
 
 /**
@@ -341,15 +367,19 @@ async function fetchConversationRpc(
 
   const body = new URLSearchParams({ "f.req": fReq, at: wiz.at });
 
-  const res = await fetcher(`${BATCHEXECUTE_PATH}?${params.toString()}`, {
+  let res: Response;
+  try { res = await fetcher(`${BATCHEXECUTE_PATH}?${params.toString()}`, {
     method: "POST",
     credentials: "include",
     headers: { "content-type": "application/x-www-form-urlencoded" },
     body: body.toString(),
-  });
+  }); } catch { throw new TransientSyncError("Provider network unavailable"); }
 
-  if (!res.ok) throw new Error(`batchexecute ${CONVERSATION_RPC_ID} failed with HTTP ${res.status}`);
-  const text = await res.text();
+  if (res.status === 429 || res.status === 503) throw new RateLimitError(BATCHEXECUTE_PATH, res.status, parseRetryAfterMs(res.headers.get("retry-after")));
+  if (res.status >= 500) throw new ProviderDetailError(res.status);
+  if (!res.ok) throw new DeterministicCaptureError(`Provider rejected capture (${res.status})`, res.status);
+  let text: string;
+  try { text = await res.text(); } catch { throw new TransientSyncError("Provider response interrupted"); }
   return parseBatchExecuteResponse(text, CONVERSATION_RPC_ID);
 }
 
@@ -405,5 +435,5 @@ export function parseBatchExecuteResponse(body: string, targetRpcId: string): un
       }
     }
   }
-  throw new Error(`batchexecute response contained no wrb.fr entry for ${targetRpcId}`);
+  throw new SyntaxError(`batchexecute response contained no wrb.fr entry for ${targetRpcId}`);
 }

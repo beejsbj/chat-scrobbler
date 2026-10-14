@@ -1,6 +1,10 @@
-import { logSyncFailure } from "./sync-failures";
+import { fetchAuthenticatedDetail } from "./authenticated-detail";
+import { DetailFailureStreak } from "./detail-failure-streak";
+import { abortTransientCapture } from "./sync-errors";
+import { logSyncFailure, SyncFailureTracker } from "./sync-failures";
 import { buildRawCapture } from "../../../shared/src";
-import { uploadProviderAssets, type ProviderAssetCandidate } from "./assets";
+import { assetReferences, uploadProviderAssets } from "./assets";
+import { claudeAssetCandidates, claudeSandboxDownloadEndpoint, claudeUnverifiedFileDownloadEndpoint } from "./claude-assets";
 import {
   asArray,
   asObject,
@@ -20,6 +24,26 @@ const LIST_LIMIT = 50;
 export function createClaudeAdapter(fetcher: FetchLike = fetch.bind(globalThis)): ProviderAdapter {
   return {
     source: "claude",
+    backfillAssets: async (id, references, options) => {
+      const org = await getOrganization(fetcher);
+      await options.beforeFetch();
+      const endpoint = `/api/organizations/${encodeURIComponent(org.uuid)}/chat_conversations/${encodeURIComponent(id)}?tree=True&rendering_mode=messages&render_all_tools=true`;
+      let refreshed = new Map<string, ReturnType<typeof claudeAssetCandidates>[number]>();
+      try { refreshed = new Map(claudeAssetCandidates(await fetchJson(fetcher, endpoint), id, org.uuid).map(candidate => [candidate.pointer, candidate])); }
+      catch (error) {
+        abortTransientCapture(error);
+        // Existing pointers still get their own bounded download attempt and failure report.
+      }
+      return uploadProviderAssets(fetcher, options.uploadAsset, references.map(ref => ({
+        source: "claude", sourceId: id, pointer: ref.pointer, messageId: ref.message_id,
+        filename: ref.filename, contentType: ref.content_type, inlineBytes: refreshed.get(ref.pointer)?.inlineBytes, inlineBase64: refreshed.get(ref.pointer)?.inlineBase64,
+        url: refreshed.get(ref.pointer)?.url ?? (ref.pointer.startsWith("claude-inline:") ? null
+          : ref.pointer.startsWith("sandbox:") ? claudeSandboxDownloadEndpoint(org.uuid, id, ref.pointer.slice(8))
+          : ref.pointer.startsWith("/mnt/") ? claudeSandboxDownloadEndpoint(org.uuid, id, ref.pointer)
+          : /^(https?:|data:|blob:|\/)/.test(ref.pointer) ? ref.pointer
+          : claudeUnverifiedFileDownloadEndpoint(org.uuid, ref.pointer)),
+      })), { beforeFetch: options.beforeFetch });
+    },
     sync: (options) => syncClaude(fetcher, options),
     listConversations: (pages = 1) => listClaude(fetcher, pages),
     captureOne: (id, updatedAt, options) => captureClaudeOne(fetcher, id, updatedAt, options),
@@ -47,11 +71,12 @@ async function captureClaudeOne(
 ): Promise<void> {
   const org = await getOrganization(fetcher);
   const detailEndpoint = `/api/organizations/${encodeURIComponent(org.uuid)}/chat_conversations/${encodeURIComponent(id)}?tree=True&rendering_mode=messages&render_all_tools=true`;
-  const payload = await fetchJson(fetcher, detailEndpoint);
+  const payload = await fetchAuthenticatedDetail(fetcher, detailEndpoint, undefined, async () => (await getOrganization(fetcher)).uuid === org.uuid);
+  const candidates = claudeAssetCandidates(payload, id, org.uuid);
   const assets = await uploadProviderAssets(
     fetcher,
     options.uploadAsset,
-    claudeAssetCandidates(payload, id, org.uuid),
+    candidates,
   );
   await options.emitCapture(buildRawCapture({
     source: "claude",
@@ -60,6 +85,7 @@ async function captureClaudeOne(
     account: org.uuid,
     payload,
     assets,
+    assetReferences: assetReferences(candidates),
     conversationUpdatedAt: updatedAt,
     rawUrl: `${currentOrigin()}${detailEndpoint}`,
   }));
@@ -68,12 +94,15 @@ async function captureClaudeOne(
 async function syncClaude(fetcher: FetchLike, options: ProviderSyncOptions): Promise<ProviderSyncResult> {
   const org = await getOrganization(fetcher);
   let offset = 0;
+  const failures = new SyncFailureTracker((options.captureFailures ?? []).filter(f => !options.shouldIgnore?.("claude", f.source_id)));
+  const detailFailures = new DetailFailureStreak((options.detailFailureStreak ?? []).filter(f => !options.shouldIgnore?.("claude", f.source_id)));
   let scanned = 0;
   let captured = 0;
   let skipped = 0;
   let failed = 0;
   let maxConversationUpdatedAt: string | null = null;
 
+  try {
   while (true) {
     const endpoint = `/api/organizations/${encodeURIComponent(org.uuid)}/chat_conversations?limit=${LIST_LIMIT}&offset=${offset}`;
     const page = await fetchJson(fetcher, endpoint);
@@ -81,12 +110,20 @@ async function syncClaude(fetcher: FetchLike, options: ProviderSyncOptions): Pro
     if (items.length === 0) break;
 
     for (const item of items) {
+      failures.observed(item.id);
+      const retry = failures.shouldRetry(item.id, item.updatedAt);
       scanned += 1;
       if (options.shouldIgnore?.("claude", item.id)) {
+        failures.succeeded(item.id);
         skipped += 1;
         continue;
       }
-      if (!shouldCapture(item.updatedAt, options.lastSync)) {
+      if (failures.isQuarantined(item.id, item.updatedAt)) {
+        skipped++;
+        maxConversationUpdatedAt = maxIso(maxConversationUpdatedAt, item.updatedAt);
+        continue;
+      }
+      if (!retry && !shouldCapture(item.updatedAt, options.lastSync)) {
         skipped += 1;
         continue;
       }
@@ -97,11 +134,12 @@ async function syncClaude(fetcher: FetchLike, options: ProviderSyncOptions): Pro
       // (see docs/superpowers/specs/2026-06-05-api-vs-export-validation-diff.md).
       try {
         const detailEndpoint = `/api/organizations/${encodeURIComponent(org.uuid)}/chat_conversations/${encodeURIComponent(item.id)}?tree=True&rendering_mode=messages&render_all_tools=true`;
-        const payload = await fetchJson(fetcher, detailEndpoint);
+        const payload = await fetchAuthenticatedDetail(fetcher, detailEndpoint, undefined, async () => (await getOrganization(fetcher)).uuid === org.uuid);
+        const candidates = claudeAssetCandidates(payload, item.id, org.uuid);
         const assets = await uploadProviderAssets(
           fetcher,
           options.uploadAsset,
-          claudeAssetCandidates(payload, item.id, org.uuid),
+          candidates,
         );
         const didCapture = await options.emitCapture(buildRawCapture({
           source: "claude",
@@ -110,17 +148,23 @@ async function syncClaude(fetcher: FetchLike, options: ProviderSyncOptions): Pro
           account: org.uuid,
           payload,
           assets,
+          assetReferences: assetReferences(candidates),
           conversationUpdatedAt: item.updatedAt,
           rawUrl: `${currentOrigin()}${detailEndpoint}`,
         }));
+        detailFailures.succeeded(item.id);
+        failures.succeeded(item.id);
         if (didCapture === false) {
           skipped += 1;
           continue;
         }
         captured += 1;
         maxConversationUpdatedAt = maxIso(maxConversationUpdatedAt, item.updatedAt);
-      } catch {
+      } catch (error) {
+        detailFailures.failed(error, item.id, item.updatedAt);
         failed++;
+        failures.failed(item.id, item.updatedAt, error);
+        if (failures.isQuarantined(item.id, item.updatedAt)) maxConversationUpdatedAt = maxIso(maxConversationUpdatedAt, item.updatedAt);
         logSyncFailure("claude", item.id);
       }
     }
@@ -129,57 +173,18 @@ async function syncClaude(fetcher: FetchLike, options: ProviderSyncOptions): Pro
     if (items.length < LIST_LIMIT) break;
   }
 
+  detailFailures.finish();
+  failures.finishListing();
   return {
     source: "claude",
     scanned,
     captured,
     skipped,
     failed,
-    maxConversationUpdatedAt: failed ? options.lastSync ?? null : maxConversationUpdatedAt,
+    captureFailures: failures.list(), detailFailureStreak: detailFailures.snapshot(), maxConversationUpdatedAt: failures.pending ? options.lastSync ?? null : maxConversationUpdatedAt,
     account: org.uuid,
   };
-}
-
-function claudeAssetCandidates(payload: unknown, sourceId: string, orgId: string): ProviderAssetCandidate[] {
-  const out: ProviderAssetCandidate[] = [];
-  const messages = asArray(asObject(payload).chat_messages);
-  for (const rawMessage of messages) {
-    const message = asObject(rawMessage);
-    const messageId = typeof message.uuid === "string" ? message.uuid : null;
-    for (const rawFile of [...asArray(message.files), ...asArray(message.attachments)]) {
-      const file = asObject(rawFile);
-      const pointer = readClaudeFilePointer(file);
-      if (!pointer) continue;
-      out.push({
-        source: "claude",
-        sourceId,
-        pointer,
-        url: claudeAssetUrl(orgId, pointer),
-        filename: readClaudeFilename(file),
-        contentType: typeof file.content_type === "string" ? file.content_type : null,
-        messageId,
-      });
-    }
-  }
-  return out;
-}
-
-function readClaudeFilePointer(file: Record<string, unknown>): string | null {
-  for (const key of ["file_uuid", "uuid", "id", "attachment_uuid"]) {
-    if (typeof file[key] === "string" && file[key] !== "") return file[key];
-  }
-  return null;
-}
-
-function readClaudeFilename(file: Record<string, unknown>): string | null {
-  for (const key of ["file_name", "filename", "name"]) {
-    if (typeof file[key] === "string" && file[key] !== "") return file[key];
-  }
-  return null;
-}
-
-function claudeAssetUrl(orgId: string, pointer: string): string {
-  return `/api/organizations/${encodeURIComponent(orgId)}/files/${encodeURIComponent(pointer)}/download`;
+  } catch (error) { return failures.abort(error); }
 }
 
 function currentOrigin(): string | null {

@@ -1,6 +1,10 @@
-import { logSyncFailure } from "./sync-failures";
+import { fetchAuthenticatedDetail } from "./authenticated-detail";
+import { DetailFailureStreak } from "./detail-failure-streak";
+import { abortTransientCapture } from "./sync-errors";
+import { logSyncFailure, SyncFailureTracker } from "./sync-failures";
 import { buildRawCapture } from "../../../shared/src";
-import { uploadProviderAssets, type ProviderAssetCandidate } from "./assets";
+import { assetReferences, uploadProviderAssets } from "./assets";
+import { chatgptAssetCandidates, chatgptFileDownloadEndpoint, resolveChatgptAssetUrl } from "./chatgpt-assets";
 import {
   asArray,
   asObject,
@@ -20,6 +24,15 @@ const LIST_LIMIT = 50;
 export function createChatgptAdapter(fetcher: FetchLike = fetch.bind(globalThis)): ProviderAdapter {
   return {
     source: "chatgpt",
+    backfillAssets: async (id, references, options) => {
+      const token = await getAccessToken(fetcher);
+      const headers = token ? { authorization: `Bearer ${token}` } : undefined;
+      return uploadProviderAssets(fetcher, options.uploadAsset, references.map(ref => ({
+        source: "chatgpt", sourceId: id, pointer: ref.pointer, messageId: ref.message_id,
+        url: chatgptFileDownloadEndpoint(ref.pointer, id, ref.message_id), headers,
+        filename: ref.filename, contentType: ref.content_type,
+      })), { beforeFetch: options.beforeFetch, resolveUrl: candidate => resolveChatgptAssetUrl(fetcher, candidate) });
+    },
     sync: (options) => syncChatgpt(fetcher, options),
     listConversations: (pages = 1) => listChatgpt(fetcher, pages),
     captureOne: (id, updatedAt, options) => captureChatgptOne(fetcher, id, updatedAt, options),
@@ -49,11 +62,13 @@ async function captureChatgptOne(
   const token = await getAccessToken(fetcher);
   const headers = token ? { authorization: `Bearer ${token}` } : undefined;
   const detailEndpoint = `/backend-api/conversation/${encodeURIComponent(id)}`;
-  const payload = await fetchJson(fetcher, detailEndpoint, { headers });
+  const payload = await fetchAuthenticatedDetail(fetcher, detailEndpoint, { headers }, async () => await getAccessToken(fetcher) === token && token !== null);
+  const candidates = chatgptAssetCandidates(payload, id, headers);
   const assets = await uploadProviderAssets(
     fetcher,
     options.uploadAsset,
-    chatgptAssetCandidates(payload, id),
+    candidates,
+    { resolveUrl: candidate => resolveChatgptAssetUrl(fetcher, candidate) },
   );
   await options.emitCapture(buildRawCapture({
     source: "chatgpt",
@@ -61,6 +76,7 @@ async function captureChatgptOne(
     endpoint: detailEndpoint,
     payload,
     assets,
+    assetReferences: assetReferences(candidates),
     conversationUpdatedAt: updatedAt,
     rawUrl: `${currentOrigin()}${detailEndpoint}`,
   }));
@@ -70,12 +86,15 @@ async function syncChatgpt(fetcher: FetchLike, options: ProviderSyncOptions): Pr
   const token = await getAccessToken(fetcher);
   const headers = token ? { authorization: `Bearer ${token}` } : undefined;
   let offset = 0;
+  const failures = new SyncFailureTracker((options.captureFailures ?? []).filter(f => !options.shouldIgnore?.("chatgpt", f.source_id)));
+  const detailFailures = new DetailFailureStreak((options.detailFailureStreak ?? []).filter(f => !options.shouldIgnore?.("chatgpt", f.source_id)));
   let scanned = 0;
   let captured = 0;
   let skipped = 0;
   let failed = 0;
   let maxConversationUpdatedAt: string | null = null;
 
+  try {
   while (true) {
     const endpoint = `/backend-api/conversations?offset=${offset}&limit=${LIST_LIMIT}&order=updated`;
     const page = asObject(await fetchJson(fetcher, endpoint, { headers }));
@@ -87,30 +106,40 @@ async function syncChatgpt(fetcher: FetchLike, options: ProviderSyncOptions): Pr
     // have passed the frontier — there is nothing new left to capture on subsequent
     // pages and we can stop paginating entirely. Only applied when lastSync is set;
     // a full-reconcile (no cursor) must walk all pages.
-    if (options.lastSync && items.every((item) => !shouldCapture(item.updatedAt, options.lastSync))) {
+    if (!failures.hasRetries && options.lastSync && items.every((item) => !shouldCapture(item.updatedAt, options.lastSync))) {
       scanned += items.length;
       skipped += items.length;
       break;
     }
 
     for (const item of items) {
+      failures.observed(item.id);
+      const retry = failures.shouldRetry(item.id, item.updatedAt);
       scanned += 1;
       if (options.shouldIgnore?.("chatgpt", item.id)) {
+        failures.succeeded(item.id);
         skipped += 1;
         continue;
       }
-      if (!shouldCapture(item.updatedAt, options.lastSync)) {
+      if (failures.isQuarantined(item.id, item.updatedAt)) {
+        skipped++;
+        maxConversationUpdatedAt = maxIso(maxConversationUpdatedAt, item.updatedAt);
+        continue;
+      }
+      if (!retry && !shouldCapture(item.updatedAt, options.lastSync)) {
         skipped += 1;
         continue;
       }
 
       try {
         const detailEndpoint = `/backend-api/conversation/${encodeURIComponent(item.id)}`;
-        const payload = await fetchJson(fetcher, detailEndpoint, { headers });
+        const payload = await fetchAuthenticatedDetail(fetcher, detailEndpoint, { headers }, async () => await getAccessToken(fetcher) === token && token !== null);
+        const candidates = chatgptAssetCandidates(payload, item.id, headers);
         const assets = await uploadProviderAssets(
           fetcher,
           options.uploadAsset,
-          chatgptAssetCandidates(payload, item.id),
+          candidates,
+          { resolveUrl: candidate => resolveChatgptAssetUrl(fetcher, candidate) },
         );
         const didCapture = await options.emitCapture(buildRawCapture({
           source: "chatgpt",
@@ -118,17 +147,23 @@ async function syncChatgpt(fetcher: FetchLike, options: ProviderSyncOptions): Pr
           endpoint: detailEndpoint,
           payload,
           assets,
+          assetReferences: assetReferences(candidates),
           conversationUpdatedAt: item.updatedAt,
           rawUrl: `${currentOrigin()}${detailEndpoint}`,
         }));
+        detailFailures.succeeded(item.id);
+        failures.succeeded(item.id);
         if (didCapture === false) {
           skipped += 1;
           continue;
         }
         captured += 1;
         maxConversationUpdatedAt = maxIso(maxConversationUpdatedAt, item.updatedAt);
-      } catch {
+      } catch (error) {
+        detailFailures.failed(error, item.id, item.updatedAt);
         failed++;
+        failures.failed(item.id, item.updatedAt, error);
+        if (failures.isQuarantined(item.id, item.updatedAt)) maxConversationUpdatedAt = maxIso(maxConversationUpdatedAt, item.updatedAt);
         logSyncFailure("chatgpt", item.id);
       }
     }
@@ -137,48 +172,10 @@ async function syncChatgpt(fetcher: FetchLike, options: ProviderSyncOptions): Pr
     if (items.length < LIST_LIMIT) break;
   }
 
-  return { source: "chatgpt", scanned, captured, skipped, failed, maxConversationUpdatedAt: failed ? options.lastSync ?? null : maxConversationUpdatedAt, account: null };
-}
-
-function chatgptAssetCandidates(payload: unknown, sourceId: string): ProviderAssetCandidate[] {
-  const out: ProviderAssetCandidate[] = [];
-  const mapping = asObject(payload).mapping;
-  if (!mapping || typeof mapping !== "object" || Array.isArray(mapping)) return out;
-  for (const node of Object.values(mapping)) {
-    const message = asObject(asObject(node).message);
-    const messageId = typeof message.id === "string" ? message.id : null;
-    const content = asObject(message.content);
-    if (content.content_type !== "multimodal_text") continue;
-    for (const part of asArray(content.parts)) {
-      const item = asObject(part);
-      const pointer = readChatgptPointer(item);
-      if (!pointer) continue;
-      const url = chatgptAssetUrl(pointer);
-      if (!url) continue;
-      out.push({
-        source: "chatgpt",
-        sourceId,
-        pointer,
-        url,
-        messageId,
-        contentType: item.content_type === "image_asset_pointer" ? "image/png" : null,
-      });
-    }
-  }
-  return out;
-}
-
-function readChatgptPointer(part: Record<string, unknown>): string | null {
-  if (typeof part.asset_pointer === "string") return part.asset_pointer;
-  const audio = asObject(part.audio_asset_pointer);
-  return typeof audio.asset_pointer === "string" ? audio.asset_pointer : null;
-}
-
-function chatgptAssetUrl(pointer: string): string | null {
-  if (/^https?:\/\//.test(pointer) || pointer.startsWith("/")) return pointer;
-  const fileService = pointer.match(/^file-service:\/\/(.+)$/);
-  if (fileService) return `/backend-api/files/${encodeURIComponent(fileService[1])}/download`;
-  return null;
+  detailFailures.finish();
+  failures.finishListing();
+  return { source: "chatgpt", scanned, captured, skipped, failed, captureFailures: failures.list(), detailFailureStreak: detailFailures.snapshot(), maxConversationUpdatedAt: failures.pending ? options.lastSync ?? null : maxConversationUpdatedAt, account: null };
+  } catch (error) { return failures.abort(error); }
 }
 
 function currentOrigin(): string | null {
@@ -189,7 +186,8 @@ async function getAccessToken(fetcher: FetchLike): Promise<string | null> {
   try {
     const session = asObject(await fetchJson(fetcher, "/api/auth/session"));
     return typeof session.accessToken === "string" ? session.accessToken : null;
-  } catch {
+  } catch (error) {
+    abortTransientCapture(error);
     return null;
   }
 }

@@ -1,24 +1,35 @@
-import type { UploadedAsset } from "../../packages/shared/src";
+import type { UploadedAsset, AssetBackfillReference } from "../../packages/shared/src";
 
 export interface AssetLookup {
   byPointer(pointer: string): UploadedAsset | null;
   all(): UploadedAsset[];
+  references(): AssetBackfillReference[];
+  /** View of one message's assets: its own records win, legacy records without message_id are the only fallback. */
+  scoped(messageIds: Array<string | null | undefined>): AssetLookup;
 }
 
 export function assetLookupFromRaw(raw: unknown): AssetLookup {
-  const assets = readAssets(raw);
-  const byPointer = new Map<string, UploadedAsset>();
-  for (const asset of assets) {
-    if (asset.pointer && asset.local_path && !byPointer.has(asset.pointer)) {
-      byPointer.set(asset.pointer, asset);
-    }
-  }
+  return buildLookup(readAssets(raw), raw, null);
+}
+
+function buildLookup(base: UploadedAsset[], raw: unknown, ids: Set<string> | null): AssetLookup {
+  const assets = ids ? base.filter(asset => !asset.message_id || ids.has(asset.message_id)) : base;
   return {
     byPointer(pointer: string) {
-      return byPointer.get(pointer) ?? null;
+      const matches = assets.filter(asset => asset.pointer === pointer);
+      return (ids ? matches.find(asset => asset.message_id) : null) ?? matches[0] ?? null;
+    },
+    references() {
+      const refs = raw && typeof raw === "object" ? (raw as { asset_references?: unknown }).asset_references : null;
+      const discovered = Array.isArray(refs) ? refs.filter(ref => ref && typeof ref.pointer === "string") as AssetBackfillReference[] : [];
+      return [...assets.map(asset => ({ pointer: asset.pointer, message_id: asset.message_id ?? null, filename: asset.filename ?? null, content_type: asset.content_type ?? null })),
+        ...discovered.filter(ref => !ids || !ref.message_id || ids.has(ref.message_id))];
     },
     all() {
       return assets;
+    },
+    scoped(messageIds) {
+      return buildLookup(base, raw, new Set(messageIds.filter((id): id is string => !!id)));
     },
   };
 }
