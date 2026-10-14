@@ -207,7 +207,7 @@ Final round 3 gates passed with Bun 1.3.14 after integrating current main:
 
 | Command | Result |
 |---|---|
-| `bun test` | **677 pass, 0 fail**, 2,651 assertions across 65 files |
+| `bun test` | **743 pass, 0 fail**, 2,770 assertions across 67 files |
 | `bun x tsc --noEmit` | **PASS** |
 | `bun run build:extension` | **PASS**, output `packages/extension/build`, manifest 0.4.3 |
 | `git diff --check` | **PASS** |
@@ -455,3 +455,29 @@ Final 0.4.3 gates are recorded in **Verification** above.
   it conflicts with the user's explicit fail-closed credential-document guard.
   These file types remain unavailable as downloadable assets, including when
   explicitly attached. Known JSON download wrappers are bounded indirection only.
+
+#### Restore, acknowledgement and authentication probes
+
+- Gemini content hashes expire 24 hours after an acknowledged capture, forcing a
+  periodic re-post even at the same receiver URL. This bounds automatic recovery
+  after a receiver restore to one day. Immediate unchanged syncs still skip
+  capture and downloads. Old string-only hash entries recapture once because
+  their acknowledgement age is unknown. Periodic recapture may download mutable
+  media again; immutable pointers still use the receiver-verified asset cache.
+- Asset POST and reference acknowledgements must report `ok: true`, the exact
+  pointer/hash, a safe relative asset path, and an integer byte count. Upload
+  byte counts must match the downloaded data; cached references compare lookup
+  size when present. Malformed, misrouted or mismatched acknowledgements become
+  asset failures, preserving text and preventing pointer-cache pollution.
+- ChatGPT and Claude detail 401/403 responses re-check the existing provider
+  session/organization endpoint with the same session credentials. Expired or
+  changed sessions abort without an attempt. A forbidden single chat still
+  counts per chat when the session/organization remains valid, preserving the
+  requested default for isolated provider 4xx failures. No provider secrets are
+  sent to the receiver. These checks also apply to single capture/manual retry.
+- Inline base64 length is bounded before `atob` or decoded-array allocation;
+  the exact decoded size is checked afterwards. Oversize or invalid inline
+  assets report failures without stopping text capture.
+- A completed listing drops unseen quarantines whose retry deadline has passed.
+  Future quarantines remain until due; aborted listings retain their state.
+  Deleted chats therefore stop forcing a full history scan on every sync.
