@@ -207,7 +207,7 @@ Final round 3 gates passed with Bun 1.3.14 after integrating current main:
 
 | Command | Result |
 |---|---|
-| `bun test` | **743 pass, 0 fail**, 2,770 assertions across 67 files |
+| `bun test` | **747 pass, 0 fail**, 2,784 assertions across 68 files |
 | `bun x tsc --noEmit` | **PASS** |
 | `bun run build:extension` | **PASS**, output `packages/extension/build`, manifest 0.4.3 |
 | `git diff --check` | **PASS** |
@@ -446,8 +446,8 @@ Final 0.4.3 gates are recorded in **Verification** above.
   the later receiver/network failure adds no attempt and the cursor stays put.
   Detail 5xx attempts that escalate to a provider outage are rolled back. The
   same snapshot policy covers manual retry and listing failures after captures.
-- Manual **Retry failed chats** selects one tab per provider. Several open tabs
-  cannot multiply attempts from one click.
+- Open-tab manual, periodic and retry actions select one tab per provider,
+  preferring an active tab. Several tabs cannot multiply attempts in one action.
 - Receiver transport retains an independent 128 MiB minimum request limit, while
   `/assets` still enforces `maxAssetBytes`. A 17 MiB raw capture with a 1 KiB asset
   limit is archived in a real local HTTP regression; a 2 KiB asset is rejected.
@@ -459,8 +459,8 @@ Final 0.4.3 gates are recorded in **Verification** above.
 #### Restore, acknowledgement and authentication probes
 
 - Gemini content hashes expire 24 hours after an acknowledged capture, forcing a
-  periodic re-post even at the same receiver URL. This bounds automatic recovery
-  after a receiver restore to one day. Immediate unchanged syncs still skip
+  periodic re-post even at the same receiver URL. With the provider tab open,
+  this bounds recovery for listed chats after a restore to one day. Immediate unchanged syncs still skip
   capture and downloads. Old string-only hash entries recapture once because
   their acknowledgement age is unknown. Periodic recapture may download mutable
   media again; immutable pointers still use the receiver-verified asset cache.
@@ -478,6 +478,22 @@ Final 0.4.3 gates are recorded in **Verification** above.
 - Inline base64 length is bounded before `atob` or decoded-array allocation;
   the exact decoded size is checked afterwards. Oversize or invalid inline
   assets report failures without stopping text capture.
-- A completed listing drops unseen quarantines whose retry deadline has passed.
+- A complete ChatGPT/Claude listing drops unseen quarantines whose retry deadline has passed.
   Future quarantines remain until due; aborted listings retain their state.
   Deleted chats therefore stop forcing a full history scan on every sync.
+
+#### Partial listings and multiple tabs
+
+- Every open-tab action captures each provider once, including periodic alarms.
+  The active tab is preferred so Gemini's current DOM media can supplement API
+  capture. Other Gemini tabs' blobs need their own active-page capture or backfill.
+  For the manual media check, activate the Gemini target chat before **Sync open
+  tabs now**. For blob backfill, keep that chat as the only Gemini tab so the
+  backfill action routes to its live page.
+- Gemini's sidebar is a partial listing. Hidden failed chats keep their attempt
+  history and due retries instead of being treated as deleted. They are excluded
+  from cursor blocking until listed again; explicit ignored chats are removed.
+  **Retry failed chats** can revisit stored IDs even outside the current sidebar.
+- Regression probes cover multiple tabs, active-page selection, unlisted pending
+  and due failures, cursor progress, and preserving attempts when a hidden chat
+  returns to the sidebar. Complete-list cleanup remains for ChatGPT and Claude.

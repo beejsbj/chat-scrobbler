@@ -90,9 +90,11 @@ captures deduplicate. Provider IDs are encoded without lossy sanitization.
   Repeated cohorts count when other detail requests work; confirmed local cohorts
   also retry behind the cursor. Changed cohorts or all-detail failures without
   prior local confirmation remain environmental. Aborted runs preserve the cursor.
-  Manual retry selects one tab per provider. Last errors remain visible in the popup and per-install `/status`
+  Open-tab actions select one tab per provider, preferring an active page for DOM
+  media. Last errors remain visible in the popup and per-install `/status`
   `sync_errors` reports; reports are retried after receiver access returns. Asset errors stay within the asset boundary.
-  Pending failures for ignored or no-longer-listed chats are removed after listing.
+  Ignored failures are removed. Complete listings remove absent retryable failures;
+  Gemini retains unseen records from its partial sidebar, without holding its cursor.
 
 ---
 
