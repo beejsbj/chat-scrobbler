@@ -1,3 +1,4 @@
+import {requeueSkippedEmbeddings} from './retry-skipped-embeddings';
 import type {Database} from 'bun:sqlite';
 import {deferWalCheckpoints} from './background-wal-checkpoint';
 import {loadavg} from 'node:os';
@@ -34,7 +35,7 @@ export interface BackfillOptions {
  signal?:AbortSignal;load?:()=>number;sleep?:(ms:number)=>Promise<void>;now?:()=>number;wallNow?:()=>number;
  progress?:(report:BackfillReport)=>void;assertLease?:()=>void;leaseStatus?:()=>BackfillLeaseStatus;
  background?:{cursor:number;assetCursor?:string;scanLimit:number};yieldToQueries?:()=>Promise<void>;
- connectionSequence?:ConnectionSequence;
+ connectionSequence?:ConnectionSequence;retrySkippedMs?:number;retrySkipped?:boolean;
 }
 export async function embedBackfill(db:Database,opts:BackfillOptions):Promise<BackfillReport> {
  const wal=deferWalCheckpoints(db);
@@ -79,6 +80,7 @@ async function runBackfill(db:Database,opts:BackfillOptions):Promise<BackfillRep
  };
  await wait();
  await initializePendingEmbeddings(db,provider,{signal,yield:pause,assertLease:opts.assertLease});prepared=true;
+ db.transaction(()=>{guard();requeueSkippedEmbeddings(db,provider,{now:wallNow(),delayMs:opts.retrySkippedMs,force:opts.retrySkipped});guard();}).immediate();
  const coverage=pendingCoverage(db,provider);
  if(!opts.background) {
   skipped=coverage.embedded+coverage.empty;
@@ -130,7 +132,7 @@ async function runBackfill(db:Database,opts:BackfillOptions):Promise<BackfillRep
     guard();if(error instanceof BackfillLeaseLost)throw error;
     if(error instanceof StaleEmbeddingInput){stale++;discard(row);continue;}
     const failure=classifyEmbeddingFailure(error);
-    const result=db.transaction(()=>{guard();const result=deferPendingEmbedding(db,row,failure,wallNow());guard();return result;}).immediate();
+    const result=db.transaction(()=>{guard();const result=deferPendingEmbedding(db,row,failure,wallNow(),opts.retrySkippedMs);guard();return result;}).immediate();
     if(!result){stale++;continue;}
     if(result.state==='skipped'){skipped++;permanently_skipped++;}else deferred++;
     provider_outage=recordFailure(sequence,`${row.session_id}\0${row.message_id}`,failure);

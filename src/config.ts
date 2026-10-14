@@ -50,6 +50,7 @@ export interface ChatHistoryConfig extends MonitorConfig {
   embeddingBackfillEnabled: boolean;
   embeddingBackfillIntervalMs: number;
   embeddingBackfillBatchSize: number;
+  embeddingSkippedRetryMs: number;
   embeddingChunkChars: number | null;
   embeddingMaxChunks: number;
 }
@@ -80,6 +81,7 @@ export const DEFAULT_CONFIG: ChatHistoryConfig = {
   embeddingBackfillEnabled: true,
   embeddingBackfillIntervalMs: 600_000,
   embeddingBackfillBatchSize: 25,
+  embeddingSkippedRetryMs: 86_400_000,
   embeddingChunkChars: null,
   embeddingMaxChunks: 16,
 };
@@ -119,6 +121,7 @@ const FILE_KEYS: Array<keyof ChatHistoryConfig> = [
   "embeddingBackfillEnabled",
   "embeddingBackfillIntervalMs",
   "embeddingBackfillBatchSize",
+  "embeddingSkippedRetryMs",
   "embeddingChunkChars",
   "embeddingMaxChunks",
 ];
@@ -164,7 +167,7 @@ export function loadConfig(opts: LoadConfigOptions = {}): ChatHistoryConfig {
   applyString(cfg, "embeddingBaseUrl", env.CHAT_SCROBBLER_EMBED_BASE_URL);
   applyString(cfg, "ollamaBaseUrl", env.CHAT_SCROBBLER_OLLAMA_BASE_URL ?? env.OLLAMA_BASE_URL);
   applyNullableString(cfg, "geminiApiKey", env.GEMINI_API_KEY ?? env.GOOGLE_API_KEY);
-  for (const key of ["embeddingBackfillIntervalMs", "embeddingBackfillBatchSize"] as const) {
+  for (const key of ["embeddingBackfillIntervalMs", "embeddingBackfillBatchSize", "embeddingSkippedRetryMs"] as const) {
     if (!Number.isSafeInteger(cfg[key]) || cfg[key] < 1) cfg[key]=DEFAULT_CONFIG[key];
   }
   if (typeof cfg.embeddingBackfillEnabled !== "boolean") cfg.embeddingBackfillEnabled=DEFAULT_CONFIG.embeddingBackfillEnabled;
@@ -174,6 +177,7 @@ export function loadConfig(opts: LoadConfigOptions = {}): ChatHistoryConfig {
   for (const [key,value] of [
     ["embeddingBackfillIntervalMs",env.CHAT_SCROBBLER_EMBED_BACKFILL_INTERVAL_MS],
     ["embeddingBackfillBatchSize",env.CHAT_SCROBBLER_EMBED_BACKFILL_BATCH_SIZE],
+    ["embeddingSkippedRetryMs",env.CHAT_SCROBBLER_EMBED_SKIPPED_RETRY_MS],
   ] as const) {
     const n=Number(value);
     if (value !== undefined && Number.isSafeInteger(n) && n>0) cfg[key]=n;

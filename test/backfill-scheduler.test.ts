@@ -187,3 +187,18 @@ test("scheduled ticks recover a crashed lease without a manual run or cleanup", 
     expect(scheduler.status().last_run!.lease).toMatchObject({recovered:true});
   } finally {clearTimeout(watchdog);dead.release();await scheduler.stop();rmSync(root,{recursive:true,force:true});}
 });
+
+test('background batches honor the configurable skipped timer and recover with no global backoff',async()=> {
+ const {spyOn}=await import('bun:test');
+ const {root,cfg}=setup();let clock=1000,broken=true;
+ const now=spyOn(Date,'now').mockImplementation(()=>clock);
+ const scheduler=startEmbeddingBackfillScheduler({cfg:{...cfg,embeddingSkippedRetryMs:1000},provider:{...p,embed:async()=>{
+  if(broken)throw new DOMException('private','TimeoutError');return [1,0];
+ }}});
+ try {
+  for(const time of [1000,121000,361000]) {clock=time;await scheduler.runNow();}
+  expect(scheduler.status()).toMatchObject({consecutive_failures:0,progress:{queue:{skipped:4}}});
+  broken=false;clock=361999;expect(await scheduler.runNow()).toMatchObject({attempted:0});
+  clock=362000;expect(await scheduler.runNow()).toMatchObject({embedded:4,queue:{skipped:0}});
+ }finally{await scheduler.stop();now.mockRestore();rmSync(root,{recursive:true,force:true});}
+});

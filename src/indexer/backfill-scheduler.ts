@@ -103,7 +103,7 @@ export function startEmbeddingBackfillScheduler(opts: SchedulerOptions): Backfil
       status.lease=lock.status();
       controller=new AbortController();
       db=openIndex(cfg.indexPath);
-      report=await embedBackfill(db,{provider:provider!,canonicalDir:cfg.canonicalDir,limit:batch,
+      report=await embedBackfill(db,{provider:provider!,canonicalDir:cfg.canonicalDir,limit:batch,retrySkippedMs:cfg.embeddingSkippedRetryMs,
         background:{cursor:0,scanLimit:opts.scanLimit ?? 1000},signal:AbortSignal.any([controller.signal,lock.signal]),
         assertLease:()=>lock!.assertOwned(db!),leaseStatus:()=>lock!.status(),connectionSequence,
         yieldToQueries:opts.yieldToQueries,progress:report=>{status.progress=report;status.lease=report.lease ?? status.lease;}});

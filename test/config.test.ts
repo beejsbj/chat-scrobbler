@@ -287,3 +287,16 @@ test("background backfill defaults and validated file/env controls", () => {
     expect(loadConfig({configPath:file,env:{}})).toMatchObject({embeddingBackfillEnabled:true,embeddingBackfillIntervalMs:600_000,embeddingBackfillBatchSize:25});
   } finally {rmSync(root,{recursive:true,force:true});}
 });
+
+test('skipped embedding retry timer defaults to a day and honors file and env controls', () => {
+  expect(loadConfig({env:{},configPath:null}).embeddingSkippedRetryMs).toBe(86_400_000);
+  const root=mkdtempSync(join(tmpdir(),'retry-config-'));
+  try {
+    const path=join(root,'config.json');writeFileSync(path,JSON.stringify({embeddingSkippedRetryMs:1000}));
+    expect(loadConfig({env:{},configPath:path}).embeddingSkippedRetryMs).toBe(1000);
+    expect(loadConfig({env:{CHAT_SCROBBLER_EMBED_SKIPPED_RETRY_MS:'2000'},configPath:path}).embeddingSkippedRetryMs).toBe(2000);
+    expect(loadConfig({env:{CHAT_SCROBBLER_EMBED_SKIPPED_RETRY_MS:'0'},configPath:path}).embeddingSkippedRetryMs).toBe(1000);
+    writeFileSync(path,JSON.stringify({embeddingSkippedRetryMs:-1}));
+    expect(loadConfig({env:{},configPath:path}).embeddingSkippedRetryMs).toBe(86_400_000);
+  }finally{rmSync(root,{recursive:true,force:true});}
+});

@@ -1,3 +1,4 @@
+import {skippedRetryDelay,DEFAULT_SKIPPED_RETRY_MS} from './retry-skipped-embeddings';
 import {documentChunkBudget} from './document-chunks';
 import {cooperativeWrite} from './cooperative-write';
 import type {Database} from 'bun:sqlite';
@@ -9,7 +10,7 @@ import {failureRetry,type EmbeddingFailure} from './embedding-failures';
 
 export interface PendingEmbeddingRow {
  session_id:string;message_id:string;provider_kind:string;provider_model:string;input_hash:string;title:string|null;
- fts_rowid:number;type:'text'|'image'|'audio'|'video';state:string;attempts:number;retry_at:number;
+ fts_rowid:number;type:'text'|'image'|'audio'|'video';state:string;attempts:number;retry_at:number;retry_cycles:number;
  reason:string|null;
  rowid:number;text:string;role:string;created_at:string|null;source:string;
 }
@@ -28,23 +29,29 @@ export function createPendingTables(db:Database) {
   for(const column of missing)db.run(`ALTER TABLE embedding_pending ADD COLUMN ${column} INTEGER NOT NULL DEFAULT 0`);
   // Publish the schema and rescan requirement together, including after a crash.
   if(missing.length)db.run('UPDATE embedding_models SET cursor=0,seeded=0');
+  if(!columns.some(row=>row.name==='retry_cycles'))db.run('ALTER TABLE embedding_pending ADD COLUMN retry_cycles INTEGER NOT NULL DEFAULT 0');
  }).immediate();
  db.run(`CREATE INDEX IF NOT EXISTS embedding_pending_due_v2 ON embedding_pending(provider_kind,provider_model,priority DESC,fts_rowid DESC)
    WHERE state IN ('pending','deferred')`);
+ db.run(`CREATE INDEX IF NOT EXISTS embedding_pending_retry_lane ON embedding_pending(provider_kind,provider_model,(retry_cycles>0),priority DESC,fts_rowid DESC) WHERE state IN ('pending','deferred')`);
+ db.run(`CREATE INDEX IF NOT EXISTS embedding_skipped_due ON embedding_pending(provider_kind,provider_model,retry_at) WHERE state='skipped' AND reason LIKE 'retry_exhausted_%'`);
  db.run('CREATE INDEX IF NOT EXISTS embedding_pending_coverage_v2 ON embedding_pending(provider_kind,provider_model,type,state,reason)');
  if(!(db.query('PRAGMA table_info(embedding_models)').all() as Array<{name:string}>).some(row=>row.name==='pending_revision'))
   db.run('ALTER TABLE embedding_models ADD COLUMN pending_revision INTEGER NOT NULL DEFAULT 0');
 }
 export function createPendingVectorTriggers(db:Database) {
- for(const event of ['INSERT','UPDATE'])db.run(`CREATE TRIGGER IF NOT EXISTS pending_vector_${event.toLowerCase()}
- AFTER ${event} ON message_vectors BEGIN UPDATE embedding_pending SET state='complete',attempts=0,retry_at=0,reason=NULL
+ for(const event of ['INSERT','UPDATE']) {
+ db.run(`DROP TRIGGER IF EXISTS pending_vector_${event.toLowerCase()}`);
+ db.run(`CREATE TRIGGER pending_vector_${event.toLowerCase()}
+ AFTER ${event} ON message_vectors BEGIN UPDATE embedding_pending SET state='complete',attempts=0,retry_cycles=0,retry_at=0,reason=NULL
  WHERE session_id=NEW.session_id AND message_id=NEW.message_id AND provider_kind=NEW.provider_kind
  AND provider_model=NEW.provider_model AND input_hash=NEW.text_hash AND title IS NEW.title; END`);
+ }
  for(const event of ['INSERT','UPDATE']) {
  db.run(`DROP TRIGGER IF EXISTS pending_legacy_${event.toLowerCase()}`);
  db.run(`CREATE TRIGGER pending_legacy_${event.toLowerCase()}
  AFTER ${event} ON message_embeddings WHEN json_valid(NEW.embedding) AND json_array_length(NEW.embedding)=NEW.dimension BEGIN
- UPDATE embedding_pending SET state='complete',attempts=0,retry_at=0,reason=NULL WHERE session_id=NEW.session_id
+ UPDATE embedding_pending SET state='complete',attempts=0,retry_cycles=0,retry_at=0,reason=NULL WHERE session_id=NEW.session_id
  AND message_id=NEW.message_id AND provider_kind=NEW.provider_kind AND provider_model=COALESCE(NEW.provider_model,'')
  AND COALESCE(reason,'')!='chunk_set_rebuild' AND title IS NEW.title AND NEW.text=(SELECT f.text FROM messages_fts f WHERE f.rowid=fts_rowid
  AND f.session_id=embedding_pending.session_id AND f.message_id=embedding_pending.message_id); END`);
@@ -65,6 +72,7 @@ function upsertText(db:Database,row:any,kind:string,model:string,state='pending'
  input_chars=excluded.input_chars,input_bytes=excluded.input_bytes,
  state=CASE WHEN embedding_pending.input_hash=excluded.input_hash AND embedding_pending.title IS excluded.title
    THEN embedding_pending.state ELSE excluded.state END,
+ retry_cycles=CASE WHEN embedding_pending.input_hash=excluded.input_hash AND embedding_pending.title IS excluded.title THEN embedding_pending.retry_cycles ELSE 0 END,
  attempts=CASE WHEN embedding_pending.input_hash=excluded.input_hash AND embedding_pending.title IS excluded.title THEN embedding_pending.attempts ELSE 0 END,
  retry_at=CASE WHEN embedding_pending.input_hash=excluded.input_hash AND embedding_pending.title IS excluded.title THEN embedding_pending.retry_at ELSE 0 END,
  reason=CASE WHEN embedding_pending.input_hash=excluded.input_hash AND embedding_pending.title IS excluded.title THEN embedding_pending.reason ELSE excluded.reason END,
@@ -139,7 +147,7 @@ export async function initializePendingEmbeddings(db:Database,provider:Embedding
 export function pendingEmbeddingRows(db:Database,provider:EmbeddingProvider,limit:number,now=Date.now()):PendingEmbeddingRow[] {
  const [kind,model]=scope(provider);
  const rows=db.query(`SELECT * FROM embedding_pending WHERE provider_kind=? AND provider_model=?
-   AND state IN ('pending','deferred') AND retry_at<=? ORDER BY priority DESC,fts_rowid DESC LIMIT ?`).all(kind,model,now,limit) as PendingEmbeddingRow[];
+   AND state IN ('pending','deferred') AND retry_at<=? ORDER BY (retry_cycles>0),priority DESC,fts_rowid DESC LIMIT ?`).all(kind,model,now,limit) as PendingEmbeddingRow[];
  return rows.map(row=> {
   if(row.type!=='text')return row;
   const live=db.query('SELECT rowid,* FROM messages_fts WHERE rowid=? AND session_id=? AND message_id=?').get(row.fts_rowid,row.session_id,row.message_id) as any;
@@ -156,20 +164,22 @@ export function pendingCoverage(db:Database,provider:EmbeddingProvider) {
   reasons:Object.fromEntries(rows.filter(row=>row.reason).map(row=>[row.reason,rows.filter(other=>other.reason===row.reason).reduce((n,other)=>n+other.n,0)]))};
 }
 export function completePendingEmbedding(db:Database,row:PendingEmbeddingRow,truncated=false) {
- db.run(`UPDATE embedding_pending SET state='complete',attempts=0,retry_at=0,truncated=?,reason=?
+ db.run(`UPDATE embedding_pending SET state='complete',attempts=0,retry_cycles=0,retry_at=0,truncated=?,reason=?
   WHERE session_id=? AND message_id=? AND provider_kind=? AND provider_model=? AND input_hash=? AND title IS ? AND fts_rowid=?`,
  [truncated ? 1 : 0,truncated ? 'chunk_limit_truncated' : null,row.session_id,row.message_id,row.provider_kind,row.provider_model,row.input_hash,row.title,row.fts_rowid]);
 }
-export function deferPendingEmbedding(db:Database,row:PendingEmbeddingRow,failure:EmbeddingFailure,now:number) {
- const current=db.query(`SELECT attempts FROM embedding_pending WHERE session_id=? AND message_id=? AND provider_kind=? AND provider_model=? AND input_hash=? AND title IS ? AND fts_rowid=?
+export function deferPendingEmbedding(db:Database,row:PendingEmbeddingRow,failure:EmbeddingFailure,now:number,retrySkippedMs=DEFAULT_SKIPPED_RETRY_MS) {
+ const current=db.query(`SELECT attempts,retry_cycles FROM embedding_pending WHERE session_id=? AND message_id=? AND provider_kind=? AND provider_model=? AND input_hash=? AND title IS ? AND fts_rowid=?
   AND state IN ('pending','deferred')`)
-  .get(row.session_id,row.message_id,row.provider_kind,row.provider_model,row.input_hash,row.title,row.fts_rowid) as {attempts:number}|null;
+  .get(row.session_id,row.message_id,row.provider_kind,row.provider_model,row.input_hash,row.title,row.fts_rowid) as {attempts:number;retry_cycles:number}|null;
  if(!current)return null;
  const retry=failureRetry(failure.kind,current.attempts+1,now,failure.reason);
- const result=db.query(`UPDATE embedding_pending SET state=?,attempts=attempts+1,retry_at=?,reason=?
+ const cycles=current.retry_cycles+(retry.state==='skipped' ? 1 : 0);
+ if(retry.state==='skipped')retry.retry_at=now+skippedRetryDelay(cycles,retrySkippedMs);
+ const result=db.query(`UPDATE embedding_pending SET state=?,attempts=attempts+1,retry_cycles=?,retry_at=?,reason=?
   WHERE session_id=? AND message_id=? AND provider_kind=? AND provider_model=? AND input_hash=? AND title IS ? AND fts_rowid=?
   AND state IN ('pending','deferred') RETURNING attempts,state,retry_at,reason`)
- .get(retry.state,retry.retry_at,retry.reason,row.session_id,row.message_id,row.provider_kind,row.provider_model,row.input_hash,row.title,row.fts_rowid) as {attempts:number;state:string;retry_at:number;reason:string}|null;
+ .get(retry.state,cycles,retry.retry_at,retry.reason,row.session_id,row.message_id,row.provider_kind,row.provider_model,row.input_hash,row.title,row.fts_rowid) as {attempts:number;state:string;retry_at:number;reason:string}|null;
  return result;
 }
 
