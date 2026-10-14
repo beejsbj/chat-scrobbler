@@ -34,3 +34,20 @@ test('catch-up stops at its starting revision despite captures arriving on every
   expect(pendingEmbeddingRows(db,provider,1)[0].text).toBe('capture '+yields);
  }finally{db.close();}
 });
+
+test('large changed sessions reconcile and prune in yielding pages',async()=> {
+ const db=openIndex(':memory:');const s=fixture();
+ s.messages=Array.from({length:130},(_,i)=>({...s.messages[0],id:String(i).padStart(3,'0'),text:'stored '+i}));
+ indexSession(db,s,{embeddingProvider:provider});let yields=0;
+ try {
+  await initializePendingEmbeddings(db,provider);
+  db.transaction(()=>{
+   db.run('UPDATE sessions SET updated_at=? WHERE id=?',['2026-10-14',s.id]);
+   db.run("DELETE FROM messages_fts WHERE session_id=? AND message_id='000'",[s.id]);
+  })();
+  await initializePendingEmbeddings(db,provider,{yield:async()=>{yields++;await Bun.sleep(0);}});
+  expect(yields).toBeGreaterThanOrEqual(2);
+  expect(pendingCoverage(db,provider)).toMatchObject({total:129,embedded:129});
+  expect(db.query("SELECT 1 FROM message_vectors WHERE message_id='000'").get()).toBeNull();
+ }finally{db.close();}
+});
