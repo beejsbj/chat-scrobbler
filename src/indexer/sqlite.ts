@@ -1,3 +1,5 @@
+import {documentChunks} from './document-chunks';
+import {putInlineChunks} from './inline-chunk-write';
 import {isSearchWarming,searchWarmupFailed} from "./search-warmup";
 import { cachedSubstringCandidates } from "./literal-cache";
 import { createMessageLookup, ensureMessageLookup } from "./message-lookup";
@@ -8,7 +10,7 @@ import { createBackfillLockTable } from "./backfill-lock";
 import { createSearchRevision } from "./search-revision";
 // src/indexer/sqlite.ts
 import { embeddingFailed, embeddingStatus, embeddingSucceeded, validateEmbedding, type SemanticStatus } from "./embedding-status";
-import { createVectorTables, putTextVector, reusableTextVector, vectorScope } from "./vector-store";
+import { createVectorTables, reusableTextVector, vectorScope } from "./vector-store";
 import { Database } from "bun:sqlite";
 import type { Session } from "../schema/types";
 import { isSessionDeleted } from "../store/tombstones";
@@ -99,15 +101,21 @@ export async function indexSessionWithEmbeddings(db: Database, s: Session, opts:
   for(const message of s.messages) {
     if(!message.text.trim()) continue;
     try {
-      const embedding=reusableEmbedding(db,s,message.id,message.text,embeddingProvider)
-        ?? validateEmbedding(await embeddingProvider.embed(message.text,{kind:"document",title:s.title}));
+      const reused=reusableEmbedding(db,s,message.id,message.text,embeddingProvider);
+      const split=reused ? {chunks:[],truncated:false} : documentChunks(message.text,embeddingProvider),vectors:number[][]=[];
+      if(reused)vectors.push(reused);
+      else for(const chunk of split.chunks) {
+        vectors.push(validateEmbedding(await embeddingProvider.embed(chunk,{kind:"document",title:s.title})));
+        await Bun.sleep(0);
+      }
+      const embedding=vectors[0];
       const row={session_id:s.id,message_id:message.id,text:message.text,role:message.role,
         created_at:message.created_at,source:s.source,title:s.title,embedding,...embeddingMetadata(embeddingProvider,embedding)};
       const written=db.transaction(()=> {
         const live=db.query("SELECT f.text,f.title FROM message_lookup k JOIN messages_fts f ON f.rowid=k.fts_rowid AND f.session_id=k.session_id AND f.message_id=k.message_id WHERE k.session_id=? AND k.message_id=?")
           .get(s.id,message.id) as {text:string;title:string|null}|null;
         if(!live || live.text!==message.text || live.title!==s.title || opts.shouldReplaceEmbeddings && !opts.shouldReplaceEmbeddings()) return false;
-        putTextVector(db,{...row,provider_model:row.provider_model ?? ""});return true;
+        if(!reused)putInlineChunks(db,{...row,provider_model:row.provider_model ?? ""},vectors,split.truncated);return true;
       })();
       if(!written) return "stale";
     } catch {failed=true;}
@@ -279,6 +287,7 @@ interface SemanticRow {
 }
 
 interface EmbeddingRow {
+  chunks:number[][];truncated:boolean;
   session_id: string; message_id: string; embedding: number[]; text: string; role: string;
   created_at: string | null; source: string; title: string | null;
   provider_kind: string; provider_model: string | null; dimension: number;
@@ -342,8 +351,10 @@ function collectSyncEmbeddingRows(db:Database,s: Session, provider: EmbeddingPro
   for(const m of s.messages) {
     if(!m.text.trim()) continue;
     try {
-      const embedding=reusableEmbedding(db,s,m.id,m.text,provider) ?? syncEmbedding(provider,m.text,{kind:"document",title:s.title});
-      rows.push({session_id:s.id,message_id:m.id,embedding,text:m.text,role:m.role,created_at:m.created_at,
+      if(reusableEmbedding(db,s,m.id,m.text,provider))continue;
+      const split=documentChunks(m.text,provider),chunks=split.chunks.map(chunk=>syncEmbedding(provider,chunk,{kind:"document",title:s.title}));
+      const embedding=chunks[0];
+      rows.push({session_id:s.id,message_id:m.id,embedding,chunks,truncated:split.truncated,text:m.text,role:m.role,created_at:m.created_at,
         source:s.source,title:s.title,...embeddingMetadata(provider,embedding)});
     } catch {failed=true;}
   }
@@ -360,7 +371,7 @@ function reusableEmbedding(db: Database, s: Session, messageId: string, text: st
 function replaceEmbeddingRows(db: Database, session: Session, rows: EmbeddingRow[], opts: IndexSessionOptions): boolean {
   const current = db.query("SELECT updated_at FROM sessions WHERE id = ?").get(session.id) as { updated_at: string } | null;
   if ((opts.canonicalDir && isSessionDeleted(opts.canonicalDir, session.source, session.source_id)) || current?.updated_at !== session.updated_at || (opts.shouldReplaceEmbeddings && !opts.shouldReplaceEmbeddings())) return false;
-  for (const row of rows) putTextVector(db, { ...row, provider_model: row.provider_model ?? "" });
+  for (const row of rows) putInlineChunks(db, { ...row, provider_model: row.provider_model ?? "" },row.chunks,row.truncated);
   return true;
 }
 
