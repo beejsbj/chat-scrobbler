@@ -186,9 +186,9 @@ timestamps, but acknowledged unchanged payloads skip asset downloads and ingest.
   obfuscated Gemini layouts, and Claude's UUID fallback can change independently
   of passing fixtures. Unknown or inaccessible descriptors stay as raw references
   and null paths where a media block can be derived.
-- DOM media fallback is scoped to the loaded Gemini chat. If the conversation RPC
-  itself is unavailable, the existing `dom_fallback` payload is still ignored by
-  the canonical parser: bytes/raw can be archived without a canonical media link.
+- DOM media fallback is scoped to the loaded Gemini chat. Missing WIZ bootstrap
+  data and RPC outages abort without a DOM text substitute or quarantine attempts.
+  Blob backfill requires the same chat page and exact media URL to remain live.
 - Asset URL hosts are restricted to provider/media domains and the exact legacy
   DALL-E Azure account. Unrecognized hosts report unavailable; Drive/Docs exports
   without an exposed downloadable media URL need separate research.
@@ -207,7 +207,7 @@ Final round 3 gates passed with Bun 1.3.14 after integrating current main:
 
 | Command | Result |
 |---|---|
-| `bun test` | **649 pass, 0 fail**, 2,509 assertions across 64 files |
+| `bun test` | **666 pass, 0 fail**, 2,602 assertions across 64 files |
 | `bun x tsc --noEmit` | **PASS** |
 | `bun run build:extension` | **PASS**, output `packages/extension/build`, manifest 0.4.3 |
 | `git diff --check` | **PASS** |
@@ -416,3 +416,24 @@ verification still requires the manual browser checks above.
   actual provider asset endpoint coverage remains live-unverified here.
 
 Final 0.4.3 gates are recorded in **Verification** above.
+
+#### Final PR review fixes
+
+- Receiver acknowledgements require `ok: true` and `count: 1`, or `count: 0`
+  with a matching deleted-conversation record. HTTP-200 JSON objects such as `{}`,
+  null, arrays, false acknowledgements and inconsistent counts abort as receiver
+  errors before capture counters, cursors or Gemini content hashes can advance.
+- Missing Gemini WIZ data aborts as environmental, including repeated runs during
+  page initialization or key rotation. The extension no longer emits the
+  unsupported `dom_fallback` text payload. DOM media still supplements API capture.
+- Gemini blob backfill re-reads current audio/video/source elements and verifies
+  the exact pointer plus current page/chat scope. Historical API references alone
+  cannot grant blob permission; closed pages, removed media and other chats fail
+  closed. Blob reads still omit credentials and headers.
+- Parsers resolve uploaded bytes by message identity and pointer. Repeated mutable
+  paths in different messages retain their respective SHA-256 links. Only legacy
+  assets without a message ID can be matched by pointer alone; missing per-message
+  bytes stay null rather than borrowing another message's hash. Deduplication is
+  per message when ownership is known.
+- Regression probes reproduce all four GitHub review findings. The HTTPS
+  allowlists and credential boundary above remain intact. Version remains 0.4.3.

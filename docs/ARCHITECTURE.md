@@ -198,7 +198,9 @@ Provider limits:
   payloads. Explicit download/export descriptors are eligible too. The media
   selectors need live verification against this account's `hNvQHb` response. DOM
   images, audio, video, and download anchors are a fallback for the loaded chat only.
-  The existing DOM text capture format is still ignored by the canonical parser.
+  Missing WIZ bootstrap data aborts as environmental; no unsupported DOM text
+  substitute is emitted. Blob backfill re-verifies the pointer in the current
+  chat's audio/video/source elements before reading it without credentials.
 
 See [BJS-547 handoff](../HANDOFF-BJS-547.md) for coverage, endpoint evidence and
 manual browser checks. A binary that has no exposed download URL cannot be captured.
