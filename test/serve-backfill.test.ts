@@ -19,7 +19,10 @@ test("serve exposes its configured scheduler through deep health and stops it wi
     expect(await (await deep()).json()).toMatchObject({backfill:{enabled:true,last_run:null,batch_size:1}});
     await handles.backfillScheduler!.runNow();
     expect(await (await deep()).json()).toMatchObject({backfill:{last_run:{outcome:"complete",report:{embedded:1}}}});
-    expect((await fetch(`http://127.0.0.1:${handles.ingestServer.port}/status/report`)).status).toBe(404);
+    expect((await fetch(`http://127.0.0.1:${handles.ingestServer.port}/status/report`)).status).toBe(401);
+    const status=await fetch(`http://127.0.0.1:${handles.ingestServer.port}/status/report`,{headers:{authorization:"Bearer test"}});
+    expect(status.status).toBe(200);
+    expect(await status.json()).toMatchObject({backfill:{last_run:{outcome:"complete",report:{embedded:1}}}});
     handles.ingestServer.stop(true);
     await Bun.sleep(0);
     expect(handles.backfillScheduler!.status().state).toBe("stopped");
