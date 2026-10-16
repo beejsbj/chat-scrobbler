@@ -7,6 +7,7 @@ import { isGeminiPageBlob, fetchGeminiPageBlob, validateGeminiPageBlobResponse }
 import { boundedAssetBuffer } from "./asset-bytes";
 import { validateAssetBytes, validateAssetResponse } from "./asset-response";
 import { lookupCapturedAsset, backgroundAssetError, paceAssetDownload } from "./asset-cache-client";
+import { assetOutcomeKey, defaultAssetOutcomeMemory, reportablePointer, skipRememberedAttempt, type AssetOutcomeMemory } from "./asset-outcomes";
 
 export const MAX_PROVIDER_ASSET_BYTES = 100 * 1024 * 1024;
 
@@ -23,6 +24,10 @@ export interface UploadProviderAssetsOptions {
   fetchAsset?: (url: string) => Promise<AssetFetchResponse>;
   beforeFetch?: () => Promise<void>;
   resolveUrl?: (candidate: ProviderAssetCandidate) => Promise<string | null>;
+  /** Per-asset outcome memory; `undefined` uses extension storage, `null` disables it. */
+  outcomes?: AssetOutcomeMemory | null;
+  /** Explicit backfill: attempt remembered terminal and backed-off assets once more. */
+  retryRemembered?: boolean;
 }
 
 export interface ProviderAssetCandidate {
@@ -56,14 +61,19 @@ export async function uploadProviderAssets(
   const uploaded: UploadedAsset[] = [];
   const seen = new Set<string>();
   let downloadBlock: unknown;
+  const memory = options.outcomes === undefined ? defaultAssetOutcomeMemory() : options.outcomes;
   for (const candidate of candidates) {
     if (!candidate.pointer || seen.has(`${candidate.messageId ?? ""}:${candidate.pointer}`)) continue;
     seen.add(`${candidate.messageId ?? ""}:${candidate.pointer}`);
+    const outcomeKey = assetOutcomeKey(candidate);
+    const remembered = memory ? await memory.recall(outcomeKey) : null;
+    // A remembered terminal outcome, or an unexpired backoff, costs no network and no report.
+    if (remembered && !options.retryRemembered && skipRememberedAttempt(remembered, Date.now(), maxBytes)) continue;
     let reason: AssetFailureReason = "asset_download_failed";
     try {
       if (candidate.url && !candidateUrlAllowed(candidate.url, candidate)) throw new Error("asset_url_unavailable");
       const cached = await lookupCapturedAsset(candidate);
-      if (cached) { uploaded.push({ ...cached, pointer: candidate.pointer, message_id: candidate.messageId ?? null }); continue; }
+      if (cached) { uploaded.push({ ...cached, pointer: candidate.pointer, message_id: candidate.messageId ?? null }); if (remembered) await memory!.forget(outcomeKey); continue; }
       if (downloadBlock) throw downloadBlock;
       await (options.beforeFetch ?? paceAssetDownload)();
       const url = options.resolveUrl ? await options.resolveUrl(candidate) : candidate.url;
@@ -79,6 +89,7 @@ export async function uploadProviderAssets(
         : await fetchCandidateBytes(fetcher, url!, maxBytes, candidate.headers, candidate.source, undefined, pageBlobId);
       if (downloaded.asset) {
         uploaded.push({ ...downloaded.asset, pointer: candidate.pointer, message_id: candidate.messageId ?? downloaded.asset.message_id ?? null });
+        if (remembered) await memory!.forget(outcomeKey);
         continue;
       }
       if (downloaded.bytes.length > maxBytes) throw new Error("asset_too_large");
@@ -104,12 +115,16 @@ export async function uploadProviderAssets(
         filename: filename ?? asset.filename ?? null,
         content_type: contentType ?? asset.content_type ?? null,
       });
+      if (remembered) await memory!.forget(outcomeKey);
     } catch (error) {
       if (error instanceof Error && ["asset_too_large", "asset_url_unavailable", "asset_expired", "asset_upload_failed"].includes(error.message)) reason = error.message as AssetFailureReason;
-      const failure: AssetFailure = { source: candidate.source, source_id: candidate.sourceId, message_id: candidate.messageId ?? null, reason };
-      console.error(JSON.stringify({ event: "asset_capture_failed", ...failure }));
+      const failure: AssetFailure = { source: candidate.source, source_id: candidate.sourceId, message_id: candidate.messageId ?? null, reason, pointer: await reportablePointer(candidate.pointer) };
+      // Pointers can carry signed URLs; they travel to the receiver record, never to logs.
+      console.error(JSON.stringify({ event: "asset_capture_failed", source: failure.source, source_id: failure.source_id, message_id: failure.message_id, reason }));
       try { await (options.reportFailure ?? reportAssetFailure)(failure); }
       catch { console.error(JSON.stringify({ event: "asset_failure_report_failed", source: candidate.source, source_id: candidate.sourceId })); }
+      // Assets skipped behind an earlier rate limit were never attempted, so they earn no backoff.
+      if (memory && error !== downloadBlock) await memory.remember(outcomeKey, reason, maxBytes);
       // Throttling stops further downloads in this batch, while every skipped asset is reported.
       if (isRateLimitError(error)) downloadBlock = error;
     }

@@ -178,7 +178,7 @@ export function createGeminiAdapter(
       filename: ref.filename, contentType: ref.content_type,
       providerPageBlob: liveBlobs.has(ref.pointer),
       fetchViaBackground: /^https?:/.test(ref.pointer) && !ref.pointer.startsWith("https://gemini.google.com/"),
-      })), { beforeFetch: options.beforeFetch });
+      })), { beforeFetch: options.beforeFetch, retryRemembered: true });
     },
     sync: (options) => syncGemini(fetcher, pageCtx, options),
     listConversations: (pages = 1) => listGemini(pageCtx, pages),

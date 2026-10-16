@@ -666,10 +666,11 @@ test("asset download, size, and upload failures are reported while text capture 
       );
       expect(assets).toEqual([]);
     }
+    const pointer = "https://example.com/?token=secret";
     expect(failures).toEqual([
-      { source: "chatgpt", source_id: "conv", message_id: "m1", reason: "asset_download_failed" },
-      { source: "chatgpt", source_id: "conv", message_id: "m1", reason: "asset_too_large" },
-      { source: "chatgpt", source_id: "conv", message_id: "m1", reason: "asset_upload_failed" },
+      { source: "chatgpt", source_id: "conv", message_id: "m1", reason: "asset_download_failed", pointer },
+      { source: "chatgpt", source_id: "conv", message_id: "m1", reason: "asset_too_large", pointer },
+      { source: "chatgpt", source_id: "conv", message_id: "m1", reason: "asset_upload_failed", pointer },
     ]);
     expect(JSON.stringify(errors.mock.calls)).not.toContain("secret");
   } finally { errors.mockRestore(); }
