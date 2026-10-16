@@ -1,7 +1,7 @@
 import { Database } from "bun:sqlite";
 import { recordParseOutcome } from "../src/monitor/parse-state";
 import { monitorReport } from "../src/monitor/report";
-import { incrementMonitorCounter, recordCaptureReceipt, readMonitorState } from "../src/monitor/state";
+import { incrementMonitorCounter, recordAssetFailureOutcomes, recordCaptureReceipt, readMonitorState } from "../src/monitor/state";
 import { expect, spyOn, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -249,7 +249,7 @@ test("HTTP snapshots cache small state reads for 60 seconds", async () => {
     const responses = await Promise.all([handleIngestRequest(request(), opts), handleIngestRequest(request(), opts)]);
     const first = await responses[0].json();
     expect(first).toEqual(await responses[1].json());
-    incrementMonitorCounter(path, "asset_failures");
+    recordAssetFailureOutcomes(path, "chatgpt", [{ source_id: "c1", message_id: null, reason: "asset_upload_failed", pointer: null }]);
     Date.now = () => originalNow() + 59_000;
     expect(await (await handleIngestRequest(request(), opts)).json()).toEqual(first);
     Date.now = () => originalNow() + 61_000;

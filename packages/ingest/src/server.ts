@@ -2,7 +2,7 @@ import { syncIssueReports } from "./sync-issues";
 import { recordParseOutcome } from "../../../src/monitor/parse-state";
 import { monitorWrite } from "../../../src/monitor/state-fault";
 import { persistEmbeddingStatus } from "../../../src/indexer/embedding-status";
-import { monitorStatePath, recordCaptureReceipt } from "../../../src/monitor/state";
+import { clearAssetOutcome, monitorStatePath, recordCaptureReceipt, type AssetOutcomeIdentity } from "../../../src/monitor/state";
 import { cachedLiveMonitorReport } from "../../../src/monitor/live-report";
 import type { MonitorConfig } from "../../../src/monitor/config";
 import { backfillHealth, cachedIngestHealth } from "./health";
@@ -200,6 +200,7 @@ export async function handleIngestRequest(req: Request, opts: IngestServerOption
         filename: url.searchParams.get("filename"),
         contentType: url.searchParams.get("content_type"),
       });
+      forgetAssetFailure(fat.indexPath, opts.monitorStatePath, { source, source_id: sourceId, message_id: url.searchParams.get("message_id"), pointer });
       return json({ ok: true, pointer, ...stored } satisfies AssetUploadResponse);
     } catch (error) {
       if (error instanceof AssetBlobMissingError) return json({ ok: false, error: error.message }, 404);
@@ -230,6 +231,7 @@ export async function handleIngestRequest(req: Request, opts: IngestServerOption
         bytes,
         maxBytes,
       });
+      forgetAssetFailure(fat.indexPath, opts.monitorStatePath, { source, source_id: sourceId, message_id: url.searchParams.get("message_id"), pointer });
       return json({
         ok: true,
         pointer,
@@ -371,4 +373,10 @@ function sanitizedCaptureUrl(capture: RawCapture): string | null {
     const [withoutQuery] = raw.split(/[?#]/);
     return withoutQuery.trim() || null;
   }
+}
+
+/** Best effort: a stored asset must never fail because operational state could not be updated. */
+function forgetAssetFailure(indexPath: string, statePathOverride: string | null | undefined, identity: AssetOutcomeIdentity): void {
+  const path = monitorStatePath(indexPath, statePathOverride);
+  monitorWrite(path, () => clearAssetOutcome(path, identity));
 }
