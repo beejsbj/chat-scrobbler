@@ -232,3 +232,40 @@ test("a successful upload clears an outcome another capture path recorded after 
   expect(ok.uploaded).toHaveLength(1);
   expect(forgotten).toEqual([assetOutcomeKey(gone("file-3"))]);
 });
+
+test("a login page or off-allowlist redirect in place of the asset is a transient failure, not a 30 day rest", async () => {
+  const storage: Record<string, any> = {};
+  const restore = installChrome(storage);
+  const log = spyOn(console, "error").mockImplementation(() => {});
+  try {
+    const responders: Array<[string, () => Response]> = [
+      ["html", () => new Response("<!doctype html><title>Sign in</title>", { headers: { "content-type": "text/html" } })],
+      ["json", () => new Response("{\"error\":\"unusual traffic\"}", { headers: { "content-type": "application/octet-stream" } })],
+      ["redirect", () => new Response(null, { status: 302, headers: { location: "https://accounts.example.com/login" } })],
+    ];
+    for (const [pointer, responder] of responders) {
+      const first = await run(createAssetOutcomeMemory(), [gone(pointer)], responder);
+      expect(first.failures).toMatchObject([{ reason: "asset_download_failed", pointer }]);
+      const remembered = await createAssetOutcomeMemory().recall(assetOutcomeKey(gone(pointer)));
+      expect(remembered!.retry_after! - remembered!.last_attempt_at).toBe(transientRetryDelayMs(1));
+    }
+  } finally { log.mockRestore(); restore(); }
+});
+
+test("an outcome memory that cannot read or write never stops the rest of the batch", async () => {
+  const log = spyOn(console, "error").mockImplementation(() => {});
+  try {
+    const broken: AssetOutcomeMemory = {
+      recall: async () => { throw new TypeError("storage gone"); },
+      remember: async () => { throw new Error("Extension context invalidated."); },
+      forget: async () => { throw new Error("storage gone"); },
+    };
+    let call = 0;
+    const result = await run(broken, [gone("file-a"), gone("file-b")], () => call++ === 0
+      ? new Response("", { status: 404 })
+      : new Response(new Uint8Array([137, 80, 78, 71]), { headers: { "content-type": "image/png" } }));
+    expect(result.fetches).toBe(2);
+    expect(result.failures).toMatchObject([{ reason: "asset_expired", pointer: "file-a" }]);
+    expect(result.uploaded).toHaveLength(1);
+  } finally { log.mockRestore(); }
+});

@@ -1,5 +1,5 @@
 import { allowedAssetUrl, providerDownloadUrl } from "./asset-url";
-import { validateAssetResponse } from "./asset-response";
+import { UNEXPECTED_ASSET_RESPONSE, validateAssetResponse } from "./asset-response";
 import { fetchAllowedAsset } from "./asset-fetch";
 import { boundedAssetBuffer } from "./asset-bytes";
 import { asArray, asObject, type FetchLike } from "./types";
@@ -79,10 +79,10 @@ export async function resolveChatgptAssetUrl(fetcher: FetchLike, candidate: Prov
     candidate.downloadResponse = res;
     return downloaded.url;
   }
-  if (!providerDownloadUrl(downloaded.url, "chatgpt") || !downloaded.url.includes("/download")) throw new Error("asset_url_unavailable");
+  if (!providerDownloadUrl(downloaded.url, "chatgpt") || !downloaded.url.includes("/download")) throw new Error(UNEXPECTED_ASSET_RESPONSE);
   const link = asObject(JSON.parse(new TextDecoder().decode(await boundedAssetBuffer(res, 1024 * 1024))));
   const url = stringValue(link.download_url ?? link.url);
-  if (!url || !allowedAssetUrl(url, "chatgpt")) throw new Error("asset_url_unavailable");
+  if (!url || !allowedAssetUrl(url, "chatgpt")) throw new Error(UNEXPECTED_ASSET_RESPONSE);
   if (!candidate.filename) candidate.filename = stringValue(link.file_name);
   return url;
 }

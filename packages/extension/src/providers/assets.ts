@@ -66,14 +66,15 @@ export async function uploadProviderAssets(
     if (!candidate.pointer || seen.has(`${candidate.messageId ?? ""}:${candidate.pointer}`)) continue;
     seen.add(`${candidate.messageId ?? ""}:${candidate.pointer}`);
     const outcomeKey = assetOutcomeKey(candidate);
-    const remembered = memory ? await memory.recall(outcomeKey) : null;
+    // Best effort: an unreadable memory means attempt the asset, never abandon the batch.
+    const remembered = memory ? await memory.recall(outcomeKey).catch(() => null) : null;
     // A remembered terminal outcome, or an unexpired backoff, costs no network and no report.
     if (remembered && !options.retryRemembered && skipRememberedAttempt(remembered, Date.now(), maxBytes)) continue;
     let reason: AssetFailureReason = "asset_download_failed";
     try {
       if (candidate.url && !candidateUrlAllowed(candidate.url, candidate)) throw new Error("asset_url_unavailable");
       const cached = await lookupCapturedAsset(candidate);
-      if (cached) { uploaded.push({ ...cached, pointer: candidate.pointer, message_id: candidate.messageId ?? null }); if (memory) await memory.forget(outcomeKey); continue; }
+      if (cached) { uploaded.push({ ...cached, pointer: candidate.pointer, message_id: candidate.messageId ?? null }); if (memory) await memory.forget(outcomeKey).catch(() => {}); continue; }
       if (downloadBlock) throw downloadBlock;
       await (options.beforeFetch ?? paceAssetDownload)();
       const url = options.resolveUrl ? await options.resolveUrl(candidate) : candidate.url;
@@ -89,7 +90,7 @@ export async function uploadProviderAssets(
         : await fetchCandidateBytes(fetcher, url!, maxBytes, candidate.headers, candidate.source, undefined, pageBlobId);
       if (downloaded.asset) {
         uploaded.push({ ...downloaded.asset, pointer: candidate.pointer, message_id: candidate.messageId ?? downloaded.asset.message_id ?? null });
-        if (memory) await memory.forget(outcomeKey);
+        if (memory) await memory.forget(outcomeKey).catch(() => {});
         continue;
       }
       if (downloaded.bytes.length > maxBytes) throw new Error("asset_too_large");
@@ -115,7 +116,7 @@ export async function uploadProviderAssets(
         filename: filename ?? asset.filename ?? null,
         content_type: contentType ?? asset.content_type ?? null,
       });
-      if (memory) await memory.forget(outcomeKey);
+      if (memory) await memory.forget(outcomeKey).catch(() => {});
     } catch (error) {
       if (error instanceof Error && ["asset_too_large", "asset_url_unavailable", "asset_expired", "asset_upload_failed"].includes(error.message)) reason = error.message as AssetFailureReason;
       const failure: AssetFailure = { source: candidate.source, source_id: candidate.sourceId, message_id: candidate.messageId ?? null, reason, pointer: await reportablePointer(candidate.pointer) };
@@ -127,7 +128,7 @@ export async function uploadProviderAssets(
       // Assets skipped behind an earlier rate limit were never attempted, so they earn no backoff.
       // An unreported failure (receiver unreachable) earns none either: resting it would let the
       // retry pass emit the capture without the asset while no failure record exists anywhere.
-      if (memory && reported && error !== downloadBlock) await memory.remember(outcomeKey, reason, maxBytes);
+      if (memory && reported && error !== downloadBlock) await memory.remember(outcomeKey, reason, maxBytes).catch(() => {});
       // Throttling stops further downloads in this batch, while every skipped asset is reported.
       if (isRateLimitError(error)) downloadBlock = error;
     }
