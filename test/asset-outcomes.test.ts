@@ -9,8 +9,9 @@ import {
 function installChrome(storage: Record<string, any>) {
   const saved = Object.getOwnPropertyDescriptor(globalThis, "chrome");
   Object.defineProperty(globalThis, "chrome", { configurable: true, writable: true, value: { storage: { local: {
-    get: (key: string, done: any) => done({ [key]: storage[key] }),
+    get: (key: string | null, done: any) => done(key === null ? { ...storage } : { [key]: storage[key] }),
     set: (values: any, done: any) => { Object.assign(storage, values); done(); },
+    remove: (key: string, done: any) => { delete storage[key]; done(); },
   } } } });
   return () => { if (saved) Object.defineProperty(globalThis, "chrome", saved); else delete (globalThis as any).chrome; };
 }
@@ -139,6 +140,10 @@ test("outcome transitions: terminal reasons rest for 30 days, transient backoff 
   const tooLarge = nextAssetOutcome(null, "asset_too_large", 100, now);
   expect(skipRememberedAttempt(tooLarge, now, 100)).toBe(true);
   expect(skipRememberedAttempt(tooLarge, now, 101)).toBe(false);
+  // A receiver 413 is remembered against the extension's limit, so a raised receiver limit
+  // is only noticed by time: too-large assets also get one more attempt after 30 days.
+  expect(skipRememberedAttempt(tooLarge, now + 30 * day - 1, 100)).toBe(true);
+  expect(skipRememberedAttempt(tooLarge, now + 30 * day, 100)).toBe(false);
 });
 
 test("long pointers are reported as a digest so status bodies and records stay bounded", async () => {
@@ -198,4 +203,32 @@ test("a failure the receiver never heard about earns no backoff, so the next pas
     expect(recovered.uploaded).toHaveLength(1);
     expect(fetches).toBe(1);
   } finally { log.mockRestore(); restore(); }
+});
+
+test("outcomes are stored one per asset under bounded hashed keys, never holding the pointer", async () => {
+  const storage: Record<string, any> = { "scrobbler.settings": { keep: true } };
+  const restore = installChrome(storage);
+  try {
+    const pointer = `data:image/png;base64,${"A".repeat(200_000)}`;
+    const memory = createAssetOutcomeMemory();
+    const key = assetOutcomeKey({ source: "gemini", sourceId: "g1", messageId: "r1", pointer });
+    await memory.remember(key, "asset_url_unavailable", 100);
+    await memory.remember(assetOutcomeKey(gone("file-2")), "asset_expired", 100);
+    const outcomeKeys = Object.keys(storage).filter(k => k !== "scrobbler.settings");
+    expect(outcomeKeys).toHaveLength(2);
+    for (const k of outcomeKeys) expect(k.length).toBeLessThan(120);
+    expect(JSON.stringify(storage).length).toBeLessThan(2_000);
+    expect(await createAssetOutcomeMemory().recall(key)).toMatchObject({ reason: "asset_url_unavailable" });
+    await memory.forget(key);
+    expect(await memory.recall(key)).toBeNull();
+    expect(storage["scrobbler.settings"]).toEqual({ keep: true });
+  } finally { restore(); }
+});
+
+test("a successful upload clears an outcome another capture path recorded after this one looked", async () => {
+  const forgotten: string[] = [];
+  const memory: AssetOutcomeMemory = { recall: async () => null, remember: async () => {}, forget: async key => { forgotten.push(key); } };
+  const ok = await run(memory, [gone("file-3")], () => new Response(new Uint8Array([137, 80, 78, 71]), { headers: { "content-type": "image/png" } }));
+  expect(ok.uploaded).toHaveLength(1);
+  expect(forgotten).toEqual([assetOutcomeKey(gone("file-3"))]);
 });

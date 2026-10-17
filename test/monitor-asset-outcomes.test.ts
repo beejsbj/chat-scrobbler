@@ -117,3 +117,18 @@ test("a successful upload clears a long pointer that was reported in its sha256 
     expect((await monitorReport(opts)).assets.recent_upload_failures).toBe(0);
   } finally { logs.mockRestore(); rmSync(root, { recursive: true, force: true }); }
 });
+
+test("deleting a session erases its asset outcome records", async () => {
+  const { root, opts, statePath } = setup();
+  const logs = spyOn(console, "error").mockImplementation(() => {});
+  try {
+    await report(opts, "chatgpt", [{ source_id: "c1", message_id: "m1", reason: "asset_upload_failed", pointer: "file-a" }]);
+    await report(opts, "chatgpt", [{ source_id: "c2", message_id: "m1", reason: "asset_expired", pointer: "file-b" }]);
+    const deleted = await handleIngestRequest(new Request("http://local/captures?source=chatgpt&source_id=c1", { method: "DELETE" }), opts);
+    expect(deleted.status).toBe(200);
+    const db = new Database(statePath, { readonly: true });
+    try {
+      expect(db.query("SELECT source_id FROM asset_outcomes ORDER BY source_id").all()).toEqual([{ source_id: "c2" }]);
+    } finally { db.close(); }
+  } finally { logs.mockRestore(); rmSync(root, { recursive: true, force: true }); }
+});

@@ -11,15 +11,17 @@ export const TRANSIENT_RETRY_BASE_MS = 30 * 60 * 1000;
 export const TRANSIENT_RETRY_MAX_MS = 24 * 60 * 60 * 1000;
 export const TERMINAL_RETRY_MS = 30 * 24 * 60 * 60 * 1000;
 export const MAX_REMEMBERED_OUTCOMES = 5000;
-const KEY = "scrobbler.assetOutcomes";
+/** One storage key per asset, named by a digest of its identity: pointers can be whole data: URLs. */
+const KEY_PREFIX = "scrobbler.assetOutcome:";
 
 export interface RememberedAssetOutcome {
   reason: AssetFailureReason;
   attempts: number;
   last_attempt_at: number;
-  /** Next eligible attempt. Null only for asset_too_large, which waits for a raised limit. */
+  /** Next eligible attempt. Null only for asset_too_large, which waits for a raised limit or 30 days. */
   retry_after: number | null;
-  /** Limit in force when the asset was too large; a raised limit earns one more attempt. */
+  /** Limit in force when the asset was too large; a raised limit earns one more attempt. A receiver
+   *  413 is recorded against this extension limit, so the 30 day rest also covers a raised receiver limit. */
   max_bytes: number | null;
 }
 
@@ -47,7 +49,7 @@ export function nextAssetOutcome(previous: RememberedAssetOutcome | null, reason
 }
 
 export function skipRememberedAttempt(entry: RememberedAssetOutcome, now: number, maxBytes: number): boolean {
-  if (entry.reason === "asset_too_large") return entry.max_bytes !== null && maxBytes <= entry.max_bytes;
+  if (entry.reason === "asset_too_large") return entry.max_bytes !== null && maxBytes <= entry.max_bytes && now < entry.last_attempt_at + TERMINAL_RETRY_MS;
   const retryAfter = entry.retry_after ?? (isTerminalAssetFailure(entry.reason) ? entry.last_attempt_at + TERMINAL_RETRY_MS : null);
   return retryAfter !== null && now < retryAfter;
 }
@@ -59,34 +61,40 @@ export async function reportablePointer(pointer: string): Promise<string> {
   return `sha256:${Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, "0")).join("")}`;
 }
 
-let writes = Promise.resolve();
+async function storageKey(key: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(key));
+  return KEY_PREFIX + Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, "0")).join("");
+}
 
-/** chrome.storage.local backed; shared by every provider tab of this install. */
+/**
+ * chrome.storage.local backed; shared by every provider tab of this install. Each asset has its
+ * own key, so tabs writing different assets at once cannot overwrite each other's outcomes.
+ */
 export function createAssetOutcomeMemory(maxEntries = MAX_REMEMBERED_OUTCOMES): AssetOutcomeMemory {
-  const read = (): Promise<Record<string, RememberedAssetOutcome>> => new Promise(resolve =>
-    chrome.storage.local.get(KEY, (values: Record<string, any>) => resolve(values[KEY] ?? {})));
-  const write = (entries: Record<string, RememberedAssetOutcome>): Promise<void> => new Promise(resolve => chrome.storage.local.set({ [KEY]: entries }, resolve));
-  const serialized = (mutate: (entries: Record<string, RememberedAssetOutcome>) => boolean): Promise<void> => {
-    const job = writes.catch(() => {}).then(async () => {
-      const entries = await read();
-      if (mutate(entries)) await write(entries);
-    });
-    writes = job;
-    return job;
+  const local = () => chrome.storage.local;
+  const get = (key: string | null): Promise<Record<string, any>> => new Promise(resolve => local().get(key, resolve));
+  const set = (values: Record<string, RememberedAssetOutcome>): Promise<void> => new Promise(resolve => local().set(values, resolve));
+  const remove = (keys: string | string[]): Promise<void> => new Promise(resolve => local().remove(keys, resolve));
+  const outcomeKeys = async (): Promise<string[]> => {
+    const all = typeof (local() as any).getKeys === "function" ? await (local() as any).getKeys() as string[] : Object.keys(await get(null));
+    return all.filter(key => key.startsWith(KEY_PREFIX));
+  };
+  const evict = async (): Promise<void> => {
+    const keys = await outcomeKeys();
+    if (keys.length <= maxEntries) return;
+    const entries = await Promise.all(keys.map(async key => [key, (await get(key))[key] as RememberedAssetOutcome | undefined] as const));
+    const oldest = entries.sort((a, b) => (a[1]?.last_attempt_at ?? 0) - (b[1]?.last_attempt_at ?? 0)).slice(0, keys.length - maxEntries);
+    await remove(oldest.map(([key]) => key));
   };
   return {
-    async recall(key) { return (await read())[key] ?? null; },
-    remember(key, reason, maxBytes, now = Date.now()) {
-      return serialized(entries => {
-        entries[key] = nextAssetOutcome(entries[key] ?? null, reason, maxBytes, now);
-        const excess = Object.keys(entries).length - maxEntries;
-        if (excess > 0) {
-          for (const [stale] of Object.entries(entries).sort((a, b) => a[1].last_attempt_at - b[1].last_attempt_at).slice(0, excess)) delete entries[stale];
-        }
-        return true;
-      });
+    async recall(key) { const stored = await storageKey(key); return (await get(stored))[stored] ?? null; },
+    async remember(key, reason, maxBytes, now = Date.now()) {
+      const stored = await storageKey(key);
+      await set({ [stored]: nextAssetOutcome((await get(stored))[stored] ?? null, reason, maxBytes, now) });
+      await evict();
     },
-    forget(key) { return serialized(entries => { if (!(key in entries)) return false; delete entries[key]; return true; }); },
+    // Best effort: failing to clear memory must never turn a stored asset into a reported failure.
+    async forget(key) { try { await remove(await storageKey(key)); } catch { /* the entry rests until it expires */ } },
   };
 }
 

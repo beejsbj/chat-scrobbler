@@ -43,6 +43,12 @@ export function recordAssetFailureOutcomes(path: string, source: string, failure
   })());
 }
 
+/** Explicit session deletion leaves only the tombstone, so its asset failure records go too. */
+export function clearSessionAssetOutcomes(path: string, source: string, sourceId: string): void {
+  if (!existsSync(path)) return;
+  withState(path, db => db.run("DELETE FROM asset_outcomes WHERE source = ? AND source_id = ?", [source, sourceId]));
+}
+
 /** A stored blob or reference for the same identity ends its failure record. */
 export function clearAssetOutcome(path: string, identity: AssetOutcomeIdentity): void {
   if (!existsSync(path)) return;

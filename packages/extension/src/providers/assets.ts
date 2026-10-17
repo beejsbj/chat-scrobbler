@@ -73,7 +73,7 @@ export async function uploadProviderAssets(
     try {
       if (candidate.url && !candidateUrlAllowed(candidate.url, candidate)) throw new Error("asset_url_unavailable");
       const cached = await lookupCapturedAsset(candidate);
-      if (cached) { uploaded.push({ ...cached, pointer: candidate.pointer, message_id: candidate.messageId ?? null }); if (remembered) await memory!.forget(outcomeKey); continue; }
+      if (cached) { uploaded.push({ ...cached, pointer: candidate.pointer, message_id: candidate.messageId ?? null }); if (memory) await memory.forget(outcomeKey); continue; }
       if (downloadBlock) throw downloadBlock;
       await (options.beforeFetch ?? paceAssetDownload)();
       const url = options.resolveUrl ? await options.resolveUrl(candidate) : candidate.url;
@@ -89,7 +89,7 @@ export async function uploadProviderAssets(
         : await fetchCandidateBytes(fetcher, url!, maxBytes, candidate.headers, candidate.source, undefined, pageBlobId);
       if (downloaded.asset) {
         uploaded.push({ ...downloaded.asset, pointer: candidate.pointer, message_id: candidate.messageId ?? downloaded.asset.message_id ?? null });
-        if (remembered) await memory!.forget(outcomeKey);
+        if (memory) await memory.forget(outcomeKey);
         continue;
       }
       if (downloaded.bytes.length > maxBytes) throw new Error("asset_too_large");
@@ -115,7 +115,7 @@ export async function uploadProviderAssets(
         filename: filename ?? asset.filename ?? null,
         content_type: contentType ?? asset.content_type ?? null,
       });
-      if (remembered) await memory!.forget(outcomeKey);
+      if (memory) await memory.forget(outcomeKey);
     } catch (error) {
       if (error instanceof Error && ["asset_too_large", "asset_url_unavailable", "asset_expired", "asset_upload_failed"].includes(error.message)) reason = error.message as AssetFailureReason;
       const failure: AssetFailure = { source: candidate.source, source_id: candidate.sourceId, message_id: candidate.messageId ?? null, reason, pointer: await reportablePointer(candidate.pointer) };
