@@ -1,21 +1,26 @@
 // test/sidebar-reconcile.test.ts
 import { test, expect } from "bun:test";
 import {
+  CAPTURE_FAILURE_BACKOFF_MS,
   CAPTURE_RETRY_DELAY_MS,
   CAPTURE_THROTTLE_MS,
   DEFAULT_RATE_LIMIT_COOLDOWN_MS,
   FAST_PATH_DEBOUNCE_MS,
   FULL_RECONCILE_MIN_INTERVAL_MS,
+  MAX_CAPTURE_FAILURE_BACKOFF_MS,
   MAX_RATE_LIMIT_COOLDOWN_MS,
   SIDEBAR_CONFIGS,
   activeConversationId,
   applyIgnoredStates,
   captureDelayMs,
+  captureFailureBackoffMs,
   captureQueue,
   captureWithRetry,
   deleteConfirmationMessage,
+  isCaptureQuarantined,
   nextCooldownMs,
   nextFullReconcileDelayMs,
+  recordCaptureFailure,
   shouldRecapture,
 } from "../packages/extension/src/sidebar/reconcile";
 
@@ -221,4 +226,52 @@ test("activeConversationId returns null for the provider home page (no chat segm
     "https://chatgpt.com/",
     SIDEBAR_CONFIGS.chatgpt,
   )).toBeNull();
+});
+
+// ---- capture failure quarantine ----
+
+test("captureFailureBackoffMs doubles from the base and caps", () => {
+  expect(captureFailureBackoffMs(1)).toBe(CAPTURE_FAILURE_BACKOFF_MS);
+  expect(captureFailureBackoffMs(2)).toBe(CAPTURE_FAILURE_BACKOFF_MS * 2);
+  expect(captureFailureBackoffMs(3)).toBe(CAPTURE_FAILURE_BACKOFF_MS * 4);
+  expect(captureFailureBackoffMs(50)).toBe(MAX_CAPTURE_FAILURE_BACKOFF_MS);
+});
+
+test("a never-failed conversation is not quarantined", () => {
+  expect(isCaptureQuarantined(undefined, 1_000, 5_000)).toBe(false);
+});
+
+test("a failed conversation rests until its backoff elapses", () => {
+  const state = recordCaptureFailure(undefined, 1_000, 10_000);
+  expect(state).toEqual({ liveUpdatedAtMs: 1_000, failures: 1, retryAtMs: 10_000 + CAPTURE_FAILURE_BACKOFF_MS });
+  expect(isCaptureQuarantined(state, 1_000, 10_000 + CAPTURE_FAILURE_BACKOFF_MS - 1)).toBe(true);
+  expect(isCaptureQuarantined(state, 1_000, 10_000 + CAPTURE_FAILURE_BACKOFF_MS)).toBe(false);
+});
+
+test("repeat failures on the same version grow the backoff", () => {
+  const first = recordCaptureFailure(undefined, 1_000, 0);
+  const second = recordCaptureFailure(first, 1_000, first.retryAtMs);
+  expect(second.failures).toBe(2);
+  expect(second.retryAtMs).toBe(first.retryAtMs + CAPTURE_FAILURE_BACKOFF_MS * 2);
+});
+
+test("unknown updatedAt (0) still backs off instead of retrying every cycle", () => {
+  const state = recordCaptureFailure(undefined, 0, 0);
+  expect(isCaptureQuarantined(state, 0, FULL_RECONCILE_MIN_INTERVAL_MS)).toBe(true);
+});
+
+test("a newer live updatedAt lifts the quarantine and restarts the backoff", () => {
+  const first = recordCaptureFailure(undefined, 1_000, 0);
+  const second = recordCaptureFailure(first, 1_000, first.retryAtMs);
+  expect(isCaptureQuarantined(second, 2_000, first.retryAtMs + 1)).toBe(false);
+  const fresh = recordCaptureFailure(second, 2_000, 100_000);
+  expect(fresh).toEqual({ liveUpdatedAtMs: 2_000, failures: 1, retryAtMs: 100_000 + CAPTURE_FAILURE_BACKOFF_MS });
+});
+
+test("an unparseable updatedAt (NaN) is treated as unknown and still backs off", () => {
+  const first = recordCaptureFailure(undefined, Number.NaN, 0);
+  expect(first.liveUpdatedAtMs).toBe(0);
+  const second = recordCaptureFailure(first, Number.NaN, first.retryAtMs);
+  expect(second.failures).toBe(2);
+  expect(isCaptureQuarantined(second, Number.NaN, first.retryAtMs + 1)).toBe(true);
 });
