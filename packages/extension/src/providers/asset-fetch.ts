@@ -1,7 +1,7 @@
 import type { ProviderSource } from "../../../shared/src";
 import type { FetchLike } from "./types";
 import { allowedAssetUrl, assetCredentials, assetAbsoluteUrl, providerDownloadUrl } from "./asset-url";
-import { validateAssetResponse } from "./asset-response";
+import { UNEXPECTED_ASSET_RESPONSE, validateAssetResponse } from "./asset-response";
 import { TransientSyncError } from "./sync-errors";
 
 /** Inspect each visible Location before following. Opaque redirects fail closed. */
@@ -15,18 +15,18 @@ export async function fetchAllowedAsset(fetcher: FetchLike, input: string, sourc
     catch { throw new TransientSyncError("Provider asset network unavailable"); }
     if (response.type === "opaqueredirect" || response.url && !allowedAssetUrl(response.url, source)) {
       await response.body?.cancel();
-      throw new Error("asset_url_unavailable");
+      throw new Error(UNEXPECTED_ASSET_RESPONSE);
     }
     if ([301, 302, 303, 307, 308].includes(response.status)) {
       const location = response.headers.get("location");
       await response.body?.cancel();
-      if (hop === 5 || !location || location !== location.trim() || location.startsWith("//") || /[\\\x00-\x20]/.test(location)) throw new Error("asset_url_unavailable");
+      if (hop === 5 || !location || location !== location.trim() || location.startsWith("//") || /[\\\x00-\x20]/.test(location)) throw new Error(UNEXPECTED_ASSET_RESPONSE);
       url = new URL(location, response.url || assetAbsoluteUrl(url, source)!).href;
-      if (!allowedAssetUrl(url, source)) throw new Error("asset_url_unavailable");
+      if (!allowedAssetUrl(url, source)) throw new Error(UNEXPECTED_ASSET_RESPONSE);
       continue;
     }
     validateAssetResponse(response, source);
     return { response, url: response.url || url };
   }
-  throw new Error("asset_url_unavailable");
+  throw new Error(UNEXPECTED_ASSET_RESPONSE);
 }

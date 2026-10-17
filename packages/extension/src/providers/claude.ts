@@ -42,7 +42,7 @@ export function createClaudeAdapter(fetcher: FetchLike = fetch.bind(globalThis))
           : ref.pointer.startsWith("/mnt/") ? claudeSandboxDownloadEndpoint(org.uuid, id, ref.pointer)
           : /^(https?:|data:|blob:|\/)/.test(ref.pointer) ? ref.pointer
           : claudeUnverifiedFileDownloadEndpoint(org.uuid, ref.pointer)),
-      })), { beforeFetch: options.beforeFetch });
+      })), { beforeFetch: options.beforeFetch, retryRemembered: true });
     },
     sync: (options) => syncClaude(fetcher, options),
     listConversations: (pages = 1) => listClaude(fetcher, pages),
