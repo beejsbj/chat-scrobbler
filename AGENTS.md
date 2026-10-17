@@ -35,6 +35,8 @@ them through a CLI and a read-only MCP connector.
 | `packages/ingest/src/` | Ingest server (POST /captures, POST /status, GET /health) |
 | `packages/shared/src/` | Shared constants and `RawCapture` schema |
 | `scripts/build-dist.ts` | Compiles `dist/chat-scrobbler` + bundles `dist/extension/` |
+| `scripts/release.ts` | Release assets; `--build-only` / `--publish-only` split for CI |
+| `.github/workflows/` | `ci.yml` (typecheck + tests on PRs and main), `release.yml` (v* tags) |
 
 ## Commands
 
@@ -48,7 +50,8 @@ bun run cli doctor           # verify install chain: config, tokens, ingest, MCP
 bun run serve                # ingest receiver (port 4318) + MCP HTTP (port 4319) together
 bun run unify                # rebuild SQLite index from canonical
 bun run build:dist           # compile dist/chat-scrobbler binary + bundle dist/extension/
-bun run release vX.Y.Z       # cross-compile binaries + zip extension + gh release create
+bun run release vX.Y.Z       # local fallback: cross-compile, zip extension, gh release create
+git tag vX.Y.Z && git push origin vX.Y.Z   # preferred: CI tests, builds, smoke-tests each binary, publishes
 bun run mcp                  # read-only MCP over stdio
 bun run mcp:http             # read-only MCP over HTTP at /mcp (env MCP_HTTP_PORT, default 4319)
 ```
