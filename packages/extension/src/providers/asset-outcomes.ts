@@ -3,11 +3,13 @@ import { isTerminalAssetFailure, MAX_ASSET_FAILURE_POINTER_CHARS, type AssetFail
 /**
  * Per-asset memory of capture outcomes. Every capture of a conversation re-walks all of
  * its media pointers; without this, a pointer the provider no longer serves is re-fetched
- * and re-reported on every pass. Terminal outcomes are skipped for good, transient ones
+ * and re-reported on every pass. Terminal outcomes rest for 30 days, because a provider
+ * may serve a pointer again (Gemini pointers are often the URL itself); transient ones
  * back off from one sync period up to a day. Successful uploads clear the entry.
  */
 export const TRANSIENT_RETRY_BASE_MS = 30 * 60 * 1000;
 export const TRANSIENT_RETRY_MAX_MS = 24 * 60 * 60 * 1000;
+export const TERMINAL_RETRY_MS = 30 * 24 * 60 * 60 * 1000;
 export const MAX_REMEMBERED_OUTCOMES = 5000;
 const KEY = "scrobbler.assetOutcomes";
 
@@ -15,7 +17,7 @@ export interface RememberedAssetOutcome {
   reason: AssetFailureReason;
   attempts: number;
   last_attempt_at: number;
-  /** Null for terminal reasons; transient reasons wait until this time. */
+  /** Next eligible attempt. Null only for asset_too_large, which waits for a raised limit. */
   retry_after: number | null;
   /** Limit in force when the asset was too large; a raised limit earns one more attempt. */
   max_bytes: number | null;
@@ -39,15 +41,15 @@ export function nextAssetOutcome(previous: RememberedAssetOutcome | null, reason
   const attempts = (previous?.attempts ?? 0) + 1;
   return {
     reason, attempts, last_attempt_at: now,
-    retry_after: isTerminalAssetFailure(reason) ? null : now + transientRetryDelayMs(attempts),
+    retry_after: reason === "asset_too_large" ? null : now + (isTerminalAssetFailure(reason) ? TERMINAL_RETRY_MS : transientRetryDelayMs(attempts)),
     max_bytes: reason === "asset_too_large" ? maxBytes : null,
   };
 }
 
 export function skipRememberedAttempt(entry: RememberedAssetOutcome, now: number, maxBytes: number): boolean {
   if (entry.reason === "asset_too_large") return entry.max_bytes !== null && maxBytes <= entry.max_bytes;
-  if (isTerminalAssetFailure(entry.reason)) return true;
-  return entry.retry_after !== null && now < entry.retry_after;
+  const retryAfter = entry.retry_after ?? (isTerminalAssetFailure(entry.reason) ? entry.last_attempt_at + TERMINAL_RETRY_MS : null);
+  return retryAfter !== null && now < retryAfter;
 }
 
 /** Pointers can be whole data: URLs; the receiver records identity, not bytes. */

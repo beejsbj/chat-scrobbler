@@ -114,11 +114,21 @@ test("outside the extension no outcome memory is consulted, so unit tests stay i
   }
 });
 
-test("outcome transitions: terminal reasons never expire, transient backoff doubles to a daily cap", () => {
+test("outcome transitions: terminal reasons rest for 30 days, transient backoff doubles to a daily cap", () => {
   const now = 1_000_000;
-  const expired = nextAssetOutcome(null, "asset_expired", 100, now);
-  expect(expired).toMatchObject({ reason: "asset_expired", attempts: 1, retry_after: null });
-  expect(skipRememberedAttempt(expired, now + 365 * 24 * 3_600_000, 100)).toBe(true);
+  const day = 24 * 3_600_000;
+  for (const reason of ["asset_expired", "asset_url_unavailable"] as const) {
+    const terminal = nextAssetOutcome(null, reason, 100, now);
+    expect(terminal).toMatchObject({ reason, attempts: 1, retry_after: now + 30 * day });
+    expect(skipRememberedAttempt(terminal, now + 30 * day - 1, 100)).toBe(true);
+    expect(skipRememberedAttempt(terminal, now + 30 * day, 100)).toBe(false);
+    // A repeat failure rests another full 30 days rather than escalating.
+    expect(nextAssetOutcome(terminal, reason, 100, now + 30 * day).retry_after).toBe(now + 60 * day);
+  }
+  // Entries written without a retry time still age out from their last attempt.
+  const legacy = { reason: "asset_expired" as const, attempts: 1, last_attempt_at: now, retry_after: null, max_bytes: null };
+  expect(skipRememberedAttempt(legacy, now + 29 * day, 100)).toBe(true);
+  expect(skipRememberedAttempt(legacy, now + 30 * day, 100)).toBe(false);
   let transient = nextAssetOutcome(null, "asset_upload_failed", 100, now);
   expect(transient.retry_after).toBe(now + 30 * 60_000);
   for (let i = 0; i < 10; i++) transient = nextAssetOutcome(transient, "asset_upload_failed", 100, now);
@@ -151,4 +161,23 @@ test("the storage-backed memory evicts its oldest entries past the cap", async (
     await memory.forget("k4");
     expect(await memory.recall("k4")).toBeNull();
   } finally { restore(); }
+});
+
+test("a remembered expired asset is attempted again once its 30 day rest ends", async () => {
+  const storage: Record<string, any> = {};
+  const restore = installChrome(storage);
+  const originalNow = Date.now;
+  let now = originalNow();
+  Date.now = () => now;
+  try {
+    const responder = () => new Response("", { status: 404 });
+    expect((await run(createAssetOutcomeMemory(), [gone("file-5")], responder)).fetches).toBe(1);
+    now += 29 * 24 * 3_600_000;
+    expect(await run(createAssetOutcomeMemory(), [gone("file-5")], responder)).toMatchObject({ fetches: 0, failures: [] });
+    now += 24 * 3_600_000;
+    const retried = await run(createAssetOutcomeMemory(), [gone("file-5")], responder);
+    expect(retried.fetches).toBe(1);
+    expect(retried.failures).toMatchObject([{ reason: "asset_expired" }]);
+    expect(await createAssetOutcomeMemory().recall(assetOutcomeKey(gone("file-5")))).toMatchObject({ attempts: 2 });
+  } finally { Date.now = originalNow; restore(); }
 });
