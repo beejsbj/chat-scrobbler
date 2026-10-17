@@ -13,9 +13,12 @@ import {
   captureQueue,
   captureWithRetry,
   deleteConfirmationMessage,
+  isCaptureQuarantined,
   nextCooldownMs,
   nextFullReconcileDelayMs,
+  recordCaptureFailure,
   shouldRecapture,
+  type CaptureFailureState,
   type ConversationState,
 } from "./reconcile";
 import { ensureBadgeStyles, setBadge } from "./badges";
@@ -69,6 +72,8 @@ export function runSidebarBadges(provider: ProviderAdapter, deps: SidebarDeps): 
    * re-capture if the live updatedAt has advanced since our last capture.
    */
   const lastCapturedAt = new Map<string, number>();
+  /** Session-scoped backoff for chats whose capture failed for a reason other than rate limiting. */
+  const captureFailures = new Map<string, CaptureFailureState>();
 
   const schedule = (delayMs = SIDEBAR_RECONCILE_DEBOUNCE_MS): void => {
     clearTimeout(timer);
@@ -137,7 +142,12 @@ export function runSidebarBadges(provider: ProviderAdapter, deps: SidebarDeps): 
         const liveMs = updatedById.has(id)
           ? (updatedById.get(id) ? Date.parse(updatedById.get(id)!) : 0)
           : 0;
-        return shouldRecapture(lastCapturedAt.get(id), liveMs);
+        if (!shouldRecapture(lastCapturedAt.get(id), liveMs)) return false;
+        if (!isCaptureQuarantined(captureFailures.get(id), liveMs, Date.now())) return true;
+        cachedStatuses[id] = "error";
+        const anchor = anchors.get(id);
+        if (anchor) paintBadge(anchor, id, "error");
+        return false;
       });
       progressTotal = queue.length;
       if (progressTotal > 0) {
@@ -167,6 +177,7 @@ export function runSidebarBadges(provider: ProviderAdapter, deps: SidebarDeps): 
             ? (updatedById.get(id) ? Date.parse(updatedById.get(id)!) : 0)
             : 0;
           lastCapturedAt.set(id, capturedAtMs);
+          captureFailures.delete(id);
           // Determine kind from the pre-capture status: "missing" = brand-new chat,
           // anything else ("stale") = update to an existing one.
           const kind: CaptureKind = statuses[id] === "missing" ? "new" : "update";
@@ -183,6 +194,8 @@ export function runSidebarBadges(provider: ProviderAdapter, deps: SidebarDeps): 
             if (anchor) paintBadge(anchor, id, cachedStatuses[id]);
             scheduleRateLimitRetry(error);
           } else {
+            const liveMs = updatedById.get(id) ? Date.parse(updatedById.get(id)!) : 0;
+            captureFailures.set(id, recordCaptureFailure(captureFailures.get(id), liveMs, Date.now()));
             cachedStatuses[id] = "error";
             if (anchor) paintBadge(anchor, id, cachedStatuses[id]);
           }
@@ -239,6 +252,7 @@ export function runSidebarBadges(provider: ProviderAdapter, deps: SidebarDeps): 
 
       const liveMs = liveUpdatedAt ? Date.parse(liveUpdatedAt) : 0;
       if (!shouldRecapture(lastCapturedAt.get(activeId), liveMs)) return;
+      if (isCaptureQuarantined(captureFailures.get(activeId), liveMs, Date.now())) return;
 
       // Optimistic paint: immediate "syncing" feedback before the network call.
       if (anchor) paintBadge(anchor, activeId, "syncing");
@@ -252,6 +266,7 @@ export function runSidebarBadges(provider: ProviderAdapter, deps: SidebarDeps): 
           { isRateLimit: isRateLimitError, wait, delayMs: CAPTURE_RETRY_DELAY_MS },
         );
         lastCapturedAt.set(activeId, liveMs);
+        captureFailures.delete(activeId);
         // Fast-path kind heuristic: a brand-new chat has no prior lastCapturedAt
         // entry AND no cached status (or a "missing" cached status). Everything
         // else is an update to a chat we've seen before.
@@ -271,6 +286,7 @@ export function runSidebarBadges(provider: ProviderAdapter, deps: SidebarDeps): 
           if (anchor) paintBadge(anchor, activeId, "missing");
           scheduleRateLimitRetry(error);
         } else {
+          captureFailures.set(activeId, recordCaptureFailure(captureFailures.get(activeId), liveMs, Date.now()));
           cachedStatuses[activeId] = "error";
           if (anchor) paintBadge(anchor, activeId, "error");
         }

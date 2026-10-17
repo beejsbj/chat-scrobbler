@@ -157,6 +157,50 @@ export function shouldRecapture(
   return liveUpdatedAtMs > lastCapturedUpdatedAtMs;
 }
 
+/** First rest after a non-rate-limit capture failure; doubles per repeat failure. */
+export const CAPTURE_FAILURE_BACKOFF_MS = 2 * 60_000;
+export const MAX_CAPTURE_FAILURE_BACKOFF_MS = 60 * 60_000;
+
+/** Page-session memory of a conversation whose capture failed for a reason other than rate limiting. */
+export interface CaptureFailureState {
+  liveUpdatedAtMs: number;
+  failures: number;
+  retryAtMs: number;
+}
+
+export function captureFailureBackoffMs(failures: number): number {
+  const exponent = Math.min(Math.max(0, Math.floor(failures) - 1), 30);
+  return Math.min(CAPTURE_FAILURE_BACKOFF_MS * 2 ** exponent, MAX_CAPTURE_FAILURE_BACKOFF_MS);
+}
+
+/** Record a failed capture. A newer live updatedAt starts the count over, since new content may capture cleanly. */
+export function recordCaptureFailure(
+  previous: CaptureFailureState | undefined,
+  liveUpdatedAtMs: number,
+  nowMs: number,
+): CaptureFailureState {
+  const live = finiteOrZero(liveUpdatedAtMs);
+  const failures = previous && live <= previous.liveUpdatedAtMs ? previous.failures + 1 : 1;
+  return { liveUpdatedAtMs: live, failures, retryAtMs: nowMs + captureFailureBackoffMs(failures) };
+}
+
+/**
+ * True while a conversation that failed to capture should be left alone. Without this the
+ * sidebar reconcile (every 15 s) and the active-chat fast pass (every DOM mutation) re-run the
+ * provider fetch, asset pass and receiver POST for a deterministically failing chat each cycle.
+ */
+export function isCaptureQuarantined(
+  state: CaptureFailureState | undefined,
+  liveUpdatedAtMs: number,
+  nowMs: number,
+): boolean {
+  if (!state) return false;
+  if (finiteOrZero(liveUpdatedAtMs) > state.liveUpdatedAtMs) return false;
+  return nowMs < state.retryAtMs;
+}
+
+const finiteOrZero = (ms: number): number => (Number.isFinite(ms) ? ms : 0);
+
 /**
  * Determine the id of the conversation currently open in the main pane by
  * applying the provider's idFromHref to the page's own URL.
