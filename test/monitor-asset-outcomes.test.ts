@@ -7,6 +7,7 @@ import { liveMonitorReport } from "../src/monitor/live-report";
 import { monitorReport } from "../src/monitor/report";
 import { readMonitorState, recordAssetFailureOutcomes } from "../src/monitor/state";
 import { openIndex } from "../src/indexer/sqlite";
+import { reportablePointer } from "../packages/extension/src/providers/asset-outcomes";
 
 function setup() {
   const root = mkdtempSync(join(import.meta.dir, ".monitor-assets-"));
@@ -99,4 +100,20 @@ test("an old failure outside the window no longer counts, and a repeat brings it
     expect(state.assetOutcomes.transient).toBe(1);
     expect(state.counters.asset_failures).toBe(2);
   } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("a successful upload clears a long pointer that was reported in its sha256 form", async () => {
+  const { root, opts } = setup();
+  const logs = spyOn(console, "error").mockImplementation(() => {});
+  try {
+    const pointer = `https://lh3.googleusercontent.com/gg-dl/${"a".repeat(600)}`;
+    const digested = await reportablePointer(pointer);
+    expect(digested.startsWith("sha256:")).toBe(true);
+    await report(opts, "gemini", [{ source_id: "g1", message_id: "r1", reason: "asset_upload_failed", pointer: digested }]);
+    expect((await monitorReport(opts)).assets.recent_upload_failures).toBe(1);
+    const upload = await handleIngestRequest(new Request(`http://local/assets?source=gemini&source_id=g1&message_id=r1&pointer=${encodeURIComponent(pointer)}`, {
+      method: "POST", headers: { "content-type": "image/png" }, body: new Uint8Array([137, 80, 78, 71]) }), opts);
+    expect(upload.status).toBe(200);
+    expect((await monitorReport(opts)).assets.recent_upload_failures).toBe(0);
+  } finally { logs.mockRestore(); rmSync(root, { recursive: true, force: true }); }
 });

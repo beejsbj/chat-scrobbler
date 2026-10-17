@@ -121,10 +121,13 @@ export async function uploadProviderAssets(
       const failure: AssetFailure = { source: candidate.source, source_id: candidate.sourceId, message_id: candidate.messageId ?? null, reason, pointer: await reportablePointer(candidate.pointer) };
       // Pointers can carry signed URLs; they travel to the receiver record, never to logs.
       console.error(JSON.stringify({ event: "asset_capture_failed", source: failure.source, source_id: failure.source_id, message_id: failure.message_id, reason }));
+      let reported = true;
       try { await (options.reportFailure ?? reportAssetFailure)(failure); }
-      catch { console.error(JSON.stringify({ event: "asset_failure_report_failed", source: candidate.source, source_id: candidate.sourceId })); }
+      catch { reported = false; console.error(JSON.stringify({ event: "asset_failure_report_failed", source: candidate.source, source_id: candidate.sourceId })); }
       // Assets skipped behind an earlier rate limit were never attempted, so they earn no backoff.
-      if (memory && error !== downloadBlock) await memory.remember(outcomeKey, reason, maxBytes);
+      // An unreported failure (receiver unreachable) earns none either: resting it would let the
+      // retry pass emit the capture without the asset while no failure record exists anywhere.
+      if (memory && reported && error !== downloadBlock) await memory.remember(outcomeKey, reason, maxBytes);
       // Throttling stops further downloads in this batch, while every skipped asset is reported.
       if (isRateLimitError(error)) downloadBlock = error;
     }

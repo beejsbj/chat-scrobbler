@@ -3,8 +3,9 @@ import { emptyParseState, readParseState } from "./parse-state";
 import { assertStateOwner } from "./state-owner";
 import { Database } from "bun:sqlite";
 import { existsSync } from "node:fs";
+import { createHash } from "node:crypto";
 import type { Source } from "../schema/types";
-import { isTerminalAssetFailure } from "../../packages/shared/src/asset-failure";
+import { isTerminalAssetFailure, MAX_ASSET_FAILURE_POINTER_CHARS } from "../../packages/shared/src/asset-failure";
 
 export interface AssetFailureRecord { source_id: string; message_id: string | null; reason: string; pointer?: string | null; }
 export interface AssetOutcomeIdentity { source: string; source_id: string; message_id: string | null; pointer: string; }
@@ -45,8 +46,14 @@ export function recordAssetFailureOutcomes(path: string, source: string, failure
 /** A stored blob or reference for the same identity ends its failure record. */
 export function clearAssetOutcome(path: string, identity: AssetOutcomeIdentity): void {
   if (!existsSync(path)) return;
-  withState(path, db => db.run("DELETE FROM asset_outcomes WHERE source = ? AND source_id = ? AND message_id = ? AND pointer = ?",
-    [identity.source, identity.source_id, identity.message_id ?? "", identity.pointer]));
+  // The extension reports pointers past MAX_ASSET_FAILURE_POINTER_CHARS as `sha256:<hex>`; clear that form too.
+  const pointers = identity.pointer.length > MAX_ASSET_FAILURE_POINTER_CHARS
+    ? [identity.pointer, `sha256:${createHash("sha256").update(identity.pointer).digest("hex")}`]
+    : [identity.pointer];
+  withState(path, db => {
+    for (const pointer of pointers) db.run("DELETE FROM asset_outcomes WHERE source = ? AND source_id = ? AND message_id = ? AND pointer = ?",
+      [identity.source, identity.source_id, identity.message_id ?? "", pointer]);
+  });
 }
 
 export function recordCaptureReceipt(path: string, source: Source, now = Date.now()): void {

@@ -181,3 +181,21 @@ test("a remembered expired asset is attempted again once its 30 day rest ends", 
     expect(await createAssetOutcomeMemory().recall(assetOutcomeKey(gone("file-5")))).toMatchObject({ attempts: 2 });
   } finally { Date.now = originalNow; restore(); }
 });
+
+test("a failure the receiver never heard about earns no backoff, so the next pass retries it", async () => {
+  const storage: Record<string, any> = {};
+  const restore = installChrome(storage);
+  const log = spyOn(console, "error").mockImplementation(() => {});
+  try {
+    let fetches = 0;
+    const receiverDown = await uploadProviderAssets(async () => { fetches++; return new Response(new Uint8Array([137, 80, 78, 71]), { headers: { "content-type": "image/png" } }); },
+      async () => { throw new Error("receiver unreachable"); }, [gone("file-9")],
+      { beforeFetch: async () => {}, reportFailure: async () => { throw new Error("receiver unreachable"); }, outcomes: createAssetOutcomeMemory() });
+    expect(receiverDown).toEqual([]);
+    expect(await createAssetOutcomeMemory().recall(assetOutcomeKey(gone("file-9")))).toBeNull();
+    const recovered = await run(createAssetOutcomeMemory(), [gone("file-9")], () => new Response(new Uint8Array([137, 80, 78, 71]), { headers: { "content-type": "image/png" } }));
+    expect(recovered.fetches).toBe(1);
+    expect(recovered.uploaded).toHaveLength(1);
+    expect(fetches).toBe(1);
+  } finally { log.mockRestore(); restore(); }
+});
