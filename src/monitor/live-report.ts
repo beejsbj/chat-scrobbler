@@ -9,6 +9,7 @@ import { MonitorStateError, monitorDataDir } from "./state-owner";
 import { indexedCaptureTimes } from "./indexed-captures";
 import { SOURCES } from "../store/raw-catalog";
 import { skippedEmbeddingFailure } from "./skipped";
+import { assetMetrics } from "./report";
 
 /** HTTP reads operational state and, only at bootstrap, indexed session dates. */
 export function liveMonitorReport(opts: IngestServerOptions) {
@@ -25,13 +26,13 @@ export function liveMonitorReport(opts: IngestServerOptions) {
   const freshness = providerFreshness(settings.monitorStaleDays, { ...fallback, ...state?.captures }, { ...fallback, ...state?.parsed }, state !== null);
   const providers = freshness.providers;
   failures.push(...freshness.failures, ...parseFailureLines(state));
-  if (state?.recentAssets) failures.push(`FAILED assets recent_upload_failures=${state.recentAssets}`);
+  if (state?.assetOutcomes.transient) failures.push(`FAILED assets recent_upload_failures=${state.assetOutcomes.transient}`);
   try {
     const skipped = skippedEmbeddingFailure(opts.indexPath, opts.embeddingProvider);
     if (skipped) failures.push(skipped);
   } catch { failures.push("FAILED index unreadable_or_incompatible"); }
   failures.sort();
-  return { scope: "live", ok: !failures.length, failures, providers, counters: state?.counters ?? {}, parse: state?.parse ?? {}, assets: { upload_failures: state?.counters.asset_failures ?? 0, recent_upload_failures: state?.recentAssets ?? 0 }, backfill: backfillHealth(opts), state: state ? "available" : "unavailable", deferred_checks: ["raw", "canonical", "unknown_types", "embedding_coverage", "embedding_probe", "attachments", "store_health"] };
+  return { scope: "live", ok: !failures.length, failures, providers, counters: state?.counters ?? {}, parse: state?.parse ?? {}, assets: assetMetrics(state), backfill: backfillHealth(opts), state: state ? "available" : "unavailable", deferred_checks: ["raw", "canonical", "unknown_types", "embedding_coverage", "embedding_probe", "attachments", "store_health"] };
 }
 
 const cache = new Map<string, { expires: number; report: ReturnType<typeof liveMonitorReport> }>();

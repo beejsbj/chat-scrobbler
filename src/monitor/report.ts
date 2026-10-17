@@ -16,6 +16,17 @@ import { canonicalObservations } from "./canonical";
 import { embeddingCoverage } from "./coverage";
 import { skippedEmbeddingFailure } from "./skipped";
 
+/** Distinct assets per window; `upload_failures` and `recent_failure_reports` keep counting attempts. */
+export function assetMetrics(state: ReturnType<typeof readMonitorState> | null) {
+  return {
+    upload_failures: state?.counters.asset_failures ?? 0,
+    recent_failure_reports: state?.recentAssetReports ?? 0,
+    recent_upload_failures: state?.assetOutcomes.transient ?? 0,
+    recent_unavailable: state?.assetOutcomes.terminal ?? 0,
+    recent_failures_by_reason: state?.assetOutcomes.byReason ?? {},
+  };
+}
+
 export function unknownTypeId(source: string, type: string): string {
   return createHash("sha256").update(JSON.stringify([source, type])).digest("hex").slice(0, 16);
 }
@@ -65,7 +76,8 @@ export async function monitorReport(opts: IngestServerOptions, ack = false) {
     } catch { fail("state", "acknowledge_failed"); }
   }
   for (const type of types.filter(type => !state?.acknowledged.has(type.type_id))) fail(`unknown.${type.source}`, `type_id=${type.type_id} count=${type.count}`);
-  if (state?.recentAssets) fail("assets", `recent_upload_failures=${state.recentAssets}`);
+  // Only failures a retry can fix alert. Expired or URL-less history is recorded, not paged.
+  if (state?.assetOutcomes.transient) fail("assets", `recent_upload_failures=${state.assetOutcomes.transient}`);
   const missingAssets = canonical.missingAssets;
   if (canonical.unreadable || unknown.unreadable_sessions) fail("canonical", `unreadable_sessions=${Math.max(canonical.unreadable, unknown.unreadable_sessions)}`);
   if (missingAssets) fail("assets", `missing_recent_blocks=${missingAssets}`);
@@ -79,5 +91,5 @@ export async function monitorReport(opts: IngestServerOptions, ack = false) {
   const noVectors = coverage && !coverage.with_vectors && coverage.without_vectors > 0;
   if (health.semantic === "available" && noVectors) fail("semantic", "no_usable_vectors");
   failures.sort();
-  return { ok: failures.length === 0, failures, providers, unknown_types: types.map(type => ({ ...type, acknowledged: state?.acknowledged.has(type.type_id) ?? false })), embeddings: { semantic: noVectors ? "unavailable" : health.semantic, coverage }, assets: { missing_recent_blocks: missingAssets, upload_failures: state?.counters.asset_failures ?? 0, recent_upload_failures: state?.recentAssets ?? 0 }, parse: { ...state?.parse, failed_versions_without_canonical: raw.parseFailures }, counters: state?.counters ?? {}, health };
+  return { ok: failures.length === 0, failures, providers, unknown_types: types.map(type => ({ ...type, acknowledged: state?.acknowledged.has(type.type_id) ?? false })), embeddings: { semantic: noVectors ? "unavailable" : health.semantic, coverage }, assets: { missing_recent_blocks: missingAssets, ...assetMetrics(state) }, parse: { ...state?.parse, failed_versions_without_canonical: raw.parseFailures }, counters: state?.counters ?? {}, health };
 }

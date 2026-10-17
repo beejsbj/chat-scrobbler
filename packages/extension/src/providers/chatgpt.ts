@@ -31,7 +31,7 @@ export function createChatgptAdapter(fetcher: FetchLike = fetch.bind(globalThis)
         source: "chatgpt", sourceId: id, pointer: ref.pointer, messageId: ref.message_id,
         url: chatgptFileDownloadEndpoint(ref.pointer, id, ref.message_id), headers,
         filename: ref.filename, contentType: ref.content_type,
-      })), { beforeFetch: options.beforeFetch, resolveUrl: candidate => resolveChatgptAssetUrl(fetcher, candidate) });
+      })), { beforeFetch: options.beforeFetch, retryRemembered: true, resolveUrl: candidate => resolveChatgptAssetUrl(fetcher, candidate) });
     },
     sync: (options) => syncChatgpt(fetcher, options),
     listConversations: (pages = 1) => listChatgpt(fetcher, pages),
