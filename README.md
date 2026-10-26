@@ -226,6 +226,10 @@ CHAT_SCROBBLER_EMBED_PROVIDER=embeddinggemma
 CHAT_SCROBBLER_EMBED_MODEL=litert-community/embeddinggemma-2-740m-litert-lm
 ```
 
+`COMPOSE_PROFILES` has to reach the Compose invocation itself, so in Coolify set
+it at the deployment level (see [services/embedder/README.md](services/embedder/README.md));
+an app-only environment variable does not enable the profile.
+
 The image build downloads and verifies the model, so there is no pull step. The
 compose file still carries an Ollama sidecar as its default provider until
 [#41](https://github.com/beejsbj/chat-scrobbler/issues/41) retires it.
@@ -235,8 +239,10 @@ compose file still carries an Ollama sidecar as its default provider until
 - The whole thing lives on my homelab now: the Docker compose above runs the
   server plus an embedding sidecar, the browser extension on my laptop posts
   captures to it over my tailnet with an ingest token, and embeddings are
-  local (an EmbeddingGemma 2 sidecar, replacing `nomic-embed-text` on Ollama),
-  so semantic search costs nothing and leaves nothing. It started as a launchd agent on the Mac
+  local, so semantic search costs nothing and leaves nothing. EmbeddingGemma 2 is
+  the chosen embedder, but the homelab cutover is still pending
+  ([#41](https://github.com/beejsbj/chat-scrobbler/issues/41)) and it runs
+  Ollama with `nomic-embed-text` for now. It started as a launchd agent on the Mac
   ([docs/examples/com.chat-scrobbler.serve.plist](docs/examples/com.chat-scrobbler.serve.plist));
   that still works fine for a single-machine setup.
 - The MCP endpoint is reachable two ways: privately for the CLI agents that

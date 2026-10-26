@@ -335,7 +335,8 @@ finishes (about 36k messages, roughly one to two days on bjslab). Issue
    nomic and the unused `qwen3:4b`) once Gemma serves search.
 
 Going back to Ollama later means restoring the provider settings and the service,
-then a full nomic backfill. Literal recall works throughout. The `ollama` provider
+then catching up only the missing or stale nomic rows, since vectors are stored per
+provider and model. Literal recall works throughout. The `ollama` provider
 stays in the code as the simplest local option outside Docker.
 
 ## Verification and open risks
