@@ -131,12 +131,12 @@ serverTest("OPTIONS /mcp returns 200 with CORS headers", async () => {
   expect(res.headers.get("access-control-allow-origin")).toBe("*");
 });
 
-serverTest("tools/list returns exactly search, get_session, list_sessions", async () => {
+serverTest("tools/list returns exactly search, get_session, get_asset, list_sessions", async () => {
   const client = await makeClient();
   try {
     const result = await client.listTools();
     const names = result.tools.map((t) => t.name).sort();
-    expect(names).toEqual(["get_session", "list_sessions", "search"]);
+    expect(names).toEqual(["get_asset", "get_session", "list_sessions", "search"]);
   } finally {
     await client.close();
   }
@@ -190,7 +190,7 @@ serverTest("authorized /mcp/<token> path connects when an MCP auth token is conf
   try {
     const result = await client.listTools();
     const names = result.tools.map((t) => t.name).sort();
-    expect(names).toEqual(["get_session", "list_sessions", "search"]);
+    expect(names).toEqual(["get_asset", "get_session", "list_sessions", "search"]);
   } finally {
     await client.close();
   }

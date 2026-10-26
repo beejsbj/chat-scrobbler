@@ -31,7 +31,7 @@ test("buildServer reports chat-scrobbler identity and instructions during initia
 
     expect(client.getServerVersion()).toEqual({ name: "chat-scrobbler", version: "0.3.0" });
     expect(client.getInstructions()).toBe(
-      "Read-only archive of Burooj's AI chat history (ChatGPT, Claude, Gemini), captured continuously by the chat-scrobbler browser extension. Use it to recall past conversations: what was discussed, decided, or drafted in earlier chats across all providers. `search` blends full-text, semantic, and literal substring recall (set regex=true for regular expressions); `list_sessions` browses recent conversations; `get_session` fetches a full transcript by `source:source_id` id. Message hits carry provenance back to their exact session. The archive is append-only from this connector: nothing here can modify or delete history."
+      "Read-only archive of Burooj's AI chat history (ChatGPT, Claude, Gemini), captured continuously by the chat-scrobbler browser extension. Use it to recall past conversations: what was discussed, decided, or drafted in earlier chats across all providers. `search` blends full-text, semantic, and literal substring recall (set regex=true for regular expressions); `list_sessions` browses recent conversations; `get_session` fetches a full transcript by `source:source_id` id; `get_asset` returns an image or file from that transcript. Message hits carry provenance back to their exact session. The archive is append-only from this connector: nothing here can modify or delete history."
     );
   } finally {
     await client.close();

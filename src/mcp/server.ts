@@ -7,6 +7,7 @@ import { readSession, sessionToMarkdown } from "../store/sessions";
 import { loadConfig } from "../config";
 import { parseSessionId } from "../core/session-id";
 import { embeddingProviderFromConfig } from "../indexer/embedding-providers";
+import { handleGetAsset } from "./get-asset";
 
 export interface ServerOptions {
   indexPath: string; canonicalDir: string; embeddingProvider?: EmbeddingProvider | null;
@@ -16,7 +17,7 @@ export interface ServerOptions {
 
 type ToolResult = { structuredContent?: Record<string, unknown>; content: { type: "text"; text: string }[]; isError?: boolean };
 
-const SERVER_INSTRUCTIONS = "Read-only archive of Burooj's AI chat history (ChatGPT, Claude, Gemini), captured continuously by the chat-scrobbler browser extension. Use it to recall past conversations: what was discussed, decided, or drafted in earlier chats across all providers. `search` blends full-text, semantic, and literal substring recall (set regex=true for regular expressions); `list_sessions` browses recent conversations; `get_session` fetches a full transcript by `source:source_id` id. Message hits carry provenance back to their exact session. The archive is append-only from this connector: nothing here can modify or delete history.";
+const SERVER_INSTRUCTIONS = "Read-only archive of Burooj's AI chat history (ChatGPT, Claude, Gemini), captured continuously by the chat-scrobbler browser extension. Use it to recall past conversations: what was discussed, decided, or drafted in earlier chats across all providers. `search` blends full-text, semantic, and literal substring recall (set regex=true for regular expressions); `list_sessions` browses recent conversations; `get_session` fetches a full transcript by `source:source_id` id; `get_asset` returns an image or file from that transcript. Message hits carry provenance back to their exact session. The archive is append-only from this connector: nothing here can modify or delete history.";
 
 export async function handleSearch(db: Database, args: { query: string; source?: string; limit?: number; regex?: boolean }, embeddingProvider: EmbeddingProvider | null = null): Promise<ToolResult> {
   const report = args.regex
@@ -58,6 +59,11 @@ export function buildServer(opts: ServerOptions): McpServer {
     description: "Fetch a full conversation by id. The id has the form `source:source_id` (e.g. as returned by search/list_sessions). Returns canonical JSON, or rendered markdown when format='markdown'.",
     inputSchema: { id: z.string(), format: z.enum(["json", "markdown"]).optional() },
   }, async (args) => handleGetSession(opts.canonicalDir, args));
+
+  server.registerTool("get_asset", {
+    description: "Fetch an image or file attached to a conversation. Pass the session id and the asset's 64-hex sha256 (from a block's `sha256`, or the hash in a `[image -> assets/...]` path; the whole `assets/...` path also works). Images return as image content you can see; text files as text; other files (PDF, audio, documents) as an embedded resource. Only assets the session references are served; files over 5 MB return metadata only.",
+    inputSchema: { session_id: z.string(), sha256: z.string() },
+  }, async (args) => handleGetAsset(opts.canonicalDir, args));
 
   server.registerTool("list_sessions", {
     description: "Browse session summaries (id, title, source, created/updated timestamps, message_count), newest first. Optionally filter by source or a title substring.",
