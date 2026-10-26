@@ -255,7 +255,8 @@ skipped. Only a missing, empty, or `application/octet-stream` MIME falls back to
 the filename extension, then the `local_path` extension. Legacy `attachment`
 blocks keep their `kind` (image, audio, or video) or a video filename. The hash is `sha256`, or the `<sha256>.<ext>` basename of `local_path`
 when `sha256` is absent. Index time never sniffs blob bytes, so a blob with a
-misleading name or mime is not linked.
+misleading name or mime (a non-media file named `photo.jpg`, say) is still linked
+as media, and its embedding may fail later.
 All verification assets are synthetic. No production assets exist or were created.
 
 ## Native latency and RSS
