@@ -248,8 +248,13 @@ embeds each distinct owned `(sha256, provider_kind, provider_model, dimension)`
 once, then semantic asset hits map to every owning message/session. Blobs resolve
 through `canonical/assets/sha256/<2>/<sha>`. Shared owners survive individual
 session deletion; unowned derived vectors are pruned for affected hashes only.
-Images/audio, named video files, and the future video block hook require no parser
-schema changes. BJS-547 must supply captured hashes and supported media kinds.
+Ownership comes from the blocks parsers emit: `image`, `audio`, and `video` blocks
+link as that kind. `file` blocks link only when `mime_type`, then the filename
+extension, then the `local_path` extension says image, audio, or video; PDFs and
+documents are skipped. Legacy `attachment` blocks keep their `kind` (or a video
+filename). The hash is `sha256`, or the `<sha256>.<ext>` basename of `local_path`
+when `sha256` is absent. Index time never sniffs blob bytes, so a blob with a
+misleading name or mime is not linked.
 All verification assets are synthetic. No production assets exist or were created.
 
 ## Native latency and RSS

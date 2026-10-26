@@ -54,3 +54,85 @@ test("text-only updates do not scan or prune unrelated asset hashes", async () =
     expect((db.query("SELECT sha256 FROM asset_vectors").all() as any[]).map(row=>row.sha256)).toEqual([orphan]);
   } finally {db.close();}
 });
+
+function mediaSession(blocks: any[]) { const s = fixture(""); s.messages[0].blocks = blocks; return s; }
+function links(db: ReturnType<typeof openIndex>) {
+  return db.query("SELECT sha256,media_type FROM asset_embedding_links ORDER BY sha256").all() as Array<{sha256:string;media_type:string}>;
+}
+const hash = (c: string) => c.repeat(64);
+const media = (type: string, extra: Record<string, unknown>) => ({ type, pointer: "p", filename: null, local_path: null, ...extra });
+
+test("real parser media blocks are linked by their block type", () => {
+  const db = openIndex(":memory:");
+  try {
+    indexSession(db, mediaSession([
+      media("image", { sha256: hash("1"), filename: "a.bin" }),
+      media("audio", { sha256: hash("2") }),
+      media("video", { sha256: hash("3") }),
+    ]));
+    expect(links(db)).toEqual([
+      { sha256: hash("1"), media_type: "image" },
+      { sha256: hash("2"), media_type: "audio" },
+      { sha256: hash("3"), media_type: "video" },
+    ]);
+  } finally { db.close(); }
+});
+
+test("file blocks infer their media kind from mime, filename, then local_path", () => {
+  const db = openIndex(":memory:");
+  try {
+    indexSession(db, mediaSession([
+      media("file", { sha256: hash("1"), mime_type: "image/jpeg", filename: "noext" }),
+      media("file", { sha256: hash("2"), mime_type: "application/octet-stream", filename: "shot.PNG" }),
+      media("file", { sha256: hash("3"), mime_type: null, filename: null, local_path: `assets/sha256/33/${hash("3")}.m4a` }),
+      media("file", { sha256: hash("4"), mime_type: "video/mp4" }),
+      media("file", { sha256: hash("5"), filename: "clip.mkv" }),
+    ]));
+    expect(links(db)).toEqual([
+      { sha256: hash("1"), media_type: "image" },
+      { sha256: hash("2"), media_type: "image" },
+      { sha256: hash("3"), media_type: "audio" },
+      { sha256: hash("4"), media_type: "video" },
+      { sha256: hash("5"), media_type: "video" },
+    ]);
+  } finally { db.close(); }
+});
+
+test("file blocks that are not image, audio, or video are skipped", () => {
+  const db = openIndex(":memory:");
+  try {
+    indexSession(db, mediaSession([
+      media("file", { sha256: hash("1"), mime_type: "application/pdf", filename: "paper.pdf" }),
+      media("file", { sha256: hash("2"), mime_type: "application/octet-stream", filename: "notes.docx", local_path: `assets/sha256/22/${hash("2")}.docx` }),
+      media("file", { sha256: hash("3") }),
+    ]));
+    expect(links(db)).toEqual([]);
+  } finally { db.close(); }
+});
+
+test("a missing sha256 falls back to the hash in local_path; invalid hashes are skipped", () => {
+  const db = openIndex(":memory:");
+  try {
+    indexSession(db, mediaSession([
+      media("image", { local_path: `assets/sha256/aa/${hash("a")}.jpg` }),
+      media("image", { sha256: "not-a-hash", local_path: "assets/sha256/bb/short.jpg" }),
+      media("image", { local_path: "assets/nothing.jpg" }),
+    ]));
+    expect(links(db)).toEqual([{ sha256: hash("a"), media_type: "image" }]);
+  } finally { db.close(); }
+});
+
+test("legacy attachment blocks keep their behavior", () => {
+  const db = openIndex(":memory:");
+  try {
+    indexSession(db, mediaSession([
+      { type: "attachment", kind: "audio", pointer: "p", filename: null, local_path: null, sha256: hash("1") },
+      { type: "attachment", kind: "file", pointer: "p", filename: "v.webm", local_path: null, sha256: hash("2") },
+      { type: "attachment", kind: "file", pointer: "p", filename: "photo.png", local_path: null, sha256: hash("3") },
+    ]));
+    expect(links(db)).toEqual([
+      { sha256: hash("1"), media_type: "audio" },
+      { sha256: hash("2"), media_type: "video" },
+    ]);
+  } finally { db.close(); }
+});
