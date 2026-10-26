@@ -294,50 +294,42 @@ Receipts: `services/embedder/verification/native-{review,video-final,eight-revie
 The systemd summary in these logs sometimes reports an implausible KiB memory peak;
 use the explicit `/proc` and `memory.peak` samples above instead.
 
-## Cutover and rollback, not executed
+## Cutover, decided 2026-10-26, not yet executed
 
-1. Verify the automatic scheduler is enabled for the **currently active
-   Ollama/nomic provider** and advances through pending rows in deep health.
-   No host timer is required. Verify graceful stop/lock cleanup under Coolify.
-   Verify backups, index location, disk budget for both sets, and cache/asset
-   permissions. Merge reviewed code, then have Coolify deploy the main compose
-   with its explicit embeddings profile. Keep provider/model on Ollama/nomic.
-   Coolify may recreate scrobbler; capture remains safe and inference-independent.
-   Verify effective cgroups, UID/cache write access, private connectivity, health,
-   synthetic text/media, watchdog behavior, and idle RSS. Check the selected frame
-   cap against actual assets. Do not expose a port publicly.
-2. **Backfill first.** Within the private caller network, invoke the job with
-   `--provider embeddinggemma --model ...`, first with `--limit 100`, then resumable
-   batches. Keep Ollama serving recall. Monitor coverage, failure/stale counts,
-   ETA, RSS, and throttling. Do not use `unify` as the bulk inference job.
-3. Verify eligible text coverage after a settling pass, investigate failures,
-   and compare both model sets with one-off provider overrides on the same archive.
-   Burooj should judge actual results for queries such as “why did semantic recall
-   disappear when the server was swapping?”, “what did we decide about preserving
-   raw chat captures?”, “where did I discuss sincerity and ikhlas?”, and “what is
-   the phone and server embedding plan?”. Check paraphrases, literal anchors,
-   inactive branches, irrelevant ranks, and warm/cold/query-inference latency.
-   Compare synthetic media captions first, and approved captured assets after
-   BJS-547. Compare phone vectors with identical artifact/preprocessing.
-4. **Switch second**, only after accepted coverage and quality: set
-   `CHAT_SCROBBLER_EMBED_PROVIDER=embeddinggemma`,
-   `CHAT_SCROBBLER_EMBED_MODEL=litert-community/embeddinggemma-2-740m-litert-lm`,
-   and base URL `http://embedder:4320`, then let Coolify recreate scrobbler.
-   Keep Ollama through the rollback window. Verify deep health shows the automatic
-   job for the new active provider and that pending captures receive vectors.
-5. After stable operation, remove the Ollama dependency/service. Retain its volume
-   for an agreed rollback window. Deleting nomic, unused `qwen3:4b`, or the roughly
-   2.8 GB `/mnt/server-ssd/ollama` store requires separate destructive approval.
-   The new deployment has no dependency on deleting/retaining the spike runtime.
+Burooj chose a direct swap over the side-by-side plan this section used to describe.
+There is no parallel Gemma backfill while Ollama keeps serving, and no rollback
+window. Semantic recall falls back to literal matches until the Gemma backfill
+finishes (about 36k messages, roughly one to two days on bjslab). Issue
+[#41](https://github.com/beejsbj/chat-scrobbler/issues/41) tracks the work.
 
-Rollback: stop the Gemma job, restore provider `ollama`, model `nomic-embed-text`,
-and `OLLAMA_BASE_URL=http://ollama:11434`; recreate scrobbler with the capped Ollama
-service/dependency. The nomic set remains intact. Backfill nomic for messages
-captured/changed during the Gemma interval; literal recall works meanwhile.
-Disable the embeddings profile after callers switch. Old application binaries
-can use retained JSON but require nomic rebuild for recent binary-only messages.
-Returning to this branch catches up its lookup and pending queue through durable
-session revision markers.
+1. **Wait for a quiet window.** No other agents working, at least 6 GiB available,
+   and memory pressure near zero. The deploy builds the embedder image, including
+   its roughly 1 GB model fetch, and adds a container of about 1.1 GB.
+2. **Retire Ollama in Compose.** Remove the `ollama` service and its dependency,
+   drop the `embeddings` profile so `embedder` always runs, and default provider
+   and model to `embeddinggemma` and
+   `litert-community/embeddinggemma-2-740m-litert-lm`. Clear any Coolify
+   overrides that still pin `ollama` or `nomic-embed-text`.
+3. **Deploy and verify.** Health and authenticated deep health should report the
+   embeddinggemma provider and its automatic backfill. Check UID/cache write
+   access, private connectivity, watchdog behavior and idle RSS. Do not expose a
+   port publicly.
+4. **Trial, then backfill.** Run `embed-backfill --provider embeddinggemma --model
+   litert-community/embeddinggemma-2-740m-litert-lm --limit 100` inside the
+   container to check RSS, speed and failures, then let the scheduler finish.
+   Do not use `unify` as the bulk inference job.
+5. **Judge the results.** Once coverage settles, Burooj tries real queries such as
+   "why did semantic recall disappear when the server was swapping?", "what did we
+   decide about preserving raw chat captures?", "where did I discuss sincerity and
+   ikhlas?" and "what is the phone and server embedding plan?". Check paraphrases,
+   literal anchors, inactive branches, irrelevant ranks, warm/cold latency, and
+   whether captured images surface for descriptive queries.
+6. **Delete the Ollama store.** Remove `/mnt/server-ssd/ollama` (about 2.8 GB:
+   nomic and the unused `qwen3:4b`) once Gemma serves search.
+
+Going back to Ollama later means restoring the provider settings and the service,
+then a full nomic backfill. Literal recall works throughout. The `ollama` provider
+stays in the code as the simplest local option outside Docker.
 
 ## Verification and open risks
 
