@@ -136,3 +136,49 @@ test("legacy attachment blocks keep their behavior", () => {
     ]);
   } finally { db.close(); }
 });
+
+test("legacy attachment blocks keep kind video even without a video filename", () => {
+  const db = openIndex(":memory:");
+  try {
+    indexSession(db, mediaSession([
+      { type: "attachment", kind: "video", pointer: "p", filename: "clip", local_path: null, sha256: hash("1") },
+      { type: "attachment", kind: "file", pointer: "p", filename: "v.avi", local_path: null, sha256: hash("2") },
+    ]));
+    expect(links(db)).toEqual([
+      { sha256: hash("1"), media_type: "video" },
+      { sha256: hash("2"), media_type: "video" },
+    ]);
+  } finally { db.close(); }
+});
+
+test("file blocks recognize .avi by filename and local_path", () => {
+  const db = openIndex(":memory:");
+  try {
+    indexSession(db, mediaSession([
+      media("file", { sha256: hash("1"), filename: "movie.AVI" }),
+      media("file", { sha256: hash("2"), local_path: `assets/sha256/22/${hash("2")}.avi` }),
+    ]));
+    expect(links(db)).toEqual([
+      { sha256: hash("1"), media_type: "video" },
+      { sha256: hash("2"), media_type: "video" },
+    ]);
+  } finally { db.close(); }
+});
+
+test("an explicit non-media mime wins over a media extension; missing, empty, or octet-stream mime falls back", () => {
+  const db = openIndex(":memory:");
+  try {
+    indexSession(db, mediaSession([
+      media("file", { sha256: hash("1"), mime_type: "application/pdf", filename: "scan.png" }),
+      media("file", { sha256: hash("2"), mime_type: "text/plain", local_path: `assets/sha256/22/${hash("2")}.mp4` }),
+      media("file", { sha256: hash("3"), mime_type: "", filename: "a.png" }),
+      media("file", { sha256: hash("4"), mime_type: "application/octet-stream", filename: "a.mp3" }),
+      media("file", { sha256: hash("5"), filename: "a.mp4" }),
+    ]));
+    expect(links(db)).toEqual([
+      { sha256: hash("3"), media_type: "image" },
+      { sha256: hash("4"), media_type: "audio" },
+      { sha256: hash("5"), media_type: "video" },
+    ]);
+  } finally { db.close(); }
+});

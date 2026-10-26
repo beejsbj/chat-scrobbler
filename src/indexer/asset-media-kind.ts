@@ -4,8 +4,9 @@ import { assetHashes } from "../store/asset-hashes";
 export type AssetMediaKind = "image" | "audio" | "video";
 export interface LinkableAsset { sha256: string; media: AssetMediaKind }
 
+const VIDEO_EXTENSION = /\.(mp4|webm|mov|mkv|avi)$/i;
 const EXTENSIONS: Array<[AssetMediaKind, RegExp]> = [
-  ["video", /\.(mp4|webm|mov|mkv)$/i],
+  ["video", VIDEO_EXTENSION],
   ["image", /\.(png|jpe?g|gif|webp|heic|heif|bmp|tiff?|avif)$/i],
   ["audio", /\.(mp3|wav|m4a|aac|ogg|oga|opus|flac)$/i],
 ];
@@ -19,14 +20,25 @@ function kindFromMime(mime: string | null | undefined): AssetMediaKind | null {
   return top ? top as AssetMediaKind : null;
 }
 
+/** Only an absent, empty, or generic MIME defers to the file extension; any other MIME is authoritative. */
+function isGenericMime(mime: string | null | undefined): boolean {
+  return !mime || mime.toLowerCase() === "application/octet-stream";
+}
+
+/** Legacy attachments may carry kind "video" even though the schema union omits it. */
+function legacyKind(kind: string): AssetMediaKind | null {
+  return kind === "image" || kind === "audio" || kind === "video" ? kind : null;
+}
+
 /** Parsers emit image/audio/video/file blocks; `attachment` is the legacy shape. Index time never reads bytes. */
 function mediaKind(block: Block): AssetMediaKind | null {
   switch (block.type) {
     case "image": case "audio": case "video": return block.type;
     case "attachment":
-      return block.kind === "image" || block.kind === "audio" ? block.kind
-        : /\.(mp4|webm|mov|mkv)$/i.test(block.filename ?? "") ? "video" : null;
-    case "file": return kindFromMime(block.mime_type) ?? kindFromName(block.filename) ?? kindFromName(block.local_path);
+      return legacyKind(String(block.kind)) ?? (VIDEO_EXTENSION.test(block.filename ?? "") ? "video" : null);
+    case "file":
+      return kindFromMime(block.mime_type)
+        ?? (isGenericMime(block.mime_type) ? kindFromName(block.filename) ?? kindFromName(block.local_path) : null);
     default: return null;
   }
 }
