@@ -3,6 +3,7 @@ import type { Session } from "../schema/types";
 import type { EmbeddingProvider } from "./sqlite";
 import { decodeVector, encodeVector, vectorScope } from "./vector-store";
 import { cosine } from "./vector-math";
+import { linkableAsset } from "./asset-media-kind";
 
 export function createAssetVectorTables(db: Database): void {
   db.run(`CREATE TABLE IF NOT EXISTS asset_vectors (sha256 TEXT NOT NULL, provider_kind TEXT NOT NULL,
@@ -20,19 +21,15 @@ export function pruneUnownedAssetVectors(db: Database, hashes: string[]): void {
 export function linkedAssetHashes(db: Database, sessionId: string): string[] {
   return (db.query("SELECT DISTINCT sha256 FROM asset_embedding_links WHERE session_id=?").all(sessionId) as Array<{sha256:string}>).map(row=>row.sha256);
 }
-// No schema/parser edits: sha256 already exists on attachment blocks. Video is a
-// forward-compatible hook for BJS-547 and legacy file attachments with a video name.
+// Links every image/audio/video asset a session owns (see asset-media-kind.ts for the block shapes).
 export function replaceAssetLinks(db: Database, session: Session): void {
   const previous=linkedAssetHashes(db,session.id);
   db.run("DELETE FROM asset_embedding_links WHERE session_id=?", [session.id]);
   for (const message of session.messages) for (const block of message.blocks) {
-    if (block.type !== "attachment" || !block.sha256 || !/^[a-f0-9]{64}$/.test(block.sha256)) continue;
-    const kind = String(block.kind);
-    const media = kind === "image" || kind === "audio" || kind === "video" ? kind
-      : /\.(mp4|webm|mov|mkv)$/i.test(block.filename ?? "") ? "video" : null;
-    if (!media) continue;
+    const asset = linkableAsset(block);
+    if (!asset) continue;
     db.run(`INSERT OR REPLACE INTO asset_embedding_links(sha256,session_id,message_id,media_type,text,role,created_at,source,title)
-      VALUES (?,?,?,?,?,?,?,?,?)`, [block.sha256,session.id,message.id,media,message.text,message.role,message.created_at,session.source,session.title]);
+      VALUES (?,?,?,?,?,?,?,?,?)`, [asset.sha256,session.id,message.id,asset.media,message.text,message.role,message.created_at,session.source,session.title]);
   }
   pruneUnownedAssetVectors(db,previous);
 }
