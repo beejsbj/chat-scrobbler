@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdtempSync, rmSync, unlinkSync } from "node:fs";
+import { mkdtempSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client";
@@ -78,6 +78,34 @@ test("get_asset refuses a stored blob that the named session does not reference"
     const res = handleGetAsset(f.canonicalDir, { session_id: "chatgpt:s1", sha256: other.sha256 });
     expect(res.isError).toBe(true);
     expect(res.content.some(c => c.type === "image")).toBe(false);
+  } finally { f.cleanup(); }
+});
+
+test("get_asset does not treat a hash mentioned in message text as a reference", () => {
+  const f = fixture();
+  try {
+    const other = f.store("other", PNG, "image/png");
+    f.session("other", [imageBlock(other, "image/png")]);
+    f.session("s1", [{ type: "text", text: `see ${other.local_path}` }]);
+    const res = handleGetAsset(f.canonicalDir, { session_id: "chatgpt:s1", sha256: other.sha256 });
+    expect(res.isError).toBe(true);
+    expect(res.content.some(c => c.type === "image")).toBe(false);
+  } finally { f.cleanup(); }
+});
+
+test("get_asset falls back to the per-session alias only when its bytes match the hash", () => {
+  const f = fixture();
+  try {
+    const stored = f.store("s1", PNG, "image/png");
+    f.session("s1", [imageBlock(stored, "image/png")]);
+    unlinkSync(assetBlobPath(f.canonicalDir, stored.sha256));
+    const ok = handleGetAsset(f.canonicalDir, { session_id: "chatgpt:s1", sha256: stored.sha256 });
+    expect(ok.isError).toBeFalsy();
+    expect(ok.content.some(c => c.type === "image")).toBe(true);
+    writeFileSync(resolveLocalAssetPath(f.canonicalDir, stored.local_path), new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 9, 9]));
+    const bad = handleGetAsset(f.canonicalDir, { session_id: "chatgpt:s1", sha256: stored.sha256 });
+    expect(bad.isError).toBe(true);
+    expect(bad.content.some(c => c.type === "image")).toBe(false);
   } finally { f.cleanup(); }
 });
 

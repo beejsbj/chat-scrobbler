@@ -23,7 +23,8 @@ them through a CLI and a read-only MCP connector.
 | `src/store/delete.ts`, `tombstones.ts` | Archive deletion, private blob cleanup, resurrection guards |
 | `src/store/sessions.ts` | File I/O for canonical sessions; `activePath()` |
 | `src/indexer/sqlite.ts` | FTS5 build, `searchMessages`, `listSessions` |
-| `src/mcp/server.ts` | Read-only MCP tools (`search`, `get_session`, `list_sessions`) |
+| `src/mcp/server.ts` | Read-only MCP tools (`search`, `get_session`, `list_sessions`, `get_asset`) |
+| `src/mcp/get-asset.ts` | `get_asset` handler: serves session-referenced blobs as image/text/resource content |
 | `src/mcp/http.ts` | Streamable-HTTP transport for the MCP (stateless, per-request) |
 | `src/backup/target.ts` | `BackupTarget` interface + `resolveTarget` |
 | `src/backup/backup.ts` | `createBackup`, `listBackups`, `restoreBackup` |

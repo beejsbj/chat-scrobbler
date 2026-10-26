@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { relative, isAbsolute } from "node:path";
 import { parseSessionId } from "../core/session-id";
@@ -40,7 +41,9 @@ export function handleGetAsset(
   // Only assets the session itself references are served, so a hash alone never unlocks a blob.
   if (!assetHashes(session).has(sha256)) return fail(`Asset ${sha256} is not referenced by session "${args.session_id}"`);
 
+  // The hash must sit on an image or file block; the same string inside message text does not count.
   const ref = findAssetRef(session, sha256);
+  if (!ref.block) return fail(`Asset ${sha256} is not referenced by session "${args.session_id}"`);
   const file = locateAssetFile(canonicalDir, ref);
   if (!file) return fail(`Asset ${sha256} is referenced by "${args.session_id}" but its file is not in the archive`);
 
@@ -61,6 +64,10 @@ export function handleGetAsset(
   }
 
   const bytes = readFileSync(file.path);
+  // A per-session alias is only trusted when its bytes really hash to the requested asset.
+  if (file.path !== file.blob && createHash("sha256").update(bytes).digest("hex") !== sha256) {
+    return fail(`Asset ${sha256} is referenced by "${args.session_id}" but its file is not in the archive`);
+  }
   const mime = sniffMime(bytes) ?? declared ?? "application/octet-stream";
   meta.mime_type = mime;
   const metaText: AssetContent = { type: "text", text: JSON.stringify(meta, null, 2) };
