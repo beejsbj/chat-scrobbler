@@ -318,8 +318,10 @@ The search tables are:
 - `message_embeddings` -- rebuildable semantic rows keyed by `(session_id,
   message_id)`. Rows are populated only when an embedding provider is configured.
   Supported providers are Gemini (`gemini-embedding-2` by default), Ollama
-  (`mxbai-embed-large` by default), and a deterministic `hash` provider reserved
-  for tests/debugging.
+  (`mxbai-embed-large` by default), EmbeddingGemma 2 through the
+  `services/embedder/` sidecar (text plus image/audio/video assets; see
+  `docs/EMBEDDINGS.md`), and a deterministic `hash` provider reserved for
+  tests/debugging.
 
 `searchMessages` AND-joins quoted FTS5 terms (to handle arbitrary user input safely).
 `searchMessagesWithEmbeddings` runs semantic lookup through the same core path, dedupes
@@ -350,10 +352,11 @@ Embedding config:
 
 | Setting | Meaning |
 |---------|---------|
-| `CHAT_SCROBBLER_EMBED_PROVIDER` | `none` (default), `gemini`, `ollama`, or `hash` |
-| `CHAT_SCROBBLER_EMBED_MODEL` | Provider model override; defaults to `gemini-embedding-2` or `mxbai-embed-large` |
+| `CHAT_SCROBBLER_EMBED_PROVIDER` | `none` (default), `gemini`, `ollama`, `embeddinggemma`, or `hash` |
+| `CHAT_SCROBBLER_EMBED_MODEL` | Provider model override; defaults to `gemini-embedding-2`, `mxbai-embed-large`, or `litert-community/embeddinggemma-2-740m-litert-lm` |
 | `GEMINI_API_KEY` / `GOOGLE_API_KEY` | API key for Gemini embeddings |
 | `CHAT_SCROBBLER_OLLAMA_BASE_URL` / `OLLAMA_BASE_URL` | Local Ollama URL, default `http://127.0.0.1:11434` |
+| `CHAT_SCROBBLER_EMBED_BASE_URL` | EmbeddingGemma sidecar URL, default `http://127.0.0.1:4320` |
 
 ---
 

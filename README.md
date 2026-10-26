@@ -103,6 +103,20 @@ export CHAT_SCROBBLER_EMBED_MODEL=mxbai-embed-large
 chat-scrobbler unify
 ```
 
+For local embeddings that also cover images and audio, run the EmbeddingGemma 2
+sidecar in [services/embedder/](services/embedder/README.md) and point at it:
+
+```bash
+export CHAT_SCROBBLER_EMBED_PROVIDER=embeddinggemma
+export CHAT_SCROBBLER_EMBED_BASE_URL=http://127.0.0.1:4320
+chat-scrobbler embed-backfill --provider embeddinggemma \
+  --model litert-community/embeddinggemma-2-740m-litert-lm --limit 100
+```
+
+The provider's model defaults to that same id; `embed-backfill` asks for it
+explicitly. Drop `--limit` once a trial batch looks right.
+[docs/EMBEDDINGS.md](docs/EMBEDDINGS.md) covers its memory use, limits and backfill.
+
 `serve` fills pending embeddings in the background when a provider is configured.
 The first batch waits 10 minutes for startup and search cache warmup. Each run
 attempts at most 25 items, scans at most 1,000 rows, and yields every 100 scanned
@@ -203,20 +217,32 @@ the normal local default intact, while the container sets `BIND_HOST=0.0.0.0`
 so Coolify Traefik can reach the ingest and MCP HTTP servers on the Docker
 network.
 
-Provide `MCP_AUTH_TOKEN` and `INGEST_TOKEN` through Coolify env. After first
-boot, pull the embedding model into the Ollama service:
+Provide `MCP_AUTH_TOKEN` and `INGEST_TOKEN` through Coolify env. For semantic
+search, enable the EmbeddingGemma 2 sidecar and select it:
 
 ```bash
-docker compose -f docker-compose.bjslab.yml exec ollama ollama pull nomic-embed-text
+COMPOSE_PROFILES=embeddings
+CHAT_SCROBBLER_EMBED_PROVIDER=embeddinggemma
+CHAT_SCROBBLER_EMBED_MODEL=litert-community/embeddinggemma-2-740m-litert-lm
 ```
+
+`COMPOSE_PROFILES` has to reach the Compose invocation itself, so in Coolify set
+it at the deployment level (see [services/embedder/README.md](services/embedder/README.md));
+an app-only environment variable does not enable the profile.
+
+The image build downloads and verifies the model, so there is no pull step. The
+compose file still carries an Ollama sidecar as its default provider until
+[#41](https://github.com/beejsbj/chat-scrobbler/issues/41) retires it.
 
 ## How I am using it
 
 - The whole thing lives on my homelab now: the Docker compose above runs the
-  server plus an Ollama sidecar, the browser extension on my laptop posts
+  server plus an embedding sidecar, the browser extension on my laptop posts
   captures to it over my tailnet with an ingest token, and embeddings are
-  local (`nomic-embed-text`), so semantic search costs nothing and leaves
-  nothing. It started as a launchd agent on the Mac
+  local, so semantic search costs nothing and leaves nothing. EmbeddingGemma 2 is
+  the chosen embedder, but the homelab cutover is still pending
+  ([#41](https://github.com/beejsbj/chat-scrobbler/issues/41)) and it runs
+  Ollama with `nomic-embed-text` for now. It started as a launchd agent on the Mac
   ([docs/examples/com.chat-scrobbler.serve.plist](docs/examples/com.chat-scrobbler.serve.plist));
   that still works fine for a single-machine setup.
 - The MCP endpoint is reachable two ways: privately for the CLI agents that
@@ -243,8 +269,10 @@ searchable, so treat the data dir accordingly.
 
 ## Limitations (honest list)
 
-- Attachment files are captured to disk alongside the session JSON, but their
-  contents are not embedded or searchable yet; recall sees text and filenames.
+- Attachment files are captured to disk alongside the session JSON. MCP clients
+  can fetch them with `get_asset` (images up to 5 MB come back viewable). Only
+  the EmbeddingGemma provider embeds images, audio and short video; other files
+  (PDFs, documents) are found by filename and surrounding text only.
 - Capture happens while the extension and server are running. The extension
   reconciles whatever the provider sidebar lists; truly ancient history
   backfills only as you open those chats.
