@@ -82,14 +82,24 @@ function sniffKind(bytes: Uint8Array): DocumentKind | null {
  * attachment as that same kind and nothing in the response contradicts it. Any other document
  * is reported as `UNEXPECTED_ASSET_RESPONSE`.
  */
-export function validateAssetBytes(bytes: Uint8Array, contentType?: string | null, declared: AssetDeclaration = {}): void {
+export function validateAssetBytes(bytes: Uint8Array, contentType?: string | null, declared: AssetDeclaration = {}): DocumentKind | null {
   const responseKind = kindOfType(contentType);
   const bodyKind = sniffKind(bytes);
   const kind = declaredDocumentKind(declared.filename, declared.contentType);
   if (!kind) {
     if (responseKind || bodyKind) throw new Error(UNEXPECTED_ASSET_RESPONSE);
-    return;
+    return null;
   }
   const dispositionKind = kindOfName(declared.responseFilename);
   if ([responseKind, bodyKind, dispositionKind].some(found => found && found !== kind)) throw new Error(UNEXPECTED_ASSET_RESPONSE);
+  return kind;
+}
+
+/**
+ * The mime type to archive for an accepted document. A response header that is generic or names
+ * another type (an octet-stream or image/png for a JSON file) must not label the blob, because
+ * readers pick how to present it from that type.
+ */
+export function documentContentType(kind: DocumentKind, responseType?: string | null, hint?: string | null): string {
+  return [responseType, hint].find(type => type && kindOfType(type) === kind) ?? (kind === "json" ? "application/json" : "text/html");
 }

@@ -33,6 +33,20 @@ test("a .html attachment the provider declared is archived", async () => {
   expect(assets).toHaveLength(1);
 });
 
+test("an archived document carries a document mime type even when the response header is wrong or generic", async () => {
+  const cases: Array<[string, string, string]> = [
+    ["data.json", "application/octet-stream", "application/json"],
+    ["data.json", "image/png", "application/json"],
+    ["page.html", "application/octet-stream", "text/html"],
+    ["page.html", "text/html; charset=utf-8", "text/html; charset=utf-8"],
+  ];
+  for (const [filename, served, archived] of cases) {
+    const body = filename.endsWith(".json") ? '{"a":1}' : "<html><body>x</body></html>";
+    const { uploads } = await run({ filename }, () => new Response(body, { headers: { "content-type": served } }));
+    expect(uploads.map(u => u.contentType)).toEqual([archived]);
+  }
+});
+
 test("a declared .json served as application/octet-stream is archived", async () => {
   const { assets, failures } = await run({ filename: "data.json" },
     () => new Response("[1,2,3]", { headers: { "content-type": "application/octet-stream" } }));

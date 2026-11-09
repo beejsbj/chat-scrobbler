@@ -5,7 +5,7 @@ import { allowedAssetUrl, useBackgroundForAsset } from "./asset-url";
 import { fetchAllowedAsset } from "./asset-fetch";
 import { isGeminiPageBlob, fetchGeminiPageBlob, validateGeminiPageBlobResponse } from "./gemini-page-blob";
 import { boundedAssetBuffer } from "./asset-bytes";
-import { isGenericType, validateAssetBytes, validateAssetResponse, type AssetDeclaration } from "./asset-response";
+import { documentContentType, isGenericType, validateAssetBytes, validateAssetResponse, type AssetDeclaration } from "./asset-response";
 import { lookupCapturedAsset, backgroundAssetError, paceAssetDownload } from "./asset-cache-client";
 import { assetOutcomeKey, defaultAssetOutcomeMemory, reportablePointer, skipRememberedAttempt, type AssetOutcomeMemory } from "./asset-outcomes";
 
@@ -100,9 +100,10 @@ export async function uploadProviderAssets(
         continue;
       }
       if (downloaded.bytes.length > maxBytes) throw new Error("asset_too_large");
-      validateAssetBytes(new Uint8Array(downloaded.bytes), downloaded.contentType,
+      const kind = validateAssetBytes(new Uint8Array(downloaded.bytes), downloaded.contentType,
         { ...declared, responseFilename: downloaded.filename });
-      const contentType = assetContentType(downloaded.contentType, candidate.contentType);
+      const contentType = kind ? documentContentType(kind, downloaded.contentType, candidate.contentType)
+        : assetContentType(downloaded.contentType, candidate.contentType);
       const filename = candidate.filename ?? candidate.resolvedFilename ?? downloaded.filename ?? null;
       const request: AssetUploadRequest = {
         messageId: candidate.messageId,

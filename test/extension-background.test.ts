@@ -287,21 +287,24 @@ test("background media fetch rejects cross-provider and auth-document probes", a
 });
 
 test("background media fetch archives a provider-declared .json attachment and rejects a sign-in page for it", async () => {
-  let uploaded: Uint8Array | undefined;
+  let uploaded: Uint8Array | undefined, archivedType: string | null = null;
   let served = '{"rows":[1]}';
   const rowsHash = await sha256Of(Array.from(new TextEncoder().encode(served)));
   globalThis.fetch = (async (input, init) => {
     if (String(input).includes("/assets")) {
       if (!init?.method) return Response.json({ exists: false });
       uploaded = init.body as Uint8Array;
+      archivedType = new URL(String(input)).searchParams.get("content_type");
       return Response.json({ ok: true, pointer: "p", local_path: "assets/gemini/c/hash.json", sha256: rowsHash, size_bytes: 12 });
     }
-    return new Response(served, { headers: { "content-type": served.startsWith("<") ? "text/html" : "application/json" } });
+    return new Response(served, { headers: { "content-type": served.startsWith("<") ? "text/html" : "image/png" } });
   }) as typeof fetch;
   const declared = { filename: "rows.json", contentType: "application/json" };
   const upload = { source: "gemini" as const, sourceId: "c", pointer: "p", ...declared };
   expect(await sendRuntimeMessage({ type: "SCROBBLER_ASSET_FETCH", url: "https://lh3.googleusercontent.com/gg-dl/rows", declared, upload })).toMatchObject({ ok: true });
   expect(new TextDecoder().decode(uploaded)).toBe('{"rows":[1]}');
+  // The response header said image/png; readers choose how to show the blob from the archived type.
+  expect(archivedType as string | null).toBe("application/json");
   uploaded = undefined;
   served = "<html><body>Sign in</body></html>";
   expect(await sendRuntimeMessage({ type: "SCROBBLER_ASSET_FETCH", url: "https://lh3.googleusercontent.com/gg-dl/rows", declared, upload })).toMatchObject({ ok: false, error: "asset_download_failed" });
