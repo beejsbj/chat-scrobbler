@@ -1,5 +1,5 @@
 import "./chrome-api";
-import { DEFAULT_INGEST_BASE_URL } from "../../shared/src";
+import { DEFAULT_INGEST_BASE_URL, DEFAULT_MAX_ASSET_BYTES } from "../../shared/src";
 import { RECENT_CAPTURES_KEY, type RecentCapture } from "./recent-captures";
 
 // ---- element refs ----
@@ -143,7 +143,7 @@ async function refreshStatus(): Promise<void> {
   ingestInput.value = settings.ingestBaseUrl ?? DEFAULT_INGEST_BASE_URL;
   ingestTokenInput.value = settings.ingestToken ?? "";
   autoSyncToggle.checked = settings.autoSync ?? true;
-  assetLimitInput.value = String((settings.maxAssetBytes ?? 100 * 1024 * 1024) / (1024 * 1024));
+  assetLimitInput.value = String((settings.maxAssetBytes ?? DEFAULT_MAX_ASSET_BYTES) / (1024 * 1024));
   const reports = Object.entries(s.providers ?? {}).map(([source, state]: [string, any]) => {
     const backfill = state.lastBackfill;
     const failed = state.captureFailures?.length ?? 0;

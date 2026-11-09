@@ -8,6 +8,13 @@ export const ASSET_INGEST_PATH = "/assets";
 export const STATUS_PATH = "/status";
 export const HEALTH_PATH = "/health";
 export const DEFAULT_SYNC_PERIOD_MINUTES = 30;
+/**
+ * Per-asset size limit for the extension and the receiver. 512 MiB is ChatGPT's own per-file cap;
+ * assets are buffered in memory on both sides, so this is also the ceiling that stays survivable.
+ */
+export const DEFAULT_MAX_ASSET_BYTES = 512 * 1024 * 1024;
+/** The default before 512 MiB. Popup saves persisted it, so an extension limit equal to it is read as "never chosen". */
+export const LEGACY_MAX_ASSET_BYTES = 100 * 1024 * 1024;
 
 export function statusUrl(baseUrl: string): string {
   return `${baseUrl.replace(/\/+$/, "")}${STATUS_PATH}`;

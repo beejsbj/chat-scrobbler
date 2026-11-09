@@ -255,6 +255,15 @@ test("background falls back to uploading bytes when an old server has no hash lo
   expect(calls).toEqual(["GET", "POST"]);
 });
 
+test("the asset size limit defaults to 512 MiB, and the former 100 MiB default saved by the popup follows it", async () => {
+  const limit = async () => ((await sendRuntimeMessage({ type: "SCROBBLER_GET_STATUS" })) as any).settings.maxAssetBytes;
+  expect(await limit()).toBe(512 * 1024 * 1024);
+  storageData["scrobbler.settings"] = { ingestBaseUrl: "http://local:4318", syncPeriodMinutes: 30, autoSync: true, maxAssetBytes: 100 * 1024 * 1024 };
+  expect(await limit()).toBe(512 * 1024 * 1024);
+  storageData["scrobbler.settings"] = { ingestBaseUrl: "http://local:4318", syncPeriodMinutes: 30, autoSync: true, maxAssetBytes: 200 * 1024 * 1024 };
+  expect(await limit()).toBe(200 * 1024 * 1024);
+});
+
 test("background persists the configurable asset size limit", async () => {
   expect(await sendRuntimeMessage({ type: "SCROBBLER_SAVE_SETTINGS", ingestBaseUrl: "http://local", maxAssetBytes: 7 })).toMatchObject({ settings: { maxAssetBytes: 7 } });
   expect(await sendRuntimeMessage({ type: "SCROBBLER_ASSET_UPLOAD", asset: { source: "claude", sourceId: "c", pointer: "p", bytes: [1, 2, 3, 4, 5, 6, 7, 8] } })).toMatchObject({ ok: false, error: "asset_too_large" });

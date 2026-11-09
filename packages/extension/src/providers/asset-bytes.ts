@@ -9,7 +9,9 @@ export async function boundedAssetBuffer(res: Response, maxBytes: number): Promi
   }
   if (!res.body) return new Uint8Array(0);
   const reader = res.body.getReader();
-  const chunks: Uint8Array[] = [];
+  // A declared length lets the bytes land in one buffer instead of a chunk list plus a concatenated
+  // copy, which halves peak memory for a large asset. A body that outruns it grows the buffer.
+  let bytes = new Uint8Array(Number.isFinite(length) && length > 0 ? length : 0);
   let total = 0;
   try {
     while (true) {
@@ -20,16 +22,18 @@ export async function boundedAssetBuffer(res: Response, maxBytes: number): Promi
         await reader.cancel();
         throw new Error("asset_too_large");
       }
-      chunks.push(value);
+      if (total > bytes.byteLength) {
+        const grown = new Uint8Array(Math.min(maxBytes, Math.max(total, bytes.byteLength * 2)));
+        grown.set(bytes.subarray(0, total - value.byteLength));
+        bytes = grown;
+      }
+      bytes.set(value, total - value.byteLength);
     }
   } catch (error) {
     if ((error as Error)?.message === "asset_too_large") throw error;
     throw new TransientSyncError("Provider asset stream interrupted");
   } finally { reader.releaseLock(); }
-  const bytes = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
-  return bytes;
+  return bytes.byteLength === total ? bytes : bytes.slice(0, total);
 }
 
 export async function boundedAssetBytes(res: Response, maxBytes: number): Promise<number[]> {
