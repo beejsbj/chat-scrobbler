@@ -156,7 +156,7 @@ export async function handleIngestRequest(req: Request, opts: IngestServerOption
   if (isBackfill) {
     if (!fat) return json({ ok: false, error: "asset endpoint requires canonicalDir + indexPath" }, 400);
     const rawDir = opts.rawDir ?? rawDirForCanonicalDir(fat.canonicalDir);
-    return handleAssetBackfill(req, url, { canonicalDir: fat.canonicalDir, rawDir, db: indexFor(fat.indexPath), readSource }, json);
+    return handleAssetBackfill(req, url, { canonicalDir: fat.canonicalDir, rawDir, db: indexFor(fat.indexPath), readSource, monitorStatePath: monitorStatePath(fat.indexPath, opts.monitorStatePath) }, json);
   }
 
   if (isDeleteCapture) {
@@ -262,9 +262,9 @@ export async function handleIngestRequest(req: Request, opts: IngestServerOption
       const source = readSource(body.source);
       const capture_failures = captureFailureReports(fat.indexPath, source, body.capture_failures, body.install_id);
       const sync_errors = syncIssueReports(fat.indexPath, source, body.last_sync_error, body.install_id);
-      const count = recordAssetFailures(fat.indexPath, source, body.asset_failures, opts.monitorStatePath);
+      const { count, ignored } = recordAssetFailures(fat.indexPath, source, body.asset_failures, opts.monitorStatePath);
       const statuses = conversationStatuses(indexFor(fat.indexPath), source, body.conversations);
-      return json({ ok: true, statuses, capture_failures, sync_errors, ...(body.asset_failures === undefined ? {} : { asset_failures: count }) });
+      return json({ ok: true, statuses, capture_failures, sync_errors, ...(body.asset_failures === undefined ? {} : { asset_failures: count, ignored_assets: ignored }) });
     } catch (error) {
       return json({ ok: false, error: error instanceof Error ? error.message : String(error) }, 400);
     }

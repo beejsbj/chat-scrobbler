@@ -162,7 +162,9 @@ async function postAssetFailure(message: AssetFailureMessage): Promise<unknown> 
     body: JSON.stringify({ source, conversations: [], asset_failures: [failure] }),
   });
   if (!res.ok) throw new Error(`Asset failure report rejected (${res.status})`);
-  return { ok: true };
+  // Receivers from before manual ignores answer without `ignored_assets`; that means not ignored.
+  const body = await res.json().catch(() => null) as { ignored_assets?: unknown } | null;
+  return { ok: true, ignored: Array.isArray(body?.ignored_assets) && typeof failure.pointer === "string" && body.ignored_assets.includes(failure.pointer) };
 }
 
 async function postAsset(asset: AssetUploadRequest): Promise<unknown> {

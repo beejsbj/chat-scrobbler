@@ -23,6 +23,7 @@ export function assetMetrics(state: ReturnType<typeof readMonitorState> | null) 
     recent_failure_reports: state?.recentAssetReports ?? 0,
     recent_upload_failures: state?.assetOutcomes.transient ?? 0,
     recent_unavailable: state?.assetOutcomes.terminal ?? 0,
+    ignored: state?.assetOutcomes.ignored ?? 0,
     recent_failures_by_reason: state?.assetOutcomes.byReason ?? {},
   };
 }
