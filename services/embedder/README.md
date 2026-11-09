@@ -180,39 +180,34 @@ host Python dependency. Model weights in the image are read-only. The named
 read-only bind at `/data/canonical/assets`. Existing reused cache volumes must
 already be writable by that UID. The asset bind must exist and be readable by it.
 
-The main `docker-compose.bjslab.yml` contains the sidecar under profile
-`embeddings`. Validate the opt-in plan from the repo root:
+The main `docker-compose.bjslab.yml` always runs the sidecar; there is no
+profile and no Ollama service. Validate the plan from the repo root:
 
 ```sh
-docker compose -f docker-compose.bjslab.yml --profile embeddings config --quiet
+docker compose -f docker-compose.bjslab.yml config --quiet
 ```
 
-For Coolify, its Compose invocation must receive `COMPOSE_PROFILES=embeddings`.
-An environment variable passed only into the application container does not
-enable a Compose profile. Without that explicit opt-in, only scrobbler and Ollama
-start. If Coolify cannot forward Compose profiles, its deployment command/config
-must explicitly enable the profile before choosing the embedder provider.
 `compose.embedder.yml` remains an empty compatibility overlay; it is unnecessary.
 
 Scrobbler uses its existing `default` network plus `embeddings` (`internal: true`).
 The embedder has only `embeddings`, no published ports and no proxy network.
 Its healthcheck verifies status, canonical model ID and model availability without
-loading the engine. Scrobbler has no dependency on the embedder, so an absent or
-unhealthy opt-in sidecar does not block the existing Ollama service. The production
-provider/model/URL remain Ollama, `nomic-embed-text`, `http://ollama:11434`.
-`CHAT_SCROBBLER_EMBED_BASE_URL=http://embedder:4320` is always configured, so an
-explicit `embed-backfill --provider embeddinggemma` can reach the opt-in sidecar.
-Provider and model use `${CHAT_SCROBBLER_EMBED_PROVIDER:-ollama}` and
-`${CHAT_SCROBBLER_EMBED_MODEL:-nomic-embed-text}`. A deliberate Coolify switch must
-set both to `embeddinggemma` and `litert-community/embeddinggemma-2-740m-litert-lm`
-and enable the Compose profile. Setting only the provider keeps the Ollama model
-default, which the sidecar rejects. These edits do not change any deployed service.
+loading the engine. Scrobbler lists the embedder in `depends_on` (start order only,
+no health condition), so a hanging or unhealthy embedder never blocks ingest; the
+backfill job backs off and literal search keeps working.
+The scrobbler defaults are `CHAT_SCROBBLER_EMBED_PROVIDER=embeddinggemma`,
+`CHAT_SCROBBLER_EMBED_MODEL=litert-community/embeddinggemma-2-740m-litert-lm`
+and `CHAT_SCROBBLER_EMBED_BASE_URL=http://embedder:4320`, each overridable
+through the Compose environment. Coolify overrides that still pin `ollama` or
+`nomic-embed-text` must be removed at deploy time, since an explicit
+`nomic-embed-text` model is rejected by the sidecar. These edits do not change
+any deployed service until the deploy in
+[#41](https://github.com/beejsbj/chat-scrobbler/issues/41) happens.
 
-Deployment regressions render the main Compose file with the profile disabled,
-with it enabled, and with explicit provider/model overrides. They use synthetic
-token values, never start services, and require Docker Compose. Environments
-without Docker skip these rendered-plan tests; local verification must run them
-with Docker Compose available.
+Deployment regressions render the main Compose file with defaults and with
+provider/model overrides. They use synthetic token values, never start services,
+and require Docker Compose. Environments without Docker skip these rendered-plan
+tests; local verification must run them with Docker Compose available.
 
 Explicit `EMBEDDER_NETWORK_MODE=private-docker` binds `0.0.0.0` and accepts Host
 `embedder`, `localhost`, or `127.0.0.1`. The default `loopback` mode binds

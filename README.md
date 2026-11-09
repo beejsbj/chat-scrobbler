@@ -217,22 +217,17 @@ the normal local default intact, while the container sets `BIND_HOST=0.0.0.0`
 so Coolify Traefik can reach the ingest and MCP HTTP servers on the Docker
 network.
 
-Provide `MCP_AUTH_TOKEN` and `INGEST_TOKEN` through Coolify env. For semantic
-search, enable the EmbeddingGemma 2 sidecar and select it:
-
-```bash
-COMPOSE_PROFILES=embeddings
-CHAT_SCROBBLER_EMBED_PROVIDER=embeddinggemma
-CHAT_SCROBBLER_EMBED_MODEL=litert-community/embeddinggemma-2-740m-litert-lm
-```
-
-`COMPOSE_PROFILES` has to reach the Compose invocation itself, so in Coolify set
-it at the deployment level (see [services/embedder/README.md](services/embedder/README.md));
-an app-only environment variable does not enable the profile.
+Provide `MCP_AUTH_TOKEN` and `INGEST_TOKEN` through Coolify env. The compose
+file always runs the EmbeddingGemma 2 sidecar (`embedder`) and defaults to it:
+`CHAT_SCROBBLER_EMBED_PROVIDER=embeddinggemma`,
+`CHAT_SCROBBLER_EMBED_MODEL=litert-community/embeddinggemma-2-740m-litert-lm`,
+and `CHAT_SCROBBLER_EMBED_BASE_URL=http://embedder:4320`. No profile or extra
+environment variable is needed; see
+[services/embedder/README.md](services/embedder/README.md).
 
 The image build downloads and verifies the model, so there is no pull step. The
-compose file still carries an Ollama sidecar as its default provider until
-[#41](https://github.com/beejsbj/chat-scrobbler/issues/41) retires it.
+compose change is merged, but the homelab deploy is still pending
+([#41](https://github.com/beejsbj/chat-scrobbler/issues/41)).
 
 ## How I am using it
 
@@ -240,9 +235,10 @@ compose file still carries an Ollama sidecar as its default provider until
   server plus an embedding sidecar, the browser extension on my laptop posts
   captures to it over my tailnet with an ingest token, and embeddings are
   local, so semantic search costs nothing and leaves nothing. EmbeddingGemma 2 is
-  the chosen embedder, but the homelab cutover is still pending
-  ([#41](https://github.com/beejsbj/chat-scrobbler/issues/41)) and it runs
-  Ollama with `nomic-embed-text` for now. It started as a launchd agent on the Mac
+  the chosen embedder and the compose file now defaults to it, but the homelab
+  deploy is still pending
+  ([#41](https://github.com/beejsbj/chat-scrobbler/issues/41)), so the running
+  service still uses Ollama with `nomic-embed-text` for now. It started as a launchd agent on the Mac
   ([docs/examples/com.chat-scrobbler.serve.plist](docs/examples/com.chat-scrobbler.serve.plist));
   that still works fine for a single-machine setup.
 - The MCP endpoint is reachable two ways: privately for the CLI agents that
