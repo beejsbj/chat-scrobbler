@@ -1,22 +1,36 @@
 import type { Database } from "bun:sqlite";
-import type { ProviderSource } from "../../shared/src";
+import type { AssetBackfillPage, ProviderSource } from "../../shared/src";
+import { ignoredAssetKeys, ignoreKey, reportedPointer } from "../../../src/monitor/asset-ignores";
 import { BACKFILL_MAX_BODY_BYTES, BackfillError, commitBackfill, listBackfillPage, parseBackfillLimit } from "../../../src/core/asset-backfill";
 import { BodyTooLargeError, readBoundedBody } from "./bounded-body";
 
 type Reply = (body: unknown, status?: number) => Response;
 
+/** The owner stopped retries for ignored assets, so backfill does not offer them. Best effort: unreadable state offers everything. */
+function withoutIgnoredAssets(page: AssetBackfillPage, source: ProviderSource, statePath?: string): AssetBackfillPage {
+  if (!statePath) return page;
+  let ignored: Set<string>;
+  try { ignored = ignoredAssetKeys(statePath, source); } catch { return page; }
+  if (!ignored.size) return page;
+  const sessions = page.sessions.flatMap(session => {
+    const references = session.references.filter(ref => !ignored.has(ignoreKey(session.source_id, ref.message_id, reportedPointer(ref.pointer))));
+    return references.length ? [{ ...session, references }] : [];
+  });
+  return { ...page, sessions };
+}
+
 /** GET /assets/backfill and POST /assets/backfill; errors are categorical, never provider data. */
 export async function handleAssetBackfill(
   req: Request,
   url: URL,
-  ctx: { canonicalDir: string; rawDir: string; db: Database; readSource: (value: string | null) => ProviderSource },
+  ctx: { canonicalDir: string; rawDir: string; db: Database; readSource: (value: string | null) => ProviderSource; monitorStatePath?: string },
   reply: Reply,
 ): Promise<Response> {
   try {
     if (req.method === "GET") {
       const source = ctx.readSource(url.searchParams.get("source"));
       const limit = parseBackfillLimit(url.searchParams.get("limit"));
-      return reply(listBackfillPage(ctx.canonicalDir, source, url.searchParams.get("after"), limit));
+      return reply(withoutIgnoredAssets(listBackfillPage(ctx.canonicalDir, source, url.searchParams.get("after"), limit), source, ctx.monitorStatePath));
     }
     let body: any;
     try { body = JSON.parse(new TextDecoder().decode(await readBoundedBody(req, BACKFILL_MAX_BODY_BYTES))); }

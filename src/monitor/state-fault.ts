@@ -3,11 +3,12 @@ import { existsSync, rmSync } from "node:fs";
 import { writeAtomicFile } from "../store/atomic-file";
 
 /** Monitoring is best effort. A separate marker makes failed writes visible offline. */
-export function monitorWrite(path: string, operation: () => void): void {
+export function monitorWrite<T = void>(path: string, operation: () => T): T | undefined {
   try {
-    operation();
+    const result = operation();
     assertStateOwner(`${path}.fault`);
     rmSync(`${path}.fault`, { force: true });
+    return result;
   } catch {
     console.error(JSON.stringify({ event: "monitor_state_write_failed" }));
     try { assertStateOwner(`${path}.fault`); writeAtomicFile(`${path}.fault`, "write_failed\n"); } catch { /* Permissions are also checked by the monitor. */ }

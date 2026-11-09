@@ -10,8 +10,9 @@ export function assetFailureCount(indexPath: string, statePath?: string | null):
   catch { return 0; }
 }
 
-export function recordAssetFailures(indexPath: string, source: string, value: unknown, statePath?: string | null): number {
-  if (value === undefined) return 0;
+/** `ignored` lists reported pointers the owner marked ignored; those are answered, not counted. */
+export function recordAssetFailures(indexPath: string, source: string, value: unknown, statePath?: string | null): { count: number; ignored: string[] } {
+  if (value === undefined) return { count: 0, ignored: [] };
   if (!Array.isArray(value) || value.length > 100) throw new Error("asset_failures must be an array of at most 100 reports");
   const failures: AssetFailureRecord[] = value.map(item => {
     if (!item || typeof item.source_id !== "string" || !ASSET_FAILURE_REASONS.includes(item.reason) || (item.message_id != null && typeof item.message_id !== "string")
@@ -20,8 +21,9 @@ export function recordAssetFailures(indexPath: string, source: string, value: un
   });
   // Pointers can be signed URLs: they belong in the per-asset record, never in logs.
   for (const failure of failures) console.error(JSON.stringify({ event: "asset_capture_failed", source, source_id: failure.source_id, message_id: failure.message_id, reason: failure.reason }));
-  if (!failures.length) return 0;
+  if (!failures.length) return { count: 0, ignored: [] };
   const path = monitorStatePath(indexPath, statePath);
-  monitorWrite(path, () => recordAssetFailureOutcomes(path, source, failures));
-  return failures.length;
+  // If the state cannot be written, nothing is answered as ignored: the extension simply backs off and retries.
+  const ignored = monitorWrite(path, () => recordAssetFailureOutcomes(path, source, failures)) ?? [];
+  return { count: failures.length, ignored };
 }

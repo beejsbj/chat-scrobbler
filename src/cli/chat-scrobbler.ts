@@ -5,6 +5,7 @@
 
 import { runMonitorCmd } from "./monitor";
 import { runUnknownTypesCmd } from "./unknown-types";
+import { runAssetsCmd } from "./assets";
 import { runReparseCmd } from "./reparse";
 import { parseArgs } from "node:util";
 import { homedir } from "node:os";
@@ -105,6 +106,10 @@ Operate
     --json                 Output a machine-readable summary
 
   monitor                Quiet health checks for cron; --ack acknowledges current unknown types
+  assets failing         List assets the extension keeps retrying (id, reason, attempts); --json
+  assets ignore <id>     Stop retries for one failing asset (the only thing that does); undo with:
+  assets unignore <id>     then run an asset backfill in the extension to retry it now
+  assets ignored         List ignored assets; --json
   unknown-types          Count unknown content types in canonical sessions
     --source <s>           Filter by provider
     --json                 Output counts for automation
@@ -226,6 +231,12 @@ async function main(argv: string[]): Promise<void> {
           const { values } = parseArgs({ args: rest, options: { ack: { type: "boolean", default: false } } });
           await runMonitorCmd(cfg, write, values.ack);
         } catch { write("FAILED monitor invalid_arguments"); }
+        break;
+      }
+
+      case "assets": {
+        const code = await runAssetsCmd(cfg, rest, write);
+        if (code) process.exitCode = code;
         break;
       }
 

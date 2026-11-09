@@ -6,7 +6,7 @@ import { TransientSyncError } from "./sync-errors";
 /**
  * A response that is not the asset (a sign-in redirect, an interstitial page, an error document)
  * can be a passing provider state, so it is reported as a transient download failure. Only a
- * pointer with no usable URL before any fetch is `asset_url_unavailable`, which rests for 30 days.
+ * pointer with no usable URL before any fetch is `asset_url_unavailable`. Every failure backs off and keeps retrying.
  */
 export const UNEXPECTED_ASSET_RESPONSE = "asset_download_failed";
 

@@ -21,6 +21,8 @@ export function withState<T>(path: string, fn: (db: Database) => T, dataDir?: st
     // One row per asset identity; attempts accumulate while the reason reflects the latest report.
     db.run("CREATE TABLE IF NOT EXISTS asset_outcomes (source TEXT NOT NULL, source_id TEXT NOT NULL, message_id TEXT NOT NULL, pointer TEXT NOT NULL, reason TEXT NOT NULL, terminal INTEGER NOT NULL, attempts INTEGER NOT NULL, first_seen INTEGER NOT NULL, last_seen INTEGER NOT NULL, PRIMARY KEY(source, source_id, message_id, pointer))");
     db.run("CREATE INDEX IF NOT EXISTS asset_outcomes_recent ON asset_outcomes(last_seen)");
+    // Assets the owner stopped retries for by hand. Independent of asset_outcomes: a stored blob or deleted session clears the failure record, not the owner's decision.
+    db.run("CREATE TABLE IF NOT EXISTS asset_ignores (source TEXT NOT NULL, source_id TEXT NOT NULL, message_id TEXT NOT NULL, pointer TEXT NOT NULL, reason TEXT NOT NULL, ignored_at INTEGER NOT NULL, PRIMARY KEY(source, source_id, message_id, pointer))");
     return fn(db);
   } finally { db.close(); }
 }
