@@ -249,10 +249,11 @@ The guard used to refuse every JSON or HTML response, which also refused real `.
   auth JSON for a `.html` file).
 - Any JSON or HTML body for an undeclared or non-document attachment is rejected as before.
 
-A rejection is `asset_download_failed`, the transient reason from PR #17, because a
-sign-in page or interstitial is a passing provider state. Real attachments no longer reach
-it, so they do not retry. How rejected assets back off is owned by the retry logic in
-`asset-outcomes.ts`, not by this guard.
+A rejection is `asset_download_failed`, because a sign-in page or interstitial is a passing
+provider state. Like any failed asset it then backs off and retries until the owner runs
+`chat-scrobbler assets ignore <id>` (see the retry paragraph above). Real attachments no
+longer reach it, so they do not retry. The retry policy lives in `asset-outcomes.ts`, not
+in this guard.
 
 Residual risk: if an allowlisted download route returned a session document for a pointer
 the provider declared as `.json`, the guard could not tell it from the attachment. That
