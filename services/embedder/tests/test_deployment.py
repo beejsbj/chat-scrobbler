@@ -21,37 +21,36 @@ def compose(*options, overrides=None):
 
 @unittest.skipUnless(shutil.which('docker'), 'rendered deployment regression requires Docker Compose')
 class DeploymentTests(unittest.TestCase):
-    def test_main_compose_opt_in_never_blocks_production_ollama(self):
-        default = compose()
-        self.assertNotIn('embedder', default['services'])
-        enabled = compose('--profile', 'embeddings')
-        service = enabled['services']['embedder']
+    def test_main_compose_always_runs_embedder_and_has_no_ollama(self):
+        plan = compose()
+        self.assertNotIn('ollama', plan['services'])
+        self.assertNotIn('OLLAMA_BASE_URL', json.dumps(plan))
+        service = plan['services']['embedder']
         self.assertEqual(service['user'], '1001:1001')
-        self.assertEqual(service['profiles'], ['embeddings'])
+        self.assertNotIn('profiles', service)
         self.assertFalse(service.get('ports'))
         self.assertEqual(service['networks'], {'embeddings': None})
-        self.assertTrue(enabled['networks']['embeddings']['internal'])
+        self.assertTrue(plan['networks']['embeddings']['internal'])
         self.assertEqual(int(service['mem_limit']), 2 * 1024**3)
         self.assertEqual(int(service['memswap_limit']), 2 * 1024**3)
         self.assertEqual(float(service['cpus']), 2)
-        scrobbler = enabled['services']['scrobbler']
-        self.assertNotIn('embedder', scrobbler['depends_on'])
-        self.assertEqual(scrobbler['environment']['CHAT_SCROBBLER_EMBED_PROVIDER'], 'ollama')
-        self.assertEqual(scrobbler['environment']['CHAT_SCROBBLER_EMBED_MODEL'], 'nomic-embed-text')
-        self.assertEqual(scrobbler['environment']['OLLAMA_BASE_URL'], 'http://ollama:11434')
+        self.assertIn('healthcheck', service)
         self.assertNotIn('/spikes/', json.dumps(service))
-        self.assertEqual(scrobbler['environment']['CHAT_SCROBBLER_EMBED_BASE_URL'], 'http://embedder:4320')
-
-    def test_coolify_can_explicitly_override_provider_and_model(self):
-        enabled = compose('--profile', 'embeddings', overrides={
-            'CHAT_SCROBBLER_EMBED_PROVIDER': 'embeddinggemma',
-            'CHAT_SCROBBLER_EMBED_MODEL': 'litert-community/embeddinggemma-2-740m-litert-lm'})
-        env = enabled['services']['scrobbler']['environment']
+        scrobbler = plan['services']['scrobbler']
+        self.assertIn('embedder', scrobbler['depends_on'])
+        self.assertNotIn('ollama', scrobbler['depends_on'])
+        env = scrobbler['environment']
         self.assertEqual(env['CHAT_SCROBBLER_EMBED_PROVIDER'], 'embeddinggemma')
         self.assertEqual(env['CHAT_SCROBBLER_EMBED_MODEL'], 'litert-community/embeddinggemma-2-740m-litert-lm')
         self.assertEqual(env['CHAT_SCROBBLER_EMBED_BASE_URL'], 'http://embedder:4320')
-        self.assertEqual(env['OLLAMA_BASE_URL'], 'http://ollama:11434')
 
+    def test_coolify_can_still_override_provider_and_model(self):
+        plan = compose(overrides={
+            'CHAT_SCROBBLER_EMBED_PROVIDER': 'hash',
+            'CHAT_SCROBBLER_EMBED_MODEL': 'test-model'})
+        env = plan['services']['scrobbler']['environment']
+        self.assertEqual(env['CHAT_SCROBBLER_EMBED_PROVIDER'], 'hash')
+        self.assertEqual(env['CHAT_SCROBBLER_EMBED_MODEL'], 'test-model')
 
 
 if __name__ == '__main__':
