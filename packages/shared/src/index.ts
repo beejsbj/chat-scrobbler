@@ -4,3 +4,4 @@ export * from "./asset-failure";
 export * from "./sync-failure";
 export * from "./asset-backfill";
 export * from "./sync-issue";
+export * from "./body-buffer";

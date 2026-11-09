@@ -1,4 +1,5 @@
 import { TransientSyncError } from "./sync-errors";
+import { initialBodyBufferSize, nextBodyBufferSize } from "../../../shared/src/body-buffer";
 
 /** Bound the body while reading, including chunked responses without Content-Length. */
 export async function boundedAssetBuffer(res: Response, maxBytes: number): Promise<Uint8Array> {
@@ -12,7 +13,7 @@ export async function boundedAssetBuffer(res: Response, maxBytes: number): Promi
   // Bytes land in one growing buffer instead of a chunk list plus a concatenated copy. The declared
   // length is only a growth ceiling: a server that declares a huge body and sends little costs little.
   const declared = Number.isFinite(length) && length > 0 ? length : 0;
-  let bytes = new Uint8Array(Math.min(declared, 16 * 1024 * 1024));
+  let bytes = new Uint8Array(initialBodyBufferSize(declared));
   let total = 0;
   try {
     while (true) {
@@ -24,10 +25,7 @@ export async function boundedAssetBuffer(res: Response, maxBytes: number): Promi
         throw new Error("asset_too_large");
       }
       if (total > bytes.byteLength) {
-        // Geometric growth (floored at the initial size so an empty start still doubles), stopping at the
-        // declared length while the body is within it; a missing or understated length grows to maxBytes.
-        const ceiling = declared > total ? Math.min(declared, maxBytes) : maxBytes;
-        const grown = new Uint8Array(Math.min(ceiling, Math.max(total, bytes.byteLength * 2, 16 * 1024 * 1024)));
+        const grown = new Uint8Array(nextBodyBufferSize(bytes.byteLength, total, declared, maxBytes));
         grown.set(bytes.subarray(0, total - value.byteLength));
         bytes = grown;
       }

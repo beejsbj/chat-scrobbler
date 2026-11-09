@@ -11,7 +11,7 @@ import { configuredAssetLimit, isOversizedContentLength, MAX_PROVIDER_ASSET_BYTE
 import { monitorReport } from "../src/monitor/report";
 import { openIndex } from "../src/indexer/sqlite";
 import { MAX_ASSET_BYTES } from "../src/store/assets";
-import { DEFAULT_MAX_ASSET_BYTES, LEGACY_MAX_ASSET_BYTES } from "../packages/shared/src";
+import { DEFAULT_MAX_ASSET_BYTES, LEGACY_MAX_ASSET_BYTES, initialBodyBufferSize, nextBodyBufferSize } from "../packages/shared/src";
 
 const MiB = 1024 * 1024;
 const roots: string[] = [];
@@ -83,6 +83,19 @@ test("a body with no or understated Content-Length grows geometrically instead o
   expect(downloaded.byteLength).toBe(size);
   expect(downloaded[size - 1]).toBe(source[size - 1]);
 }, 30_000);
+
+test("buffer growth ends exactly at an honest declared length, including the chunk that completes it", () => {
+  expect(initialBodyBufferSize(512 * MiB)).toBe(16 * MiB);
+  expect(initialBodyBufferSize(0)).toBe(0);
+  // An honest 257 MiB body: the 256 MiB buffer fills, the last chunk makes total equal declared.
+  expect(nextBodyBufferSize(256 * MiB, 257 * MiB, 257 * MiB, 512 * MiB)).toBe(257 * MiB);
+  expect(nextBodyBufferSize(16 * MiB, 17 * MiB, 257 * MiB, 512 * MiB)).toBe(32 * MiB);
+  // Understated or missing declarations grow geometrically toward the limit instead.
+  expect(nextBodyBufferSize(16 * MiB, 17 * MiB, MiB, 512 * MiB)).toBe(32 * MiB);
+  expect(nextBodyBufferSize(0, 64 * 1024, 0, 512 * MiB)).toBe(16 * MiB);
+  expect(nextBodyBufferSize(256 * MiB, 257 * MiB, 0, 512 * MiB)).toBe(512 * MiB);
+  expect(nextBodyBufferSize(256 * MiB, 300 * MiB, 0, 300 * MiB)).toBe(300 * MiB);
+});
 
 test("the extension uploads a Uint8Array body without copying it, and gives large uploads more time", async () => {
   expect(assetUploadTimeoutMs(0)).toBe(60_000);
