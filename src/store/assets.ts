@@ -4,10 +4,10 @@ import { writeImmutableFile } from "./immutable-file";
 import { createHash } from "node:crypto";
 import { linkSync, mkdirSync, statSync } from "node:fs";
 import { dirname, extname, join, relative, sep } from "node:path";
-import { sanitizePathSegment } from "../../packages/shared/src";
+import { DEFAULT_MAX_ASSET_BYTES, sanitizePathSegment } from "../../packages/shared/src";
 import type { ProviderSource } from "../../packages/shared/src";
 
-export const MAX_ASSET_BYTES = 100 * 1024 * 1024;
+export const MAX_ASSET_BYTES = DEFAULT_MAX_ASSET_BYTES;
 
 export interface StoreAssetInput {
   canonicalDir: string;

@@ -1,3 +1,5 @@
+import { initialBodyBufferSize, nextBodyBufferSize } from "../../shared/src/body-buffer";
+
 export class BodyTooLargeError extends Error {
   constructor(readonly limit: number) { super(`asset exceeds ${limit} byte limit`); }
 }
@@ -10,8 +12,16 @@ export async function readBoundedBody(req: Request, limit: number): Promise<Uint
     throw new BodyTooLargeError(limit);
   }
   if (!req.body) return new Uint8Array(0);
-  const reader = req.body.getReader();
-  const chunks: Uint8Array[] = [];
+  return collectBounded(req.body.getReader(), limit, Number.isFinite(declared) && declared > 0 ? declared : 0);
+}
+
+/**
+ * Bytes land in one growing buffer, not a chunk list plus a concatenated copy. The declared length
+ * only caps growth (see nextBodyBufferSize), never sizes an up-front allocation: a client that
+ * declares 512 MiB and sends little costs only what it sent.
+ */
+export async function collectBounded(reader: ReadableStreamDefaultReader<Uint8Array>, limit: number, declared = 0): Promise<Uint8Array> {
+  let buffer = new Uint8Array(initialBodyBufferSize(declared));
   let total = 0;
   for (;;) {
     const { done, value } = await reader.read();
@@ -21,10 +31,12 @@ export async function readBoundedBody(req: Request, limit: number): Promise<Uint
       await reader.cancel().catch(() => {});
       throw new BodyTooLargeError(limit);
     }
-    chunks.push(value);
+    if (total > buffer.byteLength) {
+      const grown = new Uint8Array(nextBodyBufferSize(buffer.byteLength, total, declared, limit));
+      grown.set(buffer.subarray(0, total - value.byteLength));
+      buffer = grown;
+    }
+    buffer.set(value, total - value.byteLength);
   }
-  const out = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) { out.set(chunk, offset); offset += chunk.byteLength; }
-  return out;
+  return buffer.byteLength === total ? buffer : buffer.slice(0, total);
 }

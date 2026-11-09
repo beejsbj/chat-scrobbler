@@ -12,7 +12,7 @@ import { monitorSettings, type MonitorConfig } from "./monitor/config";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { DEFAULT_INGEST_BASE_URL } from "../packages/shared/src/config";
+import { DEFAULT_INGEST_BASE_URL, DEFAULT_MAX_ASSET_BYTES } from "../packages/shared/src/config";
 
 export interface ChatHistoryConfig extends MonitorConfig {
   /** Derived canonical session store. One JSON file per session. */
@@ -21,7 +21,7 @@ export interface ChatHistoryConfig extends MonitorConfig {
   indexPath: string;
   /** Port the ingest server (capture receiver) listens on. */
   ingestPort: number;
-  /** Maximum bytes per captured asset, default 100 MiB. */
+  /** Maximum bytes per captured asset, default 512 MiB. */
   maxAssetBytes: number;
   /** Port the read-only MCP HTTP connector listens on. */
   mcpHttpPort: number;
@@ -67,7 +67,7 @@ export const DEFAULT_CONFIG: ChatHistoryConfig = {
   canonicalDir: join(DATA_HOME, "canonical", "sessions"),
   indexPath: join(DATA_HOME, "index", "sessions.db"),
   ingestPort: 4318,
-  maxAssetBytes: 100 * 1024 * 1024,
+  maxAssetBytes: DEFAULT_MAX_ASSET_BYTES,
   mcpHttpPort: 4319,
   bindHost: "127.0.0.1",
   mcpAuthToken: null,

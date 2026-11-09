@@ -5,10 +5,15 @@ import { lookupSize, validateAssetAcknowledgement } from "./asset-acknowledgemen
 
 interface ReceiverSettings { ingestBaseUrl: string; ingestToken?: string | null; maxAssetBytes: number; }
 
+/** A minute, plus a second per 2 MiB (about 2 MiB/s floor), capped at the 5 minutes an MV3 worker request may run. */
+export function assetUploadTimeoutMs(sizeBytes: number): number {
+  return Math.min(300_000, 60_000 + Math.ceil(sizeBytes / (2 * 1024 * 1024)) * 1000);
+}
+
 /** Provider bytes arrive without provider credentials. Only receiver auth leaves this module. */
 export async function uploadAssetToIngest(fetcher: typeof fetch, settings: ReceiverSettings, asset: AssetUploadRequest): Promise<UploadedAsset> {
   if (asset.bytes.length > settings.maxAssetBytes) throw new Error("asset_too_large");
-  const bytes = new Uint8Array(asset.bytes);
+  const bytes = (asset.bytes instanceof Uint8Array ? asset.bytes : new Uint8Array(asset.bytes)) as Uint8Array<ArrayBuffer>;
   const digest = await crypto.subtle.digest("SHA-256", bytes);
   const sha256 = Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, "0")).join("");
   const headers: Record<string, string> = {};
@@ -28,12 +33,12 @@ export async function uploadAssetToIngest(fetcher: typeof fetch, settings: Recei
   if (asset.filename) url.searchParams.set("filename", asset.filename);
   if (asset.contentType) url.searchParams.set("content_type", asset.contentType);
   if (found) { url.pathname += "/reference"; url.searchParams.set("sha256", sha256); }
-  let response = await receiverFetch(fetcher, url.toString(), { method: "POST", headers, credentials: "omit", body: found ? undefined : bytes, signal: AbortSignal.timeout(60_000) });
+  let response = await receiverFetch(fetcher, url.toString(), { method: "POST", headers, credentials: "omit", body: found ? undefined : bytes, signal: AbortSignal.timeout(assetUploadTimeoutMs(bytes.length)) });
   // Blob collection can race the lookup. Missing reference falls back to the bytes we already fetched.
   if (found && response.status === 404) {
     url.pathname = url.pathname.replace(/\/reference$/, "");
     url.searchParams.delete("sha256");
-    response = await receiverFetch(fetcher, url.toString(), { method: "POST", headers, credentials: "omit", body: bytes, signal: AbortSignal.timeout(60_000) });
+    response = await receiverFetch(fetcher, url.toString(), { method: "POST", headers, credentials: "omit", body: bytes, signal: AbortSignal.timeout(assetUploadTimeoutMs(bytes.length)) });
   }
   if (!response.ok) throw new Error(response.status === 413 ? "asset_too_large" : `Ingest rejected asset (${response.status})`);
   return validateAssetAcknowledgement(await response.json().catch(() => null), { pointer: asset.pointer, sha256, sizeBytes: bytes.length });

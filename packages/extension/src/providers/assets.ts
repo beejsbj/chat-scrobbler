@@ -1,4 +1,4 @@
-import type { AssetFailure, AssetFailureReason, ProviderSource, UploadedAsset } from "../../../shared/src";
+import { DEFAULT_MAX_ASSET_BYTES, LEGACY_MAX_ASSET_BYTES, type AssetFailure, type AssetFailureReason, type ProviderSource, type UploadedAsset } from "../../../shared/src";
 import type { AssetFetchResponse, AssetUploadRequest } from "../messages";
 import { isRateLimitError, type FetchLike, type ProviderSyncOptions } from "./types";
 import { allowedAssetUrl, useBackgroundForAsset } from "./asset-url";
@@ -9,7 +9,7 @@ import { validateAssetBytes, validateAssetResponse } from "./asset-response";
 import { lookupCapturedAsset, backgroundAssetError, paceAssetDownload } from "./asset-cache-client";
 import { assetInputDigest, assetOutcomeKey, defaultAssetOutcomeMemory, reportablePointer, skipRememberedAttempt, type AssetOutcomeMemory } from "./asset-outcomes";
 
-export const MAX_PROVIDER_ASSET_BYTES = 100 * 1024 * 1024;
+export const MAX_PROVIDER_ASSET_BYTES = DEFAULT_MAX_ASSET_BYTES;
 
 export interface ProviderAssetBytes {
   bytes: number[] | Uint8Array;
@@ -212,11 +212,15 @@ async function reportAssetFailure(failure: AssetFailure): Promise<{ ignored?: bo
   return { ignored: response.ignored === true };
 }
 
-async function configuredAssetLimit(): Promise<number> {
+/** The popup persisted the old 100 MiB default on every save, so a stored value equal to it was never a choice. */
+export function effectiveAssetLimit(stored: unknown): number {
+  return typeof stored === "number" && Number.isSafeInteger(stored) && stored > 0 && stored !== LEGACY_MAX_ASSET_BYTES ? stored : MAX_PROVIDER_ASSET_BYTES;
+}
+
+export async function configuredAssetLimit(): Promise<number> {
   if (typeof chrome === "undefined" || !chrome.storage?.local) return MAX_PROVIDER_ASSET_BYTES;
   const stored = await new Promise<Record<string, any>>(resolve => chrome.storage.local.get("scrobbler.settings", resolve));
-  const limit = stored["scrobbler.settings"]?.maxAssetBytes;
-  return typeof limit === "number" && Number.isSafeInteger(limit) && limit > 0 ? limit : MAX_PROVIDER_ASSET_BYTES;
+  return effectiveAssetLimit(stored["scrobbler.settings"]?.maxAssetBytes);
 }
 
 export function assetReferences(candidates: ProviderAssetCandidate[]): import("../../../shared/src").AssetBackfillReference[] {

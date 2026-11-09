@@ -6,7 +6,7 @@ import { assetsUrl, capturesUrl, deleteCaptureUrl, statusUrl, DEFAULT_INGEST_BAS
 import { collectCredentialSnapshot } from "./credentials";
 import { toolbarProgressView, aggregateTabProgress, type ToolbarProgressInput } from "./toolbar-progress";
 import { appendRecentCapture, RECENT_CAPTURES_KEY, type RecentCapture } from "./recent-captures";
-import { assetContentType, filenameFromHeaders, MAX_PROVIDER_ASSET_BYTES } from "./providers/assets";
+import { assetContentType, effectiveAssetLimit, filenameFromHeaders, MAX_PROVIDER_ASSET_BYTES } from "./providers/assets";
 import { allowedAssetUrl } from "./providers/asset-url";
 import { boundedAssetBuffer } from "./providers/asset-bytes";
 import { validateAssetBytes, validateAssetResponse } from "./providers/asset-response";
@@ -468,7 +468,7 @@ async function getSettings(): Promise<Settings> {
     settings.ingestBaseUrl = DEFAULT_INGEST_BASE_URL;
   }
   if (settings.autoSync === undefined) settings.autoSync = true;
-  if (!Number.isSafeInteger(settings.maxAssetBytes) || settings.maxAssetBytes <= 0) settings.maxAssetBytes = MAX_PROVIDER_ASSET_BYTES;
+  settings.maxAssetBytes = effectiveAssetLimit(settings.maxAssetBytes);
   return settings;
 }
 

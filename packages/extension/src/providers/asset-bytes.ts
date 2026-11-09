@@ -1,4 +1,5 @@
 import { TransientSyncError } from "./sync-errors";
+import { initialBodyBufferSize, nextBodyBufferSize } from "../../../shared/src/body-buffer";
 
 /** Bound the body while reading, including chunked responses without Content-Length. */
 export async function boundedAssetBuffer(res: Response, maxBytes: number): Promise<Uint8Array> {
@@ -9,7 +10,10 @@ export async function boundedAssetBuffer(res: Response, maxBytes: number): Promi
   }
   if (!res.body) return new Uint8Array(0);
   const reader = res.body.getReader();
-  const chunks: Uint8Array[] = [];
+  // Bytes land in one growing buffer instead of a chunk list plus a concatenated copy. The declared
+  // length is only a growth ceiling: a server that declares a huge body and sends little costs little.
+  const declared = Number.isFinite(length) && length > 0 ? length : 0;
+  let bytes = new Uint8Array(initialBodyBufferSize(declared));
   let total = 0;
   try {
     while (true) {
@@ -20,16 +24,18 @@ export async function boundedAssetBuffer(res: Response, maxBytes: number): Promi
         await reader.cancel();
         throw new Error("asset_too_large");
       }
-      chunks.push(value);
+      if (total > bytes.byteLength) {
+        const grown = new Uint8Array(nextBodyBufferSize(bytes.byteLength, total, declared, maxBytes));
+        grown.set(bytes.subarray(0, total - value.byteLength));
+        bytes = grown;
+      }
+      bytes.set(value, total - value.byteLength);
     }
   } catch (error) {
     if ((error as Error)?.message === "asset_too_large") throw error;
     throw new TransientSyncError("Provider asset stream interrupted");
   } finally { reader.releaseLock(); }
-  const bytes = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
-  return bytes;
+  return bytes.byteLength === total ? bytes : bytes.slice(0, total);
 }
 
 export async function boundedAssetBytes(res: Response, maxBytes: number): Promise<number[]> {

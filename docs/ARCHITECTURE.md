@@ -188,10 +188,19 @@ unscoped requests aggregate snapshots. Lists are persisted beside the index as
 `<indexPath>.capture-failures.json`. Categorical last sync errors are stored
 separately in `<indexPath>.sync-errors.json`; they never count as chat attempts.
 
-Both extension and receiver default to 100 MiB per asset, checked while reading
-streams and before upload. Set the extension limit in the popup and the receiver's
+Both extension and receiver default to 512 MiB per asset (ChatGPT's own per-file cap;
+raised from 100 MiB so large media is archived instead of dropped), checked while
+reading streams and before upload. Set the extension limit in the popup and the receiver's
 `maxAssetBytes` JSON field or `CHAT_SCROBBLER_MAX_ASSET_BYTES` environment variable.
-Downloads are bounded but still buffered in memory. Large page-origin assets use
+An extension limit saved as exactly 100 MiB (the old default, which the popup persisted)
+is read as the new default; any other saved value is kept. Larger assets stay
+`asset_too_large`, show in the monitor's `recent_failures_by_reason`, and retry with backoff.
+Uploads get a minute plus a second per 2 MiB, up to five minutes; a downloaded response
+may keep streaming for up to five minutes after its headers arrive. A reverse proxy in front
+of the receiver must not cap request bodies below the limit (Traefik has no body cap unless a
+`buffering` middleware sets `maxRequestBodyBytes`).
+Downloads are bounded but still buffered in memory, in one buffer per asset on each side,
+so peak memory is about the asset size in the browser and in the receiver. Large page-origin assets use
 1 MiB runtime-message chunks; cross-origin media can be downloaded and uploaded in
 the background worker. Provider cookies and bearer headers are never sent to ingest. Asset fetches enforce
 source-specific download URL and credential policies, validate every visible
@@ -390,7 +399,7 @@ Config file auto-discovery order:
 | `mcpPublicBaseUrl` | `null` (no printed public connector URL) |
 | `ingestBaseUrl` | `http://127.0.0.1:4318` (tracks `ingestPort` unless overridden) |
 | `ingestToken` | `null` (no auth) |
-| `maxAssetBytes` | `104857600` (100 MiB) |
+| `maxAssetBytes` | `536870912` (512 MiB) |
 | `backupTargets` | `["~/.local/share/chat-scrobbler/backups"]` |
 
 **Environment variable overrides:**
