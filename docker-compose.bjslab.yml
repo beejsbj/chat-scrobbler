@@ -1,6 +1,6 @@
 # Intended for Coolify on bjslab. MCP_AUTH_TOKEN and INGEST_TOKEN come from
-# Coolify env. After first boot run:
-# docker compose exec ollama ollama pull nomic-embed-text
+# Coolify env. The embedder sidecar always runs and its image carries the model,
+# so there is no pull step after first boot.
 
 services:
   scrobbler:
@@ -13,19 +13,18 @@ services:
       INGEST_TOKEN: ${INGEST_TOKEN}
       MCP_HTTP_PORT: "4321"
       PORT: "4318"
-      CHAT_SCROBBLER_EMBED_PROVIDER: ${CHAT_SCROBBLER_EMBED_PROVIDER:-ollama}
-      CHAT_SCROBBLER_EMBED_MODEL: ${CHAT_SCROBBLER_EMBED_MODEL:-nomic-embed-text}
+      CHAT_SCROBBLER_EMBED_PROVIDER: ${CHAT_SCROBBLER_EMBED_PROVIDER:-embeddinggemma}
+      CHAT_SCROBBLER_EMBED_MODEL: ${CHAT_SCROBBLER_EMBED_MODEL:-litert-community/embeddinggemma-2-740m-litert-lm}
       CHAT_SCROBBLER_EMBED_BACKFILL_ENABLED: "${CHAT_SCROBBLER_EMBED_BACKFILL_ENABLED:-true}"
       CHAT_SCROBBLER_EMBED_BACKFILL_INTERVAL_MS: "${CHAT_SCROBBLER_EMBED_BACKFILL_INTERVAL_MS:-600000}"
       CHAT_SCROBBLER_EMBED_BACKFILL_BATCH_SIZE: "${CHAT_SCROBBLER_EMBED_BACKFILL_BATCH_SIZE:-25}"
       CHAT_SCROBBLER_EMBED_SKIPPED_RETRY_MS: "${CHAT_SCROBBLER_EMBED_SKIPPED_RETRY_MS:-86400000}"
       CHAT_SCROBBLER_EMBED_CHUNK_CHARS: "${CHAT_SCROBBLER_EMBED_CHUNK_CHARS:-}"
       CHAT_SCROBBLER_EMBED_MAX_CHUNKS: "${CHAT_SCROBBLER_EMBED_MAX_CHUNKS:-16}"
-      CHAT_SCROBBLER_EMBED_BASE_URL: http://embedder:4320
+      CHAT_SCROBBLER_EMBED_BASE_URL: ${CHAT_SCROBBLER_EMBED_BASE_URL:-http://embedder:4320}
       CHAT_SCROBBLER_MONITOR_STALE_DAYS_CHATGPT: "${CHAT_SCROBBLER_MONITOR_STALE_DAYS_CHATGPT:-7}"
       CHAT_SCROBBLER_MONITOR_STALE_DAYS_CLAUDE: "${CHAT_SCROBBLER_MONITOR_STALE_DAYS_CLAUDE:-14}"
       CHAT_SCROBBLER_MONITOR_STALE_DAYS_GEMINI: "${CHAT_SCROBBLER_MONITOR_STALE_DAYS_GEMINI:-21}"
-      OLLAMA_BASE_URL: http://ollama:11434
       BIND_HOST: 0.0.0.0
     volumes:
       - /mnt/server-ssd/chat-scrobbler:/data
@@ -33,27 +32,9 @@ services:
       - default
       - embeddings
     depends_on:
-      - ollama
+      - embedder
 
-  ollama:
-    image: ollama/ollama:latest
-    restart: unless-stopped
-    # bjslab is shared and already short on memory. Uncapped, this sidecar
-    # overloaded the host in August (BJS-359). Embeddings are queued, not urgent.
-    cpus: 1
-    mem_limit: 1200m
-    memswap_limit: 1200m
-    environment:
-      OLLAMA_MAX_LOADED_MODELS: "1"
-      OLLAMA_NUM_PARALLEL: "1"
-      OLLAMA_KEEP_ALIVE: 5m
-    volumes:
-      - /mnt/server-ssd/ollama:/root/.ollama
-
-  # Explicit opt-in: COMPOSE_PROFILES=embeddings (Coolify must pass it to Compose).
-  # Enabling this sidecar does not change scrobbler's production Ollama provider.
   embedder:
-    profiles: [embeddings]
     user: "1001:1001"
     build:
       context: .

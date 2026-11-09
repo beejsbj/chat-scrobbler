@@ -174,6 +174,14 @@ and the attachment block keeps `local_path: null`. Download, size, and upload fa
 produce structured logs and reports through `/status`, with URLs and provider
 error bodies omitted from logs. Asset failures preserve text; environmental
 conversation/receiver errors abort sync for a later retry.
+A failed asset is retried until the owner ignores it by hand. The extension remembers each
+failure per asset and backs off 30 minutes, doubling to a cap of 24 hours, then keeps retrying
+daily; a different download URL for the same pointer is a new attempt and skips the backoff.
+`chat-scrobbler assets failing` lists the failing assets with a short id; `assets ignore <id>`
+is the only state that stops retries. The receiver answers `ignored_assets` on that asset's next
+failure report, the extension stops attempting it, and the monitor counts it as `assets.ignored`
+instead of a failure. `assets unignore <id>` undoes it; an asset backfill in the extension then
+retries it. Backfill pages leave out ignored assets.
 Receiver asset failure counts survive restarts in the monitoring state database. Conversation
 failure snapshots are partitioned by persistent extension install ID. Legacy
 unscoped requests aggregate snapshots. Lists are persisted beside the index as
@@ -493,7 +501,7 @@ Read-only MCP server with four tools:
 | `search` | FTS across all messages; returns snippet + session_id + message_id + metadata |
 | `get_session` | Fetch a full session by `source:source_id`; JSON or rendered markdown |
 | `list_sessions` | Session summaries newest-first; filterable by source / title substring |
-| `get_asset` | Return an image or file a session references, by session id + sha256 (or `assets/...` path). Images as MCP image content, text as text, others as an embedded resource; 5 MB inline cap (`src/mcp/get-asset.ts`) |
+| `get_asset` | Return an image or file a session references, by session id + sha256 (or `assets/...` path). Images as MCP image content, text as text, others as an embedded resource; 3.75 MB inline cap (5 MB after base64) (`src/mcp/get-asset.ts`) |
 
 Two transport modes:
 
@@ -530,6 +538,7 @@ The CLI is a thin frontend over the same core functions the MCP uses. Commands:
 | `unify` | Rebuild SQLite index from canonical store |
 | `reparse` | Rebuild from latest raw; `--source`, `--session`, `--dry-run`, `--json` |
 | `unknown-types` | Count opaque content by provider/type; `--source`, `--json` |
+| `assets` | `failing` / `ignored` list assets (`--json`); `ignore <id>` stops retries for one failing asset, `unignore <id>` undoes it |
 | `monitor` | Quiet cron checks from local stores; `--ack` acknowledges current unknown types |
 | `init` | Scaffold data dirs + starter config file |
 | `serve` | Start ingest receiver + MCP HTTP connector together |

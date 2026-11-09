@@ -43,7 +43,7 @@ test("an expired asset is fetched and reported once, then skipped silently on la
   } finally { log.mockRestore(); restore(); }
 });
 
-test("a pointer that never had a download URL is terminal after one report", async () => {
+test("a pointer that never had a download URL is reported once, then backs off", async () => {
   const storage: Record<string, any> = {};
   const restore = installChrome(storage);
   try {
@@ -115,35 +115,114 @@ test("outside the extension no outcome memory is consulted, so unit tests stay i
   }
 });
 
-test("outcome transitions: terminal reasons rest for 30 days, transient backoff doubles to a daily cap", () => {
+test("outcome transitions: every reason backs off exponentially to a daily cap and never rests longer", () => {
   const now = 1_000_000;
-  const day = 24 * 3_600_000;
-  for (const reason of ["asset_expired", "asset_url_unavailable"] as const) {
-    const terminal = nextAssetOutcome(null, reason, 100, now);
-    expect(terminal).toMatchObject({ reason, attempts: 1, retry_after: now + 30 * day });
-    expect(skipRememberedAttempt(terminal, now + 30 * day - 1, 100)).toBe(true);
-    expect(skipRememberedAttempt(terminal, now + 30 * day, 100)).toBe(false);
-    // A repeat failure rests another full 30 days rather than escalating.
-    expect(nextAssetOutcome(terminal, reason, 100, now + 30 * day).retry_after).toBe(now + 60 * day);
+  const hour = 3_600_000;
+  for (const reason of ["asset_expired", "asset_url_unavailable", "asset_upload_failed", "asset_download_failed"] as const) {
+    let outcome = nextAssetOutcome(null, reason, 100, now);
+    expect(outcome).toMatchObject({ reason, attempts: 1, retry_after: now + 30 * 60_000 });
+    const delays: number[] = [];
+    for (let i = 0; i < 9; i++) { delays.push(outcome.retry_after! - now); outcome = nextAssetOutcome(outcome, reason, 100, now); }
+    expect(delays.map(ms => ms / 60_000)).toEqual([30, 60, 120, 240, 480, 960, 1440, 1440, 1440]);
+    expect(skipRememberedAttempt(outcome, now + 24 * hour - 1, 100, null)).toBe(true);
+    expect(skipRememberedAttempt(outcome, now + 24 * hour, 100, null)).toBe(false);
+    // Years later the asset is still retried: failure alone never ends retries.
+    expect(skipRememberedAttempt(outcome, now + 365 * 24 * hour, 100, null)).toBe(false);
   }
-  // Entries written without a retry time still age out from their last attempt.
-  const legacy = { reason: "asset_expired" as const, attempts: 1, last_attempt_at: now, retry_after: null, max_bytes: null };
-  expect(skipRememberedAttempt(legacy, now + 29 * day, 100)).toBe(true);
-  expect(skipRememberedAttempt(legacy, now + 30 * day, 100)).toBe(false);
-  let transient = nextAssetOutcome(null, "asset_upload_failed", 100, now);
-  expect(transient.retry_after).toBe(now + 30 * 60_000);
-  for (let i = 0; i < 10; i++) transient = nextAssetOutcome(transient, "asset_upload_failed", 100, now);
-  expect(transient.attempts).toBe(11);
-  expect(transient.retry_after).toBe(now + 24 * 3_600_000);
-  expect(skipRememberedAttempt(transient, now + 23 * 3_600_000, 100)).toBe(true);
-  expect(skipRememberedAttempt(transient, now + 24 * 3_600_000, 100)).toBe(false);
   const tooLarge = nextAssetOutcome(null, "asset_too_large", 100, now);
-  expect(skipRememberedAttempt(tooLarge, now, 100)).toBe(true);
-  expect(skipRememberedAttempt(tooLarge, now, 101)).toBe(false);
-  // A receiver 413 is remembered against the extension's limit, so a raised receiver limit
-  // is only noticed by time: too-large assets also get one more attempt after 30 days.
-  expect(skipRememberedAttempt(tooLarge, now + 30 * day - 1, 100)).toBe(true);
-  expect(skipRememberedAttempt(tooLarge, now + 30 * day, 100)).toBe(false);
+  expect(skipRememberedAttempt(tooLarge, now, 100, null)).toBe(true);
+  // A raised limit earns an immediate attempt; otherwise the ordinary backoff applies, not a 30 day rest.
+  expect(skipRememberedAttempt(tooLarge, now, 101, null)).toBe(false);
+  expect(skipRememberedAttempt(tooLarge, now + 30 * 60_000, 100, null)).toBe(false);
+});
+
+test("an entry written by the 30 day rest build wakes on the backoff schedule, not at its stored retry time", () => {
+  const now = 1_000_000;
+  const legacy = { reason: "asset_expired" as const, attempts: 2, last_attempt_at: now, retry_after: now + 30 * 24 * 3_600_000, max_bytes: null };
+  expect(skipRememberedAttempt(legacy, now + 3_600_000 - 1, 100, null)).toBe(true);
+  expect(skipRememberedAttempt(legacy, now + 3_600_000, 100, null)).toBe(false);
+  const legacyTooLarge = { reason: "asset_too_large" as const, attempts: 1, last_attempt_at: now, retry_after: null, max_bytes: 100 };
+  expect(skipRememberedAttempt(legacyTooLarge, now + 30 * 60_000, 100, null)).toBe(false);
+});
+
+test("a changed download input is a new asset attempt, an unchanged one waits out its backoff", () => {
+  const now = 1_000_000;
+  const entry = nextAssetOutcome(null, "asset_expired", 100, now, { input: "digest-a" });
+  expect(skipRememberedAttempt(entry, now + 1000, 100, "digest-a")).toBe(true);
+  expect(skipRememberedAttempt(entry, now + 1000, 100, "digest-b")).toBe(false);
+  // Entries that predate input tracking have no recorded input, so a candidate that has one gets a fresh try.
+  const old = { reason: "asset_expired" as const, attempts: 1, last_attempt_at: now, retry_after: now + 30 * 60_000, max_bytes: null };
+  expect(skipRememberedAttempt(old, now + 1000, 100, null)).toBe(true);
+  expect(skipRememberedAttempt(old, now + 1000, 100, "digest-a")).toBe(false);
+});
+
+test("a fresh download URL for the same pointer is fetched even while the old one is backing off", async () => {
+  const storage: Record<string, any> = {};
+  const restore = installChrome(storage);
+  try {
+    const candidate = (token: string): ProviderAssetCandidate => ({ source: "claude", sourceId: "conv", messageId: "m1", pointer: "file-uuid", url: `/api/organizations/o/files/file-uuid/download?sig=${token}` });
+    const first = await run(createAssetOutcomeMemory(), [candidate("old")], () => new Response("", { status: 404 }));
+    expect(first.failures).toMatchObject([{ reason: "asset_expired" }]);
+    expect((await run(createAssetOutcomeMemory(), [candidate("old")], () => new Response("", { status: 404 }))).fetches).toBe(0);
+    const fresh = await run(createAssetOutcomeMemory(), [candidate("new")], () => new Response(new Uint8Array([137, 80, 78, 71]), { headers: { "content-type": "image/png" } }));
+    expect(fresh.fetches).toBe(1);
+    expect(fresh.uploaded).toHaveLength(1);
+    expect(JSON.stringify(storage)).not.toContain("sig=");
+  } finally { restore(); }
+});
+
+test("a repeated failure is retried again once its backoff ends, however many times it has failed", async () => {
+  const storage: Record<string, any> = {};
+  const restore = installChrome(storage);
+  const originalNow = Date.now;
+  let now = originalNow();
+  Date.now = () => now;
+  try {
+    const responder = () => new Response("", { status: 404 });
+    for (let attempt = 1; attempt <= 12; attempt++) {
+      const result = await run(createAssetOutcomeMemory(), [gone("file-5")], responder);
+      expect(result.fetches).toBe(1);
+      expect(result.failures).toMatchObject([{ reason: "asset_expired" }]);
+      const wait = transientRetryDelayMs(attempt);
+      now += wait - 1;
+      expect((await run(createAssetOutcomeMemory(), [gone("file-5")], responder)).fetches).toBe(0);
+      now += 1;
+    }
+    expect(transientRetryDelayMs(12)).toBe(24 * 3_600_000);
+    expect(await createAssetOutcomeMemory().recall(assetOutcomeKey(gone("file-5")))).toMatchObject({ attempts: 12 });
+  } finally { Date.now = originalNow; restore(); }
+});
+
+test("an asset the receiver reports as ignored is not attempted again by ordinary captures, whatever the elapsed time or URL", async () => {
+  const storage: Record<string, any> = {};
+  const restore = installChrome(storage);
+  const originalNow = Date.now;
+  let now = originalNow();
+  Date.now = () => now;
+  try {
+    const first = await run(createAssetOutcomeMemory(), [gone("file-6")], () => new Response("", { status: 404 }), { reportFailure: async () => ({ ignored: true }) });
+    expect(first.fetches).toBe(1);
+    expect(await createAssetOutcomeMemory().recall(assetOutcomeKey(gone("file-6")))).toMatchObject({ ignored: true });
+    now += 400 * 24 * 3_600_000;
+    const later = await run(createAssetOutcomeMemory(), [gone("file-6")], () => new Response("", { status: 404 }));
+    expect(later).toMatchObject({ fetches: 0, failures: [] });
+    const changedUrl = await run(createAssetOutcomeMemory(), [{ ...gone("file-6"), url: "/backend-api/files/file-6/download?fresh=1" }], () => new Response("", { status: 404 }));
+    expect(changedUrl.fetches).toBe(0);
+    // The receiver leaves ignored assets out of backfill pages, so an explicit backfill candidate is not ignored there.
+    const backfill = await run(createAssetOutcomeMemory(), [gone("file-6")], () => new Response("", { status: 404 }), { retryRemembered: true });
+    expect(backfill.fetches).toBe(1);
+    expect(await createAssetOutcomeMemory().recall(assetOutcomeKey(gone("file-6")))).toMatchObject({ ignored: false, attempts: 2 });
+  } finally { Date.now = originalNow; restore(); }
+});
+
+test("a receiver that does not know about ignores (older build) never marks an asset ignored", async () => {
+  const storage: Record<string, any> = {};
+  const restore = installChrome(storage);
+  try {
+    await run(createAssetOutcomeMemory(), [gone("file-7")], () => new Response("", { status: 404 }), { reportFailure: async () => undefined });
+    await run(createAssetOutcomeMemory(), [gone("file-8")], () => new Response("", { status: 404 }), { reportFailure: async () => ({}) });
+    for (const pointer of ["file-7", "file-8"]) expect((await createAssetOutcomeMemory().recall(assetOutcomeKey(gone(pointer))))!.ignored).toBeFalsy();
+  } finally { restore(); }
 });
 
 test("long pointers are reported as a digest so status bodies and records stay bounded", async () => {
@@ -166,25 +245,6 @@ test("the storage-backed memory evicts its oldest entries past the cap", async (
     await memory.forget("k4");
     expect(await memory.recall("k4")).toBeNull();
   } finally { restore(); }
-});
-
-test("a remembered expired asset is attempted again once its 30 day rest ends", async () => {
-  const storage: Record<string, any> = {};
-  const restore = installChrome(storage);
-  const originalNow = Date.now;
-  let now = originalNow();
-  Date.now = () => now;
-  try {
-    const responder = () => new Response("", { status: 404 });
-    expect((await run(createAssetOutcomeMemory(), [gone("file-5")], responder)).fetches).toBe(1);
-    now += 29 * 24 * 3_600_000;
-    expect(await run(createAssetOutcomeMemory(), [gone("file-5")], responder)).toMatchObject({ fetches: 0, failures: [] });
-    now += 24 * 3_600_000;
-    const retried = await run(createAssetOutcomeMemory(), [gone("file-5")], responder);
-    expect(retried.fetches).toBe(1);
-    expect(retried.failures).toMatchObject([{ reason: "asset_expired" }]);
-    expect(await createAssetOutcomeMemory().recall(assetOutcomeKey(gone("file-5")))).toMatchObject({ attempts: 2 });
-  } finally { Date.now = originalNow; restore(); }
 });
 
 test("a failure the receiver never heard about earns no backoff, so the next pass retries it", async () => {
@@ -233,7 +293,7 @@ test("a successful upload clears an outcome another capture path recorded after 
   expect(forgotten).toEqual([assetOutcomeKey(gone("file-3"))]);
 });
 
-test("a login page or off-allowlist redirect in place of the asset is a transient failure, not a 30 day rest", async () => {
+test("a login page or off-allowlist redirect in place of the asset backs off like any other failure", async () => {
   const storage: Record<string, any> = {};
   const restore = installChrome(storage);
   const log = spyOn(console, "error").mockImplementation(() => {});

@@ -206,6 +206,18 @@ test("background forwards asset failure reports to authenticated status endpoint
   expect(reports).toEqual([{ source: "chatgpt", conversations: [], asset_failures: [{ source_id: "conv", message_id: "m1", reason: "asset_upload_failed" }] }]);
 });
 
+test("background tells the page when the receiver lists the reported asset as ignored", async () => {
+  storageData["scrobbler.settings"] = { ingestBaseUrl: "http://local:4318", ingestToken: "test-token" };
+  const failure = { source: "chatgpt" as const, source_id: "conv", message_id: "m1", reason: "asset_expired" as const, pointer: "file-1" };
+  globalThis.fetch = (async () => Response.json({ ok: true, asset_failures: 0, ignored_assets: ["file-1"] })) as unknown as typeof fetch;
+  expect(await sendRuntimeMessage({ type: "SCROBBLER_ASSET_FAILURE", failure })).toEqual({ ok: true, ignored: true });
+  globalThis.fetch = (async () => Response.json({ ok: true, asset_failures: 1, ignored_assets: ["another"] })) as unknown as typeof fetch;
+  expect(await sendRuntimeMessage({ type: "SCROBBLER_ASSET_FAILURE", failure })).toEqual({ ok: true, ignored: false });
+  // A receiver from before ignores answers without the field.
+  globalThis.fetch = (async () => Response.json({ ok: true, asset_failures: 1 })) as unknown as typeof fetch;
+  expect(await sendRuntimeMessage({ type: "SCROBBLER_ASSET_FAILURE", failure })).toEqual({ ok: true, ignored: false });
+});
+
 test("background treats server deletion skips as uncaptured without incrementing posted counts", async () => {
   const ingest = { ok: true, count: 0, skipped_deleted: [{ source: "chatgpt", source_id: "gone" }] };
   globalThis.fetch = (async () => Response.json(ingest)) as unknown as typeof fetch;

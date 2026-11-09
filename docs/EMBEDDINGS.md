@@ -62,19 +62,19 @@ seconds, configurable up to 300. Idle close exceptions set
 `last_close_error: engine_close_failed` and do not kill `serve_forever`.
 Filesystem readiness is not proof of successful inference.
 
-Chosen deployment: `services/embedder/Dockerfile` and the opt-in `embedder` service
+Chosen deployment: `services/embedder/Dockerfile` and the always-on `embedder` service
 in **`docker-compose.bjslab.yml`**, the file Coolify already deploys. No overlay is
 required. `services/embedder/compose.embedder.yml` is now an empty compatibility
 overlay; all service definitions live in the main compose. This choice preserves one deployment plan
 when Coolify recreates services.
 
-Enable the profile explicitly with `COMPOSE_PROFILES=embeddings` in the Compose
-invocation. Coolify must pass that setting to its actual Compose process; verify
-its rendered service list before deploying. Scrobbler still starts on Ollama if
-this profile is absent or the sidecar is unhealthy. It has no dependency on
-embedder health. Environment interpolation leaves current defaults intact and
-permits a later explicit provider/model switch. The private base URL is already
-`CHAT_SCROBBLER_EMBED_BASE_URL=http://embedder:4320` for provider overrides.
+The embedder has no profile, so no `COMPOSE_PROFILES` setting is needed. Verify
+Coolify's rendered service list before deploying. Scrobbler lists the embedder in
+`depends_on` for start order only, with no health condition, so an unhealthy
+embedder does not block ingest; backfill backs off and literal search continues.
+The compose defaults are provider `embeddinggemma`, model
+`litert-community/embeddinggemma-2-740m-litert-lm` and base URL
+`http://embedder:4320`, each overridable through the Compose environment.
 
 The embedder runs as `1001:1001`; its image provisions `/var/cache/embedder` with
 that ownership. Docker initializes the named `embedder-cache` volume from it.
@@ -194,8 +194,9 @@ chat-scrobbler embed-backfill \
 chat-scrobbler embed-backfill --migrate-only --limit 1000
 ```
 
-Provider/model overrides affect only that invocation. The production provider can
-remain Ollama throughout a Gemma rebuild. Run the job at nice 19 and keep inference
+Provider/model overrides affect only that invocation. Until the deploy in
+[#41](https://github.com/beejsbj/chat-scrobbler/issues/41), the running production
+provider is still Ollama. Run the job at nice 19 and keep inference
 inside the embedder's capped cgroup. Only one backfill request is outstanding;
 responses/back-pressure determine throughput. `--rate` defaults to 10 requests/s
 and yields 100 ms between responses, including adapter chunks, rather than adding
@@ -301,7 +302,7 @@ Receipts: `services/embedder/verification/native-{review,video-final,eight-revie
 The systemd summary in these logs sometimes reports an implausible KiB memory peak;
 use the explicit `/proc` and `memory.peak` samples above instead.
 
-## Cutover, decided 2026-10-26, not yet executed
+## Cutover, decided 2026-10-26, Compose step done, deploy pending
 
 Burooj chose a direct swap over the side-by-side plan this section used to describe.
 There is no parallel Gemma backfill while Ollama keeps serving, and no rollback
@@ -312,11 +313,13 @@ finishes (about 36k messages, roughly one to two days on bjslab). Issue
 1. **Wait for a quiet window.** No other agents working, at least 6 GiB available,
    and memory pressure near zero. The deploy builds the embedder image, including
    its roughly 1 GB model fetch, and adds a container of about 1.1 GB.
-2. **Retire Ollama in Compose.** Remove the `ollama` service and its dependency,
-   drop the `embeddings` profile so `embedder` always runs, and default provider
-   and model to `embeddinggemma` and
-   `litert-community/embeddinggemma-2-740m-litert-lm`. Clear any Coolify
-   overrides that still pin `ollama` or `nomic-embed-text`.
+2. **Retire Ollama in Compose. Done in code, deploy still pending.** The `ollama`
+   service and its dependency are gone from `docker-compose.bjslab.yml`, the
+   `embeddings` profile is dropped so `embedder` always runs, and provider and
+   model default to `embeddinggemma` and
+   `litert-community/embeddinggemma-2-740m-litert-lm`. Nothing is deployed yet.
+   Still to do: clear any Coolify overrides that still pin `ollama` or
+   `nomic-embed-text`.
 3. **Deploy and verify.** Health and authenticated deep health should report the
    embeddinggemma provider and its automatic backfill. Check UID/cache write
    access, private connectivity, watchdog behavior and idle RSS. Do not expose a
@@ -379,8 +382,8 @@ A deterministic diagnostic committed a different connection's rowid replacement
 between vector ranking and hydration: the original snapshot retained correct
 provenance, and the following search observed deletion.
 
-Remaining operational gates: actual Docker build/start smoke, Coolify profile
-propagation and effective limits, real-archive retrieval quality, sustained backfill/latency, and phone agreement.
+Remaining operational gates: actual Docker build/start smoke, Coolify override
+cleanup and effective limits, real-archive retrieval quality, sustained backfill/latency, and phone agreement.
 Cold matrix loading still costs seconds in total but now yields in the background; early serve queries use literal recall. Asset vectors still use a bounded
 streaming scan; production currently has none. Very large sessions cost more to
 refresh incrementally. Extra chunk vectors use 3,072 bytes each at 768 dimensions;

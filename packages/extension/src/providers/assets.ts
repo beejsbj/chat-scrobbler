@@ -7,7 +7,7 @@ import { isGeminiPageBlob, fetchGeminiPageBlob, validateGeminiPageBlobResponse }
 import { boundedAssetBuffer } from "./asset-bytes";
 import { documentContentType, isGenericType, validateAssetBytes, validateAssetResponse, type AssetDeclaration } from "./asset-response";
 import { lookupCapturedAsset, backgroundAssetError, paceAssetDownload } from "./asset-cache-client";
-import { assetOutcomeKey, defaultAssetOutcomeMemory, reportablePointer, skipRememberedAttempt, type AssetOutcomeMemory } from "./asset-outcomes";
+import { assetInputDigest, assetOutcomeKey, defaultAssetOutcomeMemory, reportablePointer, skipRememberedAttempt, type AssetOutcomeMemory } from "./asset-outcomes";
 
 export const MAX_PROVIDER_ASSET_BYTES = 100 * 1024 * 1024;
 
@@ -20,13 +20,14 @@ export interface ProviderAssetBytes {
 
 export interface UploadProviderAssetsOptions {
   maxBytes?: number;
-  reportFailure?: (failure: AssetFailure) => Promise<void>;
+  /** An `ignored` answer means the receiver's owner stopped retries for this asset. Receivers that predate ignores answer nothing. */
+  reportFailure?: (failure: AssetFailure) => Promise<void | { ignored?: boolean }>;
   fetchAsset?: (url: string) => Promise<AssetFetchResponse>;
   beforeFetch?: () => Promise<void>;
   resolveUrl?: (candidate: ProviderAssetCandidate) => Promise<string | null>;
   /** Per-asset outcome memory; `undefined` uses extension storage, `null` disables it. */
   outcomes?: AssetOutcomeMemory | null;
-  /** Explicit backfill: attempt remembered terminal and backed-off assets once more. */
+  /** Explicit backfill: attempt remembered and backed-off assets once more. The receiver leaves ignored assets out of backfill pages. */
   retryRemembered?: boolean;
 }
 
@@ -74,8 +75,9 @@ export async function uploadProviderAssets(
     const outcomeKey = assetOutcomeKey(candidate);
     // Best effort: an unreadable memory means attempt the asset, never abandon the batch.
     const remembered = memory ? await memory.recall(outcomeKey).catch(() => null) : null;
-    // A remembered terminal outcome, or an unexpired backoff, costs no network and no report.
-    if (remembered && !options.retryRemembered && skipRememberedAttempt(remembered, Date.now(), maxBytes)) continue;
+    // An unexpired backoff on the same download input costs no network and no report; a changed
+    // input (a fresh URL for the same pointer) is a new attempt. Only the owner's ignore ends retries.
+    if (remembered && !options.retryRemembered && skipRememberedAttempt(remembered, Date.now(), maxBytes, await assetInputDigest(candidate))) continue;
     let reason: AssetFailureReason = "asset_download_failed";
     try {
       if (candidate.url && !candidateUrlAllowed(candidate.url, candidate)) throw new Error("asset_url_unavailable");
@@ -131,12 +133,13 @@ export async function uploadProviderAssets(
       // Pointers can carry signed URLs; they travel to the receiver record, never to logs.
       console.error(JSON.stringify({ event: "asset_capture_failed", source: failure.source, source_id: failure.source_id, message_id: failure.message_id, reason }));
       let reported = true;
-      try { await (options.reportFailure ?? reportAssetFailure)(failure); }
+      let ignored = false;
+      try { ignored = (await (options.reportFailure ?? reportAssetFailure)(failure))?.ignored === true; }
       catch { reported = false; console.error(JSON.stringify({ event: "asset_failure_report_failed", source: candidate.source, source_id: candidate.sourceId })); }
       // Assets skipped behind an earlier rate limit were never attempted, so they earn no backoff.
       // An unreported failure (receiver unreachable) earns none either: resting it would let the
       // retry pass emit the capture without the asset while no failure record exists anywhere.
-      if (memory && reported && error !== downloadBlock) await memory.remember(outcomeKey, reason, maxBytes).catch(() => {});
+      if (memory && reported && error !== downloadBlock) await memory.remember(outcomeKey, reason, maxBytes, undefined, { input: await assetInputDigest(candidate), ignored }).catch(() => {});
       // Throttling stops further downloads in this batch, while every skipped asset is reported.
       if (isRateLimitError(error)) downloadBlock = error;
     }
@@ -226,10 +229,11 @@ export function filenameFromHeaders(res: Response): string | null {
   try { return decodeURIComponent(match[1]); } catch { return match[1]; }
 }
 
-async function reportAssetFailure(failure: AssetFailure): Promise<void> {
-  if (typeof chrome === "undefined" || !chrome.runtime?.sendMessage) return;
+async function reportAssetFailure(failure: AssetFailure): Promise<{ ignored?: boolean } | undefined> {
+  if (typeof chrome === "undefined" || !chrome.runtime?.sendMessage) return undefined;
   const response = await new Promise<any>(resolve => chrome.runtime.sendMessage({ type: "SCROBBLER_ASSET_FAILURE", failure }, resolve));
   if (!response?.ok) throw new Error("asset failure report rejected");
+  return { ignored: response.ignored === true };
 }
 
 async function configuredAssetLimit(): Promise<number> {
