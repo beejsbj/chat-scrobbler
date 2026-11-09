@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { buildServer } from "../src/mcp/server";
-import { handleGetAsset } from "../src/mcp/get-asset";
+import { handleGetAsset, MAX_INLINE_ASSET_BYTES } from "../src/mcp/get-asset";
 import { assetBlobPath, resolveLocalAssetPath, storeCanonicalAsset } from "../src/store/assets";
 import { writeSession } from "../src/store/sessions";
 import type { Block, Session } from "../src/schema/types";
@@ -144,6 +144,35 @@ test("get_asset declines assets over the inline size cap but still describes the
     expect(res.content.some(c => c.type === "image")).toBe(false);
     const text = res.content[0] && "text" in res.content[0] ? res.content[0].text : "";
     expect(text).toContain(String(PNG.byteLength));
+  } finally { f.cleanup(); }
+});
+
+test("inline cap keeps base64 output within Claude's 5 MB image limit", () => {
+  const limit = 5 * 1024 * 1024;
+  expect(MAX_INLINE_ASSET_BYTES).toBe(Math.floor((limit * 3) / 4));
+  expect(Buffer.alloc(MAX_INLINE_ASSET_BYTES).toString("base64").length).toBeLessThanOrEqual(limit);
+  expect(Buffer.alloc(MAX_INLINE_ASSET_BYTES + 1).toString("base64").length).toBeGreaterThan(limit);
+});
+
+test("get_asset serves an asset at the default inline cap and refuses one byte over", () => {
+  const f = fixture();
+  try {
+    const at = new Uint8Array(MAX_INLINE_ASSET_BYTES);
+    at.set(PNG);
+    const over = new Uint8Array(MAX_INLINE_ASSET_BYTES + 1);
+    over.set(PNG);
+    const atStored = f.store("s1", at, "image/png");
+    const overStored = f.store("s2", over, "image/png");
+    f.session("s1", [imageBlock(atStored, "image/png")]);
+    f.session("s2", [imageBlock(overStored, "image/png")]);
+    const ok = handleGetAsset(f.canonicalDir, { session_id: "chatgpt:s1", sha256: atStored.sha256 });
+    expect(ok.isError).toBeFalsy();
+    const image = ok.content.find(c => c.type === "image");
+    expect(image && "data" in image ? image.data.length : Infinity).toBeLessThanOrEqual(5 * 1024 * 1024);
+    const refused = handleGetAsset(f.canonicalDir, { session_id: "chatgpt:s2", sha256: overStored.sha256 });
+    expect(refused.isError).toBe(true);
+    expect(refused.content.some(c => c.type === "image")).toBe(false);
+    expect(refused.content[0]).toMatchObject({ type: "text", text: expect.stringContaining(`over the ${MAX_INLINE_ASSET_BYTES} byte inline limit`) });
   } finally { f.cleanup(); }
 });
 
