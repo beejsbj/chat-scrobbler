@@ -9,9 +9,10 @@ export async function boundedAssetBuffer(res: Response, maxBytes: number): Promi
   }
   if (!res.body) return new Uint8Array(0);
   const reader = res.body.getReader();
-  // A declared length lets the bytes land in one buffer instead of a chunk list plus a concatenated
-  // copy, which halves peak memory for a large asset. A body that outruns it grows the buffer.
-  let bytes = new Uint8Array(Number.isFinite(length) && length > 0 ? length : 0);
+  // Bytes land in one growing buffer instead of a chunk list plus a concatenated copy. The declared
+  // length is only a growth ceiling: a server that declares a huge body and sends little costs little.
+  const declared = Number.isFinite(length) && length > 0 ? length : 0;
+  let bytes = new Uint8Array(Math.min(declared, 16 * 1024 * 1024));
   let total = 0;
   try {
     while (true) {
@@ -23,7 +24,8 @@ export async function boundedAssetBuffer(res: Response, maxBytes: number): Promi
         throw new Error("asset_too_large");
       }
       if (total > bytes.byteLength) {
-        const grown = new Uint8Array(Math.min(maxBytes, Math.max(total, bytes.byteLength * 2)));
+        const ceiling = Math.min(maxBytes, Math.max(declared, total));
+        const grown = new Uint8Array(Math.min(ceiling, Math.max(total, bytes.byteLength * 2)));
         grown.set(bytes.subarray(0, total - value.byteLength));
         bytes = grown;
       }

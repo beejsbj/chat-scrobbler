@@ -13,12 +13,16 @@ export async function readBoundedBody(req: Request, limit: number): Promise<Uint
   return collectBounded(req.body.getReader(), limit, Number.isFinite(declared) && declared > 0 ? declared : 0);
 }
 
+/** A declared length is client-controlled, so it never sizes more than this up front; the buffer grows as bytes arrive. */
+export const INITIAL_BODY_BUFFER_BYTES = 16 * 1024 * 1024;
+
 /**
- * With a declared length the bytes land in one buffer, not a chunk list plus a concatenated copy,
- * which halves peak memory for large assets. A body that outruns its declared length grows the buffer.
+ * Bytes land in one growing buffer, not a chunk list plus a concatenated copy. The declared length
+ * is a ceiling for growth (so an honest body ends exactly full), never an up-front allocation: a
+ * client that declares 512 MiB and sends little costs only what it sent.
  */
 export async function collectBounded(reader: ReadableStreamDefaultReader<Uint8Array>, limit: number, declared = 0): Promise<Uint8Array> {
-  let buffer = new Uint8Array(declared);
+  let buffer = new Uint8Array(Math.min(declared, INITIAL_BODY_BUFFER_BYTES));
   let total = 0;
   for (;;) {
     const { done, value } = await reader.read();
@@ -29,7 +33,8 @@ export async function collectBounded(reader: ReadableStreamDefaultReader<Uint8Ar
       throw new BodyTooLargeError(limit);
     }
     if (total > buffer.byteLength) {
-      const grown = new Uint8Array(Math.min(limit, Math.max(total, buffer.byteLength * 2)));
+      const ceiling = Math.min(limit, Math.max(declared, total));
+      const grown = new Uint8Array(Math.min(ceiling, Math.max(total, buffer.byteLength * 2)));
       grown.set(buffer.subarray(0, total - value.byteLength));
       buffer = grown;
     }

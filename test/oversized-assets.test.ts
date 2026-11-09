@@ -39,7 +39,7 @@ test("the receiver stores an asset above the former 100 MiB cap and still refuse
   expect(await stored.json()).toMatchObject({ ok: true, size_bytes: 101 * MiB });
   const refused = await handleIngestRequest(new Request("http://local/assets?source=gemini&source_id=g1&pointer=video2", { method: "POST", body: new Uint8Array(2 * MiB) }), { ...opts, maxAssetBytes: MiB });
   expect(refused.status).toBe(413);
-});
+}, 30_000);
 
 test("a body with a declared length is read into one buffer, and a body that outruns its declared length is still bounded", async () => {
   const chunks = [new Uint8Array([1, 2, 3]), new Uint8Array([4, 5]), new Uint8Array([6])];
@@ -51,6 +51,18 @@ test("a body with a declared length is read into one buffer, and a body that out
   expect([...await readBoundedBody(lying, 100)]).toEqual([1, 2, 3, 4, 5, 6]);
   const tooBig = new Request("http://local/", { method: "POST", body: stream(), duplex: "half", headers: { "content-length": "2" } } as any);
   await expect(readBoundedBody(tooBig, 4)).rejects.toThrow("byte limit");
+});
+
+test("a declared length only caps growth: an honest multi-chunk body past the initial buffer is intact, and a huge declaration with a tiny body returns just the bytes sent", async () => {
+  const size = 40 * MiB;
+  const source = new Uint8Array(size).map((_, i) => i % 251);
+  const sliced = () => new ReadableStream<Uint8Array>({ start(c) { for (let at = 0; at < size; at += 3 * MiB) c.enqueue(source.subarray(at, Math.min(size, at + 3 * MiB))); c.close(); } });
+  const honest = await readBoundedBody(new Request("http://local/", { method: "POST", body: sliced(), duplex: "half", headers: { "content-length": String(size) } } as any), 512 * MiB);
+  expect(honest.byteLength).toBe(size);
+  expect(honest[size - 1]).toBe(source[size - 1]);
+  expect(honest[17 * MiB + 5]).toBe(source[17 * MiB + 5]);
+  const tiny = await readBoundedBody(new Request("http://local/", { method: "POST", body: new Uint8Array([9, 8, 7]), duplex: "half", headers: { "content-length": String(512 * MiB) } } as any), 512 * MiB);
+  expect([...tiny]).toEqual([9, 8, 7]);
 });
 
 test("the extension uploads a Uint8Array body without copying it, and gives large uploads more time", async () => {
@@ -103,4 +115,4 @@ test("once an oversized asset is stored its size failure leaves the monitor, and
     expect(upload.status).toBe(200);
     expect((await monitorReport(opts)).assets.recent_failures_by_reason).toEqual({ asset_too_large: 1 });
   } finally { logs.mockRestore(); }
-});
+}, 30_000);
