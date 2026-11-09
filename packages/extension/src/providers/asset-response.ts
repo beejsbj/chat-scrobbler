@@ -32,6 +32,12 @@ export interface AssetDeclaration {
 const HAS_EXTENSION = /\.[^.\/\\]+$/;
 const GENERIC_TYPES = new Set(["application/octet-stream", "binary/octet-stream", "text/plain"]);
 
+/** No mime type, or one that says nothing about what the file is. */
+export function isGenericType(type?: string | null): boolean {
+  const mime = (type ?? "").split(";")[0].trim().toLowerCase();
+  return !mime || GENERIC_TYPES.has(mime);
+}
+
 /** JSON or HTML by filename extension; any other name is null. */
 function kindOfName(name?: string | null): DocumentKind | null {
   const extension = name?.trim().match(/\.([^.\/\\]+)$/)?.[1]?.toLowerCase();
@@ -55,8 +61,7 @@ export function declaredDocumentKind(filename?: string | null, contentType?: str
   if (!filename || !HAS_EXTENSION.test(filename.trim())) return byType;
   const byName = kindOfName(filename);
   if (!byName) return null;
-  const mime = (contentType ?? "").split(";")[0].trim().toLowerCase();
-  return !mime || GENERIC_TYPES.has(mime) || byType === byName ? byName : null;
+  return isGenericType(contentType) || byType === byName ? byName : null;
 }
 
 /** What the first 16 KiB of the body looks like, whatever the headers claim. */

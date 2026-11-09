@@ -158,6 +158,21 @@ test("a later duplicate pointer lends its declaration to the first candidate", a
   expect(uploads[0]).toMatchObject({ filename: "a.json" });
 });
 
+test("a later concrete mime type replaces a generic one on a duplicate pointer, and a conflict still rejects", async () => {
+  const duplicate = (first: string, second: string): ProviderAssetCandidate[] => [
+    { source: "chatgpt", sourceId: "c", messageId: "m", pointer: "file-1", url: ROUTE, contentType: first },
+    { source: "chatgpt", sourceId: "c", messageId: "m", pointer: "file-1", url: ROUTE, contentType: second },
+  ];
+  const uploads: any[] = [];
+  const upload = async (candidates: ProviderAssetCandidate[]) => uploadProviderAssets(
+    async () => new Response('{"a":1}', { headers: { "content-type": "application/json" } }),
+    async request => { uploads.push(request); return { pointer: request.pointer, local_path: "assets/x" }; },
+    candidates, { reportFailure: async () => {}, outcomes: null });
+  expect(await upload(duplicate("application/octet-stream", "application/json"))).toHaveLength(1);
+  expect(assetReferences(duplicate("application/octet-stream", "application/json"))[0].content_type).toBe("application/json");
+  expect(await upload(duplicate("image/png", "application/json"))).toHaveLength(0);
+});
+
 test("validateAssetBytes keeps the undeclared guard", () => {
   expect(() => validateAssetBytes(enc('{"a":1}'), "application/json")).toThrow();
   expect(() => validateAssetBytes(enc("<html></html>"), "image/png")).toThrow();

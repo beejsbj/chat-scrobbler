@@ -5,7 +5,7 @@ import { allowedAssetUrl, useBackgroundForAsset } from "./asset-url";
 import { fetchAllowedAsset } from "./asset-fetch";
 import { isGeminiPageBlob, fetchGeminiPageBlob, validateGeminiPageBlobResponse } from "./gemini-page-blob";
 import { boundedAssetBuffer } from "./asset-bytes";
-import { validateAssetBytes, validateAssetResponse, type AssetDeclaration } from "./asset-response";
+import { isGenericType, validateAssetBytes, validateAssetResponse, type AssetDeclaration } from "./asset-response";
 import { lookupCapturedAsset, backgroundAssetError, paceAssetDownload } from "./asset-cache-client";
 import { assetOutcomeKey, defaultAssetOutcomeMemory, reportablePointer, skipRememberedAttempt, type AssetOutcomeMemory } from "./asset-outcomes";
 
@@ -155,7 +155,7 @@ function mergeDeclarations(candidates: ProviderAssetCandidate[]): void {
     const head = first.get(key);
     if (!head) { first.set(key, candidate); continue; }
     head.filename ??= candidate.filename;
-    head.contentType ??= candidate.contentType;
+    if (isGenericType(head.contentType) && candidate.contentType) head.contentType = candidate.contentType;
   }
 }
 
