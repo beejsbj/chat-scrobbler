@@ -37,8 +37,11 @@ export interface ProviderAssetCandidate {
   url: string | null;
   /** Applied only to same-origin provider requests, never forwarded to ingest or CDNs. */
   headers?: Record<string, string>;
+  /** From the provider's message metadata. This, with `contentType`, is the provider's declaration. */
   filename?: string | null;
   contentType?: string | null;
+  /** Learned from a download-link reply. It names the stored file but never declares a type. */
+  resolvedFilename?: string | null;
   messageId?: string | null;
   fetchViaBackground?: boolean;
   inlineBytes?: Uint8Array;
@@ -57,6 +60,7 @@ export async function uploadProviderAssets(
   options: UploadProviderAssetsOptions = {},
 ): Promise<UploadedAsset[]> {
   if (!uploadAsset || candidates.length === 0) return [];
+  mergeDeclarations(candidates);
   const maxBytes = options.maxBytes ?? await configuredAssetLimit();
   const uploaded: UploadedAsset[] = [];
   const seen = new Set<string>();
@@ -99,7 +103,7 @@ export async function uploadProviderAssets(
       validateAssetBytes(new Uint8Array(downloaded.bytes), downloaded.contentType,
         { ...declared, responseFilename: downloaded.filename });
       const contentType = assetContentType(downloaded.contentType, candidate.contentType);
-      const filename = candidate.filename ?? downloaded.filename ?? null;
+      const filename = candidate.filename ?? candidate.resolvedFilename ?? downloaded.filename ?? null;
       const request: AssetUploadRequest = {
         messageId: candidate.messageId,
         originalUrl: url,
@@ -139,6 +143,22 @@ export async function uploadProviderAssets(
   return uploaded;
 }
 
+/**
+ * Duplicate pointers in one message collapse to their first candidate. Let that candidate take a
+ * filename or mime type the provider declared on a later duplicate, so the order in which a
+ * message lists its metadata does not decide whether a declared attachment is archived.
+ */
+function mergeDeclarations(candidates: ProviderAssetCandidate[]): void {
+  const first = new Map<string, ProviderAssetCandidate>();
+  for (const candidate of candidates) {
+    const key = JSON.stringify([candidate.messageId ?? null, candidate.pointer]);
+    const head = first.get(key);
+    if (!head) { first.set(key, candidate); continue; }
+    head.filename ??= candidate.filename;
+    head.contentType ??= candidate.contentType;
+  }
+}
+
 function estimatedBase64Bytes(data: string): number {
   const padding = data.endsWith("==") ? 2 : data.endsWith("=") ? 1 : 0;
   return Math.max(0, Math.floor(data.length * 3 / 4) - padding);
@@ -149,7 +169,7 @@ async function fetchAssetViaBackground(url: string, maxBytes: number, candidate:
     throw new Error("Background asset fetch is unavailable");
   }
   const response = await new Promise<any>((resolve) => {
-    chrome.runtime.sendMessage({ type: "SCROBBLER_ASSET_FETCH", url, maxBytes, declared, upload: { source: candidate.source, sourceId: candidate.sourceId, pointer: candidate.pointer, messageId: candidate.messageId, filename: candidate.filename, contentType: candidate.contentType, originalUrl: url } }, resolve);
+    chrome.runtime.sendMessage({ type: "SCROBBLER_ASSET_FETCH", url, maxBytes, declared, upload: { source: candidate.source, sourceId: candidate.sourceId, pointer: candidate.pointer, messageId: candidate.messageId, filename: candidate.filename ?? candidate.resolvedFilename, contentType: candidate.contentType, originalUrl: url } }, resolve);
   });
   if (!response?.ok) throw backgroundAssetError(response);
   return {
@@ -219,6 +239,7 @@ async function configuredAssetLimit(): Promise<number> {
 }
 
 export function assetReferences(candidates: ProviderAssetCandidate[]): import("../../../shared/src").AssetBackfillReference[] {
+  mergeDeclarations(candidates);
   const seen = new Set<string>();
   let downloadBlock: unknown;
   return candidates.flatMap(candidate => {

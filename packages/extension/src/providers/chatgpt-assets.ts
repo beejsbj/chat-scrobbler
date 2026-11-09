@@ -83,7 +83,7 @@ export async function resolveChatgptAssetUrl(fetcher: FetchLike, candidate: Prov
   const link = asObject(JSON.parse(new TextDecoder().decode(await boundedAssetBuffer(res, 1024 * 1024))));
   const url = stringValue(link.download_url ?? link.url);
   if (!url || !allowedAssetUrl(url, "chatgpt")) throw new Error(UNEXPECTED_ASSET_RESPONSE);
-  if (!candidate.filename) candidate.filename = stringValue(link.file_name);
+  if (!candidate.filename) candidate.resolvedFilename = stringValue(link.file_name);
   return url;
 }
 

@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { uploadProviderAssets, type ProviderAssetCandidate } from "../packages/extension/src/providers/assets";
+import { assetReferences, uploadProviderAssets, type ProviderAssetCandidate } from "../packages/extension/src/providers/assets";
 import { createChatgptAdapter } from "../packages/extension/src/providers/chatgpt";
 import { declaredDocumentKind, validateAssetBytes } from "../packages/extension/src/providers/asset-response";
 import type { AssetFailure } from "../packages/shared/src";
@@ -127,6 +127,35 @@ test("a filename from a ChatGPT download link does not declare a document type",
     uploadAsset: async value => { uploads.push(value); return { pointer: value.pointer, local_path: "assets/chatgpt/c/hash" }; },
   });
   expect(uploads).toEqual([]);
+});
+
+test("a download-link filename never reaches the backfill reference as a declaration", async () => {
+  const payload = { id: "c", mapping: { u: { message: { id: "u", author: { role: "user" }, content: { content_type: "text", parts: ["see attached"] },
+    metadata: { attachments: [{ id: "file_x" }] } } } } };
+  let capture: any;
+  await createChatgptAdapter(async input => {
+    if (input === "/api/auth/session") return Response.json({ accessToken: "provider-only" });
+    if (input === "/backend-api/conversation/c") return Response.json(payload);
+    if (input.startsWith("/backend-api/files/")) return Response.json({ status: "success", download_url: "https://files.oaiusercontent.com/x", file_name: "session.json" });
+    return new Response('{"accessToken":"SECRET"}', { headers: { "content-type": "application/json" } });
+  }).captureOne!("c", null, { emitCapture: async value => { capture = value; }, uploadAsset: async value => ({ pointer: value.pointer, local_path: "assets/x" }) });
+  expect(capture.asset_references).toEqual([{ pointer: "file_x", message_id: "u", filename: null, content_type: null }]);
+});
+
+test("a later duplicate pointer lends its declaration to the first candidate", async () => {
+  const body = '{"a":1}';
+  const uploads: any[] = [];
+  const candidates: ProviderAssetCandidate[] = [
+    { source: "chatgpt", sourceId: "c", messageId: "m", pointer: "file-1", url: ROUTE },
+    { source: "chatgpt", sourceId: "c", messageId: "m", pointer: "file-1", url: ROUTE, filename: "a.json", contentType: "application/json" },
+  ];
+  const references = assetReferences(candidates);
+  expect(references).toEqual([{ pointer: "file-1", message_id: "m", filename: "a.json", content_type: "application/json" }]);
+  const assets = await uploadProviderAssets(async () => new Response(body, { headers: { "content-type": "application/json" } }),
+    async request => { uploads.push(request); return { pointer: request.pointer, local_path: "assets/x" }; },
+    candidates, { reportFailure: async () => {}, outcomes: null });
+  expect(assets).toHaveLength(1);
+  expect(uploads[0]).toMatchObject({ filename: "a.json" });
 });
 
 test("validateAssetBytes keeps the undeclared guard", () => {
