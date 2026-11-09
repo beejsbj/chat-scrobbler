@@ -12,7 +12,8 @@ ROOT = Path(__file__).resolve().parents[3]
 def compose(*options, overrides=None):
     env = {**os.environ, 'MCP_AUTH_TOKEN': 'test-only', 'INGEST_TOKEN': 'test-only',
            'COMPOSE_PROFILES': '', 'CHAT_SCROBBLER_EMBED_PROVIDER': '',
-           'CHAT_SCROBBLER_EMBED_MODEL': '', **(overrides or {})}
+           'CHAT_SCROBBLER_EMBED_MODEL': '', 'CHAT_SCROBBLER_EMBED_BASE_URL': '',
+           **(overrides or {})}
     result = subprocess.run(['docker', 'compose', '-f', str(ROOT / 'docker-compose.bjslab.yml'),
                              *options, 'config', '--format', 'json'],
                             env=env, capture_output=True, text=True, check=True)
