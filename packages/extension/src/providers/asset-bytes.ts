@@ -24,8 +24,10 @@ export async function boundedAssetBuffer(res: Response, maxBytes: number): Promi
         throw new Error("asset_too_large");
       }
       if (total > bytes.byteLength) {
-        const ceiling = Math.min(maxBytes, Math.max(declared, total));
-        const grown = new Uint8Array(Math.min(ceiling, Math.max(total, bytes.byteLength * 2)));
+        // Geometric growth (floored at the initial size so an empty start still doubles), stopping at the
+        // declared length while the body is within it; a missing or understated length grows to maxBytes.
+        const ceiling = declared > total ? Math.min(declared, maxBytes) : maxBytes;
+        const grown = new Uint8Array(Math.min(ceiling, Math.max(total, bytes.byteLength * 2, 16 * 1024 * 1024)));
         grown.set(bytes.subarray(0, total - value.byteLength));
         bytes = grown;
       }

@@ -65,6 +65,25 @@ test("a declared length only caps growth: an honest multi-chunk body past the in
   expect([...tiny]).toEqual([9, 8, 7]);
 });
 
+test("a body with no or understated Content-Length grows geometrically instead of reallocating per chunk", async () => {
+  const size = 48 * MiB, chunk = 64 * 1024;
+  const source = new Uint8Array(size).map((_, i) => (i * 7) % 253);
+  const stream = () => new ReadableStream<Uint8Array>({ start(c) { for (let at = 0; at < size; at += chunk) c.enqueue(source.subarray(at, at + chunk)); c.close(); } });
+  const started = performance.now();
+  const noLength = await readBoundedBody(new Request("http://local/", { method: "POST", body: stream(), duplex: "half" } as any), 512 * MiB);
+  const understated = await readBoundedBody(new Request("http://local/", { method: "POST", body: stream(), duplex: "half", headers: { "content-length": String(MiB) } } as any), 512 * MiB);
+  expect(noLength.byteLength).toBe(size);
+  expect(understated.byteLength).toBe(size);
+  for (const out of [noLength, understated]) { expect(out[size - 1]).toBe(source[size - 1]); expect(out[20 * MiB + 3]).toBe(source[20 * MiB + 3]); }
+  // 768 per-chunk reallocations of tens of MiB would take far longer than geometric growth.
+  expect(performance.now() - started).toBeLessThan(8000);
+  const response = new Response(stream(), { headers: {} });
+  const { boundedAssetBuffer } = await import("../packages/extension/src/providers/asset-bytes");
+  const downloaded = await boundedAssetBuffer(response, 512 * MiB);
+  expect(downloaded.byteLength).toBe(size);
+  expect(downloaded[size - 1]).toBe(source[size - 1]);
+}, 30_000);
+
 test("the extension uploads a Uint8Array body without copying it, and gives large uploads more time", async () => {
   expect(assetUploadTimeoutMs(0)).toBe(60_000);
   expect(assetUploadTimeoutMs(100 * MiB)).toBe(110_000);

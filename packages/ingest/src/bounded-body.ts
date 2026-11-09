@@ -33,8 +33,10 @@ export async function collectBounded(reader: ReadableStreamDefaultReader<Uint8Ar
       throw new BodyTooLargeError(limit);
     }
     if (total > buffer.byteLength) {
-      const ceiling = Math.min(limit, Math.max(declared, total));
-      const grown = new Uint8Array(Math.min(ceiling, Math.max(total, buffer.byteLength * 2)));
+      // Growth is geometric (floor: the initial size, so an empty start still doubles) and stops at the
+      // declared length while the body is still within it; a missing or understated length grows to the limit.
+      const ceiling = declared > total ? Math.min(declared, limit) : limit;
+      const grown = new Uint8Array(Math.min(ceiling, Math.max(total, buffer.byteLength * 2, INITIAL_BODY_BUFFER_BYTES)));
       grown.set(buffer.subarray(0, total - value.byteLength));
       buffer = grown;
     }
