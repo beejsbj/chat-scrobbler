@@ -184,7 +184,7 @@ async function fetchAssetBytes(message: AssetFetchMessage): Promise<unknown> {
   const bytes = await boundedAssetBuffer(res, maxBytes);
   const filename = filenameFromHeaders(res);
   const contentType = res.headers.get("content-type");
-  validateAssetBytes(bytes, contentType);
+  validateAssetBytes(bytes, contentType, { filename: message.upload?.filename, contentType: message.upload?.contentType, responseFilename: filename });
   if (message.upload) {
     let asset;
     try { asset = await uploadAssetToIngest(fetch, settings, { ...message.upload, filename: message.upload.filename ?? filename,

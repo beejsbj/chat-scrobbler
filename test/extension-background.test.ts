@@ -286,6 +286,27 @@ test("background media fetch rejects cross-provider and auth-document probes", a
   expect(uploads).toBe(0);
 });
 
+test("background media fetch archives a provider-declared .json attachment and rejects a sign-in page for it", async () => {
+  let uploaded: Uint8Array | undefined;
+  let served = '{"rows":[1]}';
+  const rowsHash = await sha256Of(Array.from(new TextEncoder().encode(served)));
+  globalThis.fetch = (async (input, init) => {
+    if (String(input).includes("/assets")) {
+      if (!init?.method) return Response.json({ exists: false });
+      uploaded = init.body as Uint8Array;
+      return Response.json({ ok: true, pointer: "p", local_path: "assets/gemini/c/hash.json", sha256: rowsHash, size_bytes: 12 });
+    }
+    return new Response(served, { headers: { "content-type": served.startsWith("<") ? "text/html" : "application/json" } });
+  }) as typeof fetch;
+  const upload = { source: "gemini" as const, sourceId: "c", pointer: "p", filename: "rows.json", contentType: "application/json" };
+  expect(await sendRuntimeMessage({ type: "SCROBBLER_ASSET_FETCH", url: "https://lh3.googleusercontent.com/gg-dl/rows", upload })).toMatchObject({ ok: true });
+  expect(new TextDecoder().decode(uploaded)).toBe('{"rows":[1]}');
+  uploaded = undefined;
+  served = "<html><body>Sign in</body></html>";
+  expect(await sendRuntimeMessage({ type: "SCROBBLER_ASSET_FETCH", url: "https://lh3.googleusercontent.com/gg-dl/rows", upload })).toMatchObject({ ok: false, error: "asset_download_failed" });
+  expect(uploaded).toBeUndefined();
+});
+
 for (const status of [400, 401, 403, 404, 405, 407, 408, 409, 413, 422, 429, 500, 503]) test(`background carries ${status} capture rejection classification to the tab`, async () => {
   globalThis.fetch = (async () => new Response("rejected", { status })) as unknown as typeof fetch;
   const result = await sendRuntimeMessage({ type: "SCROBBLER_CAPTURE_READY", capture: buildRawCapture({ source: "chatgpt", sourceId: "c", endpoint: "/detail", payload: {} }) });

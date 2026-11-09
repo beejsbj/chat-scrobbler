@@ -94,7 +94,8 @@ export async function uploadProviderAssets(
         continue;
       }
       if (downloaded.bytes.length > maxBytes) throw new Error("asset_too_large");
-      validateAssetBytes(new Uint8Array(downloaded.bytes), downloaded.contentType);
+      validateAssetBytes(new Uint8Array(downloaded.bytes), downloaded.contentType,
+        { filename: candidate.filename, contentType: candidate.contentType, responseFilename: downloaded.filename });
       const contentType = assetContentType(downloaded.contentType, candidate.contentType);
       const filename = candidate.filename ?? downloaded.filename ?? null;
       const request: AssetUploadRequest = {
