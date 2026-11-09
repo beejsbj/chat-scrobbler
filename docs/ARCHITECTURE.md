@@ -449,7 +449,7 @@ Read-only MCP server with four tools:
 | `search` | FTS across all messages; returns snippet + session_id + message_id + metadata |
 | `get_session` | Fetch a full session by `source:source_id`; JSON or rendered markdown |
 | `list_sessions` | Session summaries newest-first; filterable by source / title substring |
-| `get_asset` | Return an image or file a session references, by session id + sha256 (or `assets/...` path). Images as MCP image content, text as text, others as an embedded resource; 5 MB inline cap (`src/mcp/get-asset.ts`) |
+| `get_asset` | Return an image or file a session references, by session id + sha256 (or `assets/...` path). Images as MCP image content, text as text, others as an embedded resource; 3.75 MB inline cap (5 MB after base64) (`src/mcp/get-asset.ts`) |
 
 Two transport modes:
 

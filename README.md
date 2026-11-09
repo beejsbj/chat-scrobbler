@@ -270,7 +270,7 @@ searchable, so treat the data dir accordingly.
 ## Limitations (honest list)
 
 - Attachment files are captured to disk alongside the session JSON. MCP clients
-  can fetch them with `get_asset` (images up to 5 MB come back viewable). Only
+  can fetch them with `get_asset` (images up to 3.75 MB come back viewable). Only
   the EmbeddingGemma provider embeds images, audio and short video; other files
   (PDFs, documents) are found by filename and surrounding text only.
 - Capture happens while the extension and server are running. The extension

@@ -7,8 +7,12 @@ import { assetBlobPath, assetsDirForCanonicalDir, resolveLocalAssetPath } from "
 import { readSession } from "../store/sessions";
 import type { Block, MediaReference, Session } from "../schema/types";
 
-/** Claude rejects images over 5 MB; other clients cap tool results similarly. */
-export const MAX_INLINE_ASSET_BYTES = 5 * 1024 * 1024;
+/**
+ * Raw-byte cap for inline assets. Claude rejects images over 5 MB measured after
+ * base64 encoding, which inflates size by 4/3, so 5 MB of raw bytes would be too big.
+ * 3.75 MB raw encodes to at most 5 MB. Other clients cap tool results similarly.
+ */
+export const MAX_INLINE_ASSET_BYTES = Math.floor((5 * 1024 * 1024 * 3) / 4);
 
 const INLINE_IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
 

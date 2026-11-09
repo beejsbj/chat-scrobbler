@@ -61,7 +61,7 @@ export function buildServer(opts: ServerOptions): McpServer {
   }, async (args) => handleGetSession(opts.canonicalDir, args));
 
   server.registerTool("get_asset", {
-    description: "Fetch an image or file attached to a conversation. Pass the session id and the asset's 64-hex sha256 (from a block's `sha256`, or the hash in a `[image -> assets/...]` path; the whole `assets/...` path also works). Images return as image content you can see; text files as text; other files (PDF, audio, documents) as an embedded resource. Only assets the session references are served; files over 5 MB return metadata only.",
+    description: "Fetch an image or file attached to a conversation. Pass the session id and the asset's 64-hex sha256 (from a block's `sha256`, or the hash in a `[image -> assets/...]` path; the whole `assets/...` path also works). Images return as image content you can see; text files as text; other files (PDF, audio, documents) as an embedded resource. Only assets the session references are served; files over 3.75 MB return metadata only.",
     inputSchema: { session_id: z.string(), sha256: z.string() },
   }, async (args) => handleGetAsset(opts.canonicalDir, args));
 
