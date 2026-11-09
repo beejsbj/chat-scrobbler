@@ -94,6 +94,17 @@ test("declaredDocumentKind trusts a provider filename extension, then a mime typ
   expect(declaredDocumentKind(null, null)).toBeNull();
 });
 
+test("a document filename contradicted by a concrete non-document mime type declares nothing", async () => {
+  expect(declaredDocumentKind("report.json", "image/png")).toBeNull();
+  expect(declaredDocumentKind("page.html", "application/pdf")).toBeNull();
+  for (const generic of ["application/octet-stream", "binary/octet-stream", "text/plain; charset=utf-8", ""]) {
+    expect(declaredDocumentKind("report.json", generic)).toBe("json");
+  }
+  const { uploads } = await run({ filename: "report.json", contentType: "image/png" },
+    () => new Response('{"a":1}', { headers: { "content-type": "application/json" } }));
+  expect(uploads).toEqual([]);
+});
+
 test("a filename with any other extension declares nothing, however long", async () => {
   expect(declaredDocumentKind("notes.properties", "application/json")).toBeNull();
   expect(declaredDocumentKind("archive.tar.gzip-compressed", "text/html")).toBeNull();

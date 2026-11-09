@@ -30,6 +30,7 @@ export interface AssetDeclaration {
 }
 
 const HAS_EXTENSION = /\.[^.\/\\]+$/;
+const GENERIC_TYPES = new Set(["application/octet-stream", "binary/octet-stream", "text/plain"]);
 
 /** JSON or HTML by filename extension; any other name is null. */
 function kindOfName(name?: string | null): DocumentKind | null {
@@ -46,13 +47,16 @@ function kindOfType(type?: string | null): DocumentKind | null {
 /**
  * A `.json` or `.html` attachment is legitimate only when the provider's own message metadata
  * says so: by filename extension, or by mime type when the name has no extension. A filename with
- * another extension, or a filename and mime type that disagree, declares nothing.
+ * another extension, or a filename and mime type that disagree, declares nothing. A generic mime
+ * type (octet-stream, text/plain) or none does not disagree with a filename.
  */
 export function declaredDocumentKind(filename?: string | null, contentType?: string | null): DocumentKind | null {
   const byType = kindOfType(contentType);
   if (!filename || !HAS_EXTENSION.test(filename.trim())) return byType;
   const byName = kindOfName(filename);
-  return byName && (!byType || byType === byName) ? byName : null;
+  if (!byName) return null;
+  const mime = (contentType ?? "").split(";")[0].trim().toLowerCase();
+  return !mime || GENERIC_TYPES.has(mime) || byType === byName ? byName : null;
 }
 
 /** What the first 16 KiB of the body looks like, whatever the headers claim. */
