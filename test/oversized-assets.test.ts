@@ -92,7 +92,8 @@ test("buffer growth ends exactly at an honest declared length, including the chu
   expect(nextBodyBufferSize(16 * MiB, 17 * MiB, 257 * MiB, 512 * MiB)).toBe(32 * MiB);
   // Understated or missing declarations grow geometrically toward the limit instead.
   expect(nextBodyBufferSize(16 * MiB, 17 * MiB, MiB, 512 * MiB)).toBe(32 * MiB);
-  expect(nextBodyBufferSize(0, 64 * 1024, 0, 512 * MiB)).toBe(16 * MiB);
+  expect(nextBodyBufferSize(0, 64 * 1024, 0, 512 * MiB)).toBe(64 * 1024);
+  expect(nextBodyBufferSize(64 * 1024, 128 * 1024, 0, 512 * MiB)).toBe(128 * 1024);
   expect(nextBodyBufferSize(256 * MiB, 257 * MiB, 0, 512 * MiB)).toBe(512 * MiB);
   expect(nextBodyBufferSize(256 * MiB, 300 * MiB, 0, 300 * MiB)).toBe(300 * MiB);
 });
