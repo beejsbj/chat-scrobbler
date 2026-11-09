@@ -94,6 +94,30 @@ test("declaredDocumentKind trusts a provider filename extension, then a mime typ
   expect(declaredDocumentKind(null, null)).toBeNull();
 });
 
+test("a filename with any other extension declares nothing, however long", async () => {
+  expect(declaredDocumentKind("notes.properties", "application/json")).toBeNull();
+  expect(declaredDocumentKind("archive.tar.gzip-compressed", "text/html")).toBeNull();
+  const { uploads } = await run({ filename: "notes.properties", contentType: "application/json" },
+    () => new Response('{"a":1}', { headers: { "content-type": "application/json" } }));
+  expect(uploads).toEqual([]);
+});
+
+test("a filename from a ChatGPT download link does not declare a document type", async () => {
+  const payload = { id: "c", mapping: { u: { message: { id: "u", author: { role: "user" }, content: { content_type: "text", parts: ["see attached"] },
+    metadata: { attachments: [{ id: "file_x" }] } } } } };
+  const uploads: any[] = [];
+  await createChatgptAdapter(async input => {
+    if (input === "/api/auth/session") return Response.json({ accessToken: "provider-only" });
+    if (input === "/backend-api/conversation/c") return Response.json(payload);
+    if (input.startsWith("/backend-api/files/")) return Response.json({ status: "success", download_url: "https://files.oaiusercontent.com/x", file_name: "session.json" });
+    return new Response('{"accessToken":"SECRET"}', { headers: { "content-type": "application/json" } });
+  }).captureOne!("c", null, {
+    emitCapture: async () => {},
+    uploadAsset: async value => { uploads.push(value); return { pointer: value.pointer, local_path: "assets/chatgpt/c/hash" }; },
+  });
+  expect(uploads).toEqual([]);
+});
+
 test("validateAssetBytes keeps the undeclared guard", () => {
   expect(() => validateAssetBytes(enc('{"a":1}'), "application/json")).toThrow();
   expect(() => validateAssetBytes(enc("<html></html>"), "image/png")).toThrow();

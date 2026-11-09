@@ -45,6 +45,8 @@ export interface AssetFetchMessage {
   type: "SCROBBLER_ASSET_FETCH";
   url: string;
   maxBytes?: number;
+  /** The provider's own filename and mime type, read before any download response could add to them. */
+  declared?: { filename?: string | null; contentType?: string | null };
   upload?: Omit<AssetUploadRequest, "bytes">;
 }
 

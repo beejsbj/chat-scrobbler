@@ -29,13 +29,15 @@ export interface AssetDeclaration {
   responseFilename?: string | null;
 }
 
-const HAS_EXTENSION = /\.[A-Za-z0-9]{1,8}$/;
+const HAS_EXTENSION = /\.[^.\/\\]+$/;
 
+/** JSON or HTML by filename extension; any other name is null. */
 function kindOfName(name?: string | null): DocumentKind | null {
-  const extension = name?.trim().match(/\.([A-Za-z0-9]{1,8})$/)?.[1]?.toLowerCase();
+  const extension = name?.trim().match(/\.([^.\/\\]+)$/)?.[1]?.toLowerCase();
   return extension === "json" ? "json" : extension === "html" || extension === "htm" ? "html" : null;
 }
 
+/** JSON or HTML by mime type, ignoring parameters such as charset. */
 function kindOfType(type?: string | null): DocumentKind | null {
   const mime = (type ?? "").split(";")[0].trim().toLowerCase();
   return /json/.test(mime) ? "json" : /html/.test(mime) ? "html" : null;
@@ -53,6 +55,7 @@ export function declaredDocumentKind(filename?: string | null, contentType?: str
   return byName && (!byType || byType === byName) ? byName : null;
 }
 
+/** What the first 16 KiB of the body looks like, whatever the headers claim. */
 function sniffKind(bytes: Uint8Array): DocumentKind | null {
   let start = 0;
   while (start < bytes.length && [9, 10, 13, 32].includes(bytes[start])) start++;

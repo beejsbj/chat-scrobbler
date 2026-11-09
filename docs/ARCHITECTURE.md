@@ -232,8 +232,10 @@ The guard used to refuse every JSON or HTML response, which also refused real `.
 - A JSON or HTML body is archived only when the provider's own message metadata declares
   the same kind: a `.json`, `.html` or `.htm` filename, or, when the name has no extension,
   a JSON or HTML mime type. A filename with another extension, or a filename and mime type
-  that disagree, declares nothing. The download response never declares: its
-  `content-disposition` filename is only checked against the declaration.
+  that disagree, declares nothing. Nothing learned from a download declares: neither
+  the response's `content-disposition` filename (only checked against the declaration) nor
+  the `file_name` in a ChatGPT download-link reply (it names the stored file, nothing more).
+  The declaration is read from the message before any download starts.
 - Even when declared, the response is rejected if its content type, its body prefix, or its
   `content-disposition` extension is the other kind (a sign-in page for a `.json` file, an
   auth JSON for a `.html` file).

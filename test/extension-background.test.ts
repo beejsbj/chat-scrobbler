@@ -298,11 +298,16 @@ test("background media fetch archives a provider-declared .json attachment and r
     }
     return new Response(served, { headers: { "content-type": served.startsWith("<") ? "text/html" : "application/json" } });
   }) as typeof fetch;
-  const upload = { source: "gemini" as const, sourceId: "c", pointer: "p", filename: "rows.json", contentType: "application/json" };
-  expect(await sendRuntimeMessage({ type: "SCROBBLER_ASSET_FETCH", url: "https://lh3.googleusercontent.com/gg-dl/rows", upload })).toMatchObject({ ok: true });
+  const declared = { filename: "rows.json", contentType: "application/json" };
+  const upload = { source: "gemini" as const, sourceId: "c", pointer: "p", ...declared };
+  expect(await sendRuntimeMessage({ type: "SCROBBLER_ASSET_FETCH", url: "https://lh3.googleusercontent.com/gg-dl/rows", declared, upload })).toMatchObject({ ok: true });
   expect(new TextDecoder().decode(uploaded)).toBe('{"rows":[1]}');
   uploaded = undefined;
   served = "<html><body>Sign in</body></html>";
+  expect(await sendRuntimeMessage({ type: "SCROBBLER_ASSET_FETCH", url: "https://lh3.googleusercontent.com/gg-dl/rows", declared, upload })).toMatchObject({ ok: false, error: "asset_download_failed" });
+  expect(uploaded).toBeUndefined();
+  // A filename on the upload alone is not a declaration from the provider's message.
+  served = '{"rows":[1]}';
   expect(await sendRuntimeMessage({ type: "SCROBBLER_ASSET_FETCH", url: "https://lh3.googleusercontent.com/gg-dl/rows", upload })).toMatchObject({ ok: false, error: "asset_download_failed" });
   expect(uploaded).toBeUndefined();
 });
