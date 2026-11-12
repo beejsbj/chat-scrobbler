@@ -1,5 +1,6 @@
 import { fetchAuthenticatedDetail } from "./authenticated-detail";
 import { DetailFailureStreak } from "./detail-failure-streak";
+import { DetailPacer, receiverSyncedIds } from "./sync-pacing";
 import { abortTransientCapture } from "./sync-errors";
 import { logSyncFailure, SyncFailureTracker } from "./sync-failures";
 import { buildRawCapture } from "../../../shared/src";
@@ -101,6 +102,7 @@ async function syncClaude(fetcher: FetchLike, options: ProviderSyncOptions): Pro
   let skipped = 0;
   let failed = 0;
   let maxConversationUpdatedAt: string | null = null;
+  const pacer = new DetailPacer(options);
 
   try {
   while (true) {
@@ -109,6 +111,7 @@ async function syncClaude(fetcher: FetchLike, options: ProviderSyncOptions): Pro
     const items = readClaudeItems(page);
     if (items.length === 0) break;
 
+    const synced = await receiverSyncedIds(options, items);
     for (const item of items) {
       failures.observed(item.id);
       const retry = failures.shouldRetry(item.id, item.updatedAt);
@@ -116,6 +119,12 @@ async function syncClaude(fetcher: FetchLike, options: ProviderSyncOptions): Pro
       if (options.shouldIgnore?.("claude", item.id)) {
         failures.succeeded(item.id);
         skipped += 1;
+        continue;
+      }
+      if (synced.has(item.id)) {
+        failures.succeeded(item.id);
+        skipped += 1;
+        maxConversationUpdatedAt = maxIso(maxConversationUpdatedAt, item.updatedAt);
         continue;
       }
       if (failures.isQuarantined(item.id, item.updatedAt)) {
@@ -134,7 +143,7 @@ async function syncClaude(fetcher: FetchLike, options: ProviderSyncOptions): Pro
       // (see docs/superpowers/specs/2026-06-05-api-vs-export-validation-diff.md).
       try {
         const detailEndpoint = `/api/organizations/${encodeURIComponent(org.uuid)}/chat_conversations/${encodeURIComponent(item.id)}?tree=True&rendering_mode=messages&render_all_tools=true`;
-        const payload = await fetchAuthenticatedDetail(fetcher, detailEndpoint, undefined, async () => (await getOrganization(fetcher)).uuid === org.uuid);
+        const payload = await pacer.fetch(() => fetchAuthenticatedDetail(fetcher, detailEndpoint, undefined, async () => (await getOrganization(fetcher)).uuid === org.uuid));
         const candidates = claudeAssetCandidates(payload, item.id, org.uuid);
         const assets = await uploadProviderAssets(
           fetcher,

@@ -9,6 +9,12 @@ export interface ProviderSyncOptions {
   emitCapture: (capture: RawCapture) => Promise<EmitCaptureResult>;
   shouldIgnore?: (source: ProviderSource, sourceId: string) => boolean;
   uploadAsset?: (asset: AssetUploadRequest) => Promise<UploadedAsset>;
+  /** Receiver freshness (`synced` / `stale` / `missing`) per listed conversation; `synced` skips the detail fetch. */
+  getStatuses?: (items: ConversationSummary[]) => Promise<Record<string, string>>;
+  /** Wait between detail fetches (tests inject a no-op). */
+  pace?: () => Promise<void>;
+  /** Wait out a short Retry-After (tests inject a no-op). */
+  sleep?: (ms: number) => Promise<void>;
 }
 
 export type EmitCaptureResult = boolean | void;
