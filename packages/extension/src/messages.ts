@@ -81,6 +81,8 @@ export interface SaveSettingsMessage {
   ingestToken?: string | null;
   /** When true, opening a provider tab auto-captures not-yet-synced conversations. */
   autoSync?: boolean;
+  /** When true (default), keep one pinned background tab per provider so capture works unattended. */
+  keepProviderTabs?: boolean;
   maxAssetBytes?: number;
 }
 

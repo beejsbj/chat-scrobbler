@@ -18,6 +18,10 @@ that is a fine outcome too.
   and each chat gets its own controls: disable sync for chats you never want
   captured, or delete a captured chat (delete also marks it ignored so it does
   not quietly come back).
+  Sync runs through a content script in an open provider tab, so the extension
+  also keeps one pinned background tab per provider (toggle in the popup) and
+  revives it if the browser discards it. That keeps capture going when you chat
+  in the desktop apps and never open the sites yourself.
 - **Stores forever.** Every conversation becomes one canonical JSON file with
   a shared schema across providers, including the full fork tree (edited and
   abandoned branches included), not just the visible path.

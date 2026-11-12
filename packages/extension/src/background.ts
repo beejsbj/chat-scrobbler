@@ -14,6 +14,7 @@ import { AssetTransfers } from "./asset-transfers";
 import { uploadAssetToIngest } from "./asset-upload";
 import { knownPointerAsset, rememberPointer } from "./asset-pointer-cache";
 import { getInstallId } from "./install-id";
+import { ensureKeeperTab, recoverDeadTab, validateKeepers } from "./keeper-tabs";
 import { DeterministicCaptureError, TransientSyncError, ReceiverSyncError } from "./providers/sync-errors";
 import type {
   AssetFetchMessage,
@@ -35,6 +36,12 @@ interface Settings {
   maxAssetBytes: number;
   /** When true, opening a provider tab auto-captures not-yet-synced conversations. */
   autoSync: boolean;
+  /**
+   * When true (default), the periodic sync keeps one pinned background tab per
+   * provider open and revives it when the browser discards or freezes it, so
+   * capture works with no human keeping a provider tab alive.
+   */
+  keepProviderTabs: boolean;
   /**
    * Optional shared secret that matches the INGEST_TOKEN env var on the receiver.
    * When set, the extension adds `Authorization: Bearer <token>` to every POST
@@ -137,6 +144,7 @@ async function handleRuntimeMessage(message: RuntimeMessage, sender: any): Promi
     const patch: Partial<Settings> = { ingestBaseUrl: message.ingestBaseUrl };
     if ("ingestToken" in message) patch.ingestToken = (message as SaveSettingsMessage).ingestToken ?? null;
     if ("autoSync" in message) patch.autoSync = (message as SaveSettingsMessage).autoSync ?? true;
+    if ("keepProviderTabs" in message) patch.keepProviderTabs = (message as SaveSettingsMessage).keepProviderTabs ?? true;
     if ("maxAssetBytes" in message) {
       if (!Number.isSafeInteger(message.maxAssetBytes) || message.maxAssetBytes! <= 0) throw new Error("maxAssetBytes must be a positive integer");
       patch.maxAssetBytes = message.maxAssetBytes;
@@ -394,28 +402,57 @@ async function syncActiveTab(): Promise<unknown> {
   return syncTab(tab, provider, "manual");
 }
 
-async function syncAllOpenProviderTabs(reason: "manual" | "periodic" | "retry"): Promise<unknown> {
+const PROVIDERS: ProviderSource[] = ["chatgpt", "claude", "gemini"];
+
+export async function syncAllOpenProviderTabs(reason: "manual" | "periodic" | "retry"): Promise<unknown> {
   const tabs = await queryTabs({});
-  const results = [];
+  const keep = (await getSettings()).keepProviderTabs !== false;
+  // Prefer a live tab over a discarded one (a discarded tab has no content script), then the active one.
+  const rank = (tab: any) => (keep && tab.discarded === true ? 0 : 2) + (tab.active ? 1 : 0);
   const selected = new Map<ProviderSource, any>();
   for (const tab of tabs) {
     const provider = providerFromUrl(tab.url);
     if (tab.id && provider) {
       const previous = selected.get(provider);
-      if (!previous || tab.active && !previous.active) selected.set(provider, tab);
+      if (!previous || rank(tab) > rank(previous)) selected.set(provider, tab);
     }
   }
-  for (const [provider, tab] of selected) results.push(await syncTab(tab, provider, reason));
+  if (keep && reason === "periodic") await validateKeepers(tabs);
+  // Only the periodic pass opens tabs; a provider with no tab gets its (single) keeper.
+  if (keep && reason === "periodic") {
+    for (const provider of PROVIDERS) {
+      if (selected.has(provider)) continue;
+      const keeper = await ensureKeeperTab(provider, tabs).catch(() => null);
+      if (keeper?.id !== undefined) selected.set(provider, keeper);
+    }
+  }
+  // One provider failing (signed out, rate limited) must not starve the others.
+  const results = [];
+  let firstError: unknown;
+  for (const [provider, tab] of selected) {
+    try { results.push(await syncTab(tab, provider, reason, { recover: keep })); }
+    catch (error) { firstError ??= error; }
+  }
+  if (firstError) throw firstError;
   return { ok: true, results };
 }
 
-async function syncTab(tab: any, provider: ProviderSource, reason: "manual" | "periodic" | "retry" | "visit"): Promise<unknown> {
+async function syncTab(tab: any, provider: ProviderSource, reason: "manual" | "periodic" | "retry" | "visit", options: { recover?: boolean } = {}): Promise<unknown> {
   const status = await getStatus();
   const lastSync = status.providers[provider]?.lastSync ?? null;
   // sendTabMessage resolves undefined when the tab has no live content script
   // (e.g. opened before the extension loaded / reloaded). Guard with optional
   // chaining so this surfaces a clear message instead of a "reading 'ok'" crash.
-  const response = await sendTabMessage(tab.id, { type: "SCROBBLER_SYNC_REQUEST", provider, lastSync, captureFailures: status.providers[provider]?.captureFailures ?? [], detailFailureStreak: status.providers[provider]?.detailFailureStreak ?? [], retryFailed: reason === "retry" }) as SyncResponse | undefined;
+  const request = (target: any) => sendTabMessage(target.id, { type: "SCROBBLER_SYNC_REQUEST", provider, lastSync, captureFailures: status.providers[provider]?.captureFailures ?? [], detailFailureStreak: status.providers[provider]?.detailFailureStreak ?? [], retryFailed: reason === "retry" }) as Promise<SyncResponse | undefined>;
+  let response = await request(tab);
+  // No answer means no live content script. Revive a keeper/discarded tab (rate-limited) or fall back to the
+  // keeper; a user's own live tab is never reloaded. At most two recoveries (e.g. fallback, then reload it).
+  for (let attempt = 0; !response && options.recover && attempt < 2; attempt++) {
+    const next = await recoverDeadTab(provider, tab);
+    if (!next) break;
+    tab = next;
+    response = await request(tab);
+  }
   if (!response?.ok) {
     const error = response?.error ?? "Content script not active in that tab; reload the tab and try again.";
     await mutateStatus(next => {
@@ -464,11 +501,13 @@ async function getSettings(): Promise<Settings> {
     syncPeriodMinutes: DEFAULT_SYNC_PERIOD_MINUTES,
     maxAssetBytes: MAX_PROVIDER_ASSET_BYTES,
     autoSync: true,
+    keepProviderTabs: true,
   };
   if (STALE_INGEST_URLS.has(settings.ingestBaseUrl.replace(/\/+$/, ""))) {
     settings.ingestBaseUrl = DEFAULT_INGEST_BASE_URL;
   }
   if (settings.autoSync === undefined) settings.autoSync = true;
+  if (settings.keepProviderTabs === undefined) settings.keepProviderTabs = true;
   settings.maxAssetBytes = effectiveAssetLimit(settings.maxAssetBytes);
   return settings;
 }

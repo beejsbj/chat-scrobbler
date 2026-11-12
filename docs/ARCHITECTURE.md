@@ -46,6 +46,16 @@ captures deduplicate. Provider IDs are encoded without lossy sanitization.
   the background script.
 - `background.ts` owns the alarm-driven periodic sync (default 30 minutes), handles
   manual sync requests from the popup, and POSTs captures to the ingest server.
+- `keeper-tabs.ts` exists because sync only works through a content script in an open
+  provider tab, and desktop-app users leave none open. On each periodic pass (setting
+  `keepProviderTabs`, default on) the background opens one pinned, inactive,
+  non-discardable tab per provider that has no tab, remembered in
+  `chrome.storage.local` and validated before reuse. A tab that does not answer a sync
+  is reloaded and retried once if it is a keeper or discarded (at most one reload per
+  provider per 30 minutes); a user's own live tab is never reloaded, the keeper is used
+  instead. Every `chrome.tabs` call is feature-detected, so shimmed browsers fall back
+  to syncing whatever tab is open. One provider failing (for example a 429) no longer
+  stops the other providers' pass.
 - `providers/chatgpt.ts`, `claude.ts`, `gemini.ts` each implement `ProviderAdapter`:
   `sync()` walks the provider's conversation list via its own API, calls `emitCapture()`
   for every conversation that is new or updated since `lastSync`, and returns scan stats.

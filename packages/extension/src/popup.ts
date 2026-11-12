@@ -4,6 +4,7 @@ import { RECENT_CAPTURES_KEY, type RecentCapture } from "./recent-captures";
 
 // ---- element refs ----
 const autoSyncToggle = document.querySelector<HTMLInputElement>("#auto-sync")!;
+const keepTabsToggle = document.querySelector<HTMLInputElement>("#keep-provider-tabs")!;
 const ingestInput    = document.querySelector<HTMLInputElement>("#ingest-url")!;
 const ingestTokenInput = document.querySelector<HTMLInputElement>("#ingest-token")!;
 const assetLimitInput = document.querySelector<HTMLInputElement>("#asset-limit")!;
@@ -86,6 +87,7 @@ async function applyTheme(): Promise<void> {
 
 // ---- event handlers ----
 autoSyncToggle.addEventListener("change", () => guard(saveSettings));
+keepTabsToggle.addEventListener("change", () => guard(saveSettings));
 ingestInput.addEventListener("change",    () => guard(saveSettings));
 ingestTokenInput.addEventListener("change", () => guard(saveSettings));
 syncAllButton.addEventListener("click",   () => guard(syncAll));
@@ -127,6 +129,7 @@ async function saveSettings(): Promise<void> {
     ingestBaseUrl: ingestInput.value.trim() || DEFAULT_INGEST_BASE_URL,
     ingestToken: ingestTokenInput.value.trim() || null,
     autoSync: autoSyncToggle.checked,
+    keepProviderTabs: keepTabsToggle.checked,
     maxAssetBytes: Number(assetLimitInput.value) * 1024 * 1024,
   });
   if (!res?.ok) throw new Error(res?.error ?? "Save failed");
@@ -143,6 +146,7 @@ async function refreshStatus(): Promise<void> {
   ingestInput.value = settings.ingestBaseUrl ?? DEFAULT_INGEST_BASE_URL;
   ingestTokenInput.value = settings.ingestToken ?? "";
   autoSyncToggle.checked = settings.autoSync ?? true;
+  keepTabsToggle.checked = settings.keepProviderTabs ?? true;
   assetLimitInput.value = String((settings.maxAssetBytes ?? DEFAULT_MAX_ASSET_BYTES) / (1024 * 1024));
   const reports = Object.entries(s.providers ?? {}).map(([source, state]: [string, any]) => {
     const backfill = state.lastBackfill;
