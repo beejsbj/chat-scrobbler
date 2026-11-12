@@ -204,8 +204,8 @@ so peak memory is about the asset size in the browser and in the receiver. Large
 1 MiB runtime-message chunks; cross-origin media can be downloaded and uploaded in
 the background worker. Provider cookies and bearer headers are never sent to ingest. Asset fetches enforce
 source-specific download URL and credential policies, validate every visible
-redirect hop, refuse opaque redirects, and reject
-JSON/HTML documents before upload. The exact policies are in the BJS-547 handoff.
+redirect hop, refuse opaque redirects, and guard JSON/HTML bodies before upload
+(see "Document guard" below).
 
 Provider limits:
 
@@ -223,8 +223,53 @@ Provider limits:
   substitute is emitted. Blob backfill re-verifies the pointer in the current
   chat's audio/video/source elements before reading it without credentials.
 
-See [BJS-547 handoff](../HANDOFF-BJS-547.md) for coverage, endpoint evidence and
-manual browser checks. A binary that has no exposed download URL cannot be captured.
+A binary that has no exposed download URL cannot be captured. Endpoint coverage that still
+needs live verification is marked above.
+
+### Document guard: JSON and HTML bodies
+
+Origin: PR #14 (BJS-547), commit `db3779b`. A review probe put
+`image_url: "/api/auth/session"` in a conversation payload. The extension fetched it with
+the user's provider credentials and would have uploaded `{"accessToken": ...}` to the
+archive, where any MCP client could read it back through `get_asset`. The fix was two
+layers, and the notes that cited an "explicit user security constraint" were describing the
+second layer too broadly. No such constraint from Burooj has been found; the reason is the
+credential leak above.
+
+1. **URL allowlist (primary).** `asset-url.ts` fetches with credentials only from fixed
+   per-provider download routes and media hosts, so a message cannot point the extension
+   at a session or account endpoint. Redirects are manual and every hop is re-checked.
+2. **Document guard (backstop).** `validateAssetBytes` in
+   `packages/extension/src/providers/asset-response.ts` covers an allowlisted route that
+   still answers with a sign-in page, an interstitial, or an auth document.
+
+The guard used to refuse every JSON or HTML response, which also refused real `.json` and
+`.html` attachments. It now separates them by what the provider declared:
+
+- A JSON or HTML body is archived only when the provider's own message metadata declares
+  the same kind: a `.json`, `.html` or `.htm` filename, or, when the name has no extension,
+  a JSON or HTML mime type. A filename with another extension, or a filename and mime type
+  that disagree, declares nothing. Nothing learned from a download declares: neither
+  the response's `content-disposition` filename (only checked against the declaration) nor
+  the `file_name` in a ChatGPT download-link reply (it names the stored file, nothing more).
+  The declaration is read from the message before any download starts.
+- Even when declared, the response is rejected if its content type, its body prefix, or its
+  `content-disposition` extension is the other kind (a sign-in page for a `.json` file, an
+  auth JSON for a `.html` file).
+- Any JSON or HTML body for an undeclared or non-document attachment is rejected as before.
+
+A rejection is `asset_download_failed`, because a sign-in page or interstitial is a passing
+provider state. Like any failed asset it then backs off and retries until the owner runs
+`chat-scrobbler assets ignore <id>` (see the retry paragraph above). Real attachments no
+longer reach it, so they do not retry. The retry policy lives in `asset-outcomes.ts`, not
+in this guard.
+
+Residual risk: if an allowlisted download route returned a session document for a pointer
+the provider declared as `.json`, the guard could not tell it from the attachment. That
+needs a provider-side fault on a fixed route, not a crafted message. Direct JSON responses
+from a ChatGPT download route are read as download links, so a declared `.json` is archived
+when the route links to a CDN URL that serves the file, not when the route returns the file
+inline.
 
 Backfill reads canonical pointers, including legacy sessions without archived raw.
 Successful backfill enriches a new raw version before updating canonical links, so

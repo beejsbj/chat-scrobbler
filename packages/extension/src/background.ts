@@ -9,7 +9,7 @@ import { appendRecentCapture, RECENT_CAPTURES_KEY, type RecentCapture } from "./
 import { assetContentType, effectiveAssetLimit, filenameFromHeaders, MAX_PROVIDER_ASSET_BYTES } from "./providers/assets";
 import { allowedAssetUrl } from "./providers/asset-url";
 import { boundedAssetBuffer } from "./providers/asset-bytes";
-import { validateAssetBytes, validateAssetResponse } from "./providers/asset-response";
+import { documentContentType, validateAssetBytes, validateAssetResponse } from "./providers/asset-response";
 import { AssetTransfers } from "./asset-transfers";
 import { uploadAssetToIngest } from "./asset-upload";
 import { knownPointerAsset, rememberPointer } from "./asset-pointer-cache";
@@ -186,17 +186,18 @@ async function fetchAssetBytes(message: AssetFetchMessage): Promise<unknown> {
   const bytes = await boundedAssetBuffer(res, maxBytes);
   const filename = filenameFromHeaders(res);
   const contentType = res.headers.get("content-type");
-  validateAssetBytes(bytes, contentType);
+  const kind = validateAssetBytes(bytes, contentType, { ...message.declared, responseFilename: filename });
   if (message.upload) {
+    const archivedType = kind ? documentContentType(kind, contentType, message.upload.contentType) : assetContentType(contentType, message.upload.contentType);
     let asset;
     try { asset = await uploadAssetToIngest(fetch, settings, { ...message.upload, filename: message.upload.filename ?? filename,
-      contentType: assetContentType(contentType, message.upload.contentType), bytes }); }
+      contentType: archivedType, bytes }); }
     catch (error) {
       if (error instanceof TransientSyncError) throw error;
       throw new Error(error instanceof Error && error.message === "asset_too_large" ? "asset_too_large" : "asset_upload_failed");
     }
     await rememberPointer(message.upload, asset);
-    return { ok: true, asset: { ...asset, filename: message.upload.filename ?? filename, content_type: assetContentType(contentType, message.upload.contentType) } };
+    return { ok: true, asset: { ...asset, filename: message.upload.filename ?? filename, content_type: archivedType } };
   }
   return { ok: true, bytes: Array.from(bytes), filename, contentType };
 }

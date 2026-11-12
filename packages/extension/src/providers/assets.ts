@@ -5,7 +5,7 @@ import { allowedAssetUrl, useBackgroundForAsset } from "./asset-url";
 import { fetchAllowedAsset } from "./asset-fetch";
 import { isGeminiPageBlob, fetchGeminiPageBlob, validateGeminiPageBlobResponse } from "./gemini-page-blob";
 import { boundedAssetBuffer } from "./asset-bytes";
-import { validateAssetBytes, validateAssetResponse } from "./asset-response";
+import { documentContentType, isGenericType, validateAssetBytes, validateAssetResponse, type AssetDeclaration } from "./asset-response";
 import { lookupCapturedAsset, backgroundAssetError, paceAssetDownload } from "./asset-cache-client";
 import { assetInputDigest, assetOutcomeKey, defaultAssetOutcomeMemory, reportablePointer, skipRememberedAttempt, type AssetOutcomeMemory } from "./asset-outcomes";
 
@@ -38,8 +38,11 @@ export interface ProviderAssetCandidate {
   url: string | null;
   /** Applied only to same-origin provider requests, never forwarded to ingest or CDNs. */
   headers?: Record<string, string>;
+  /** From the provider's message metadata. This, with `contentType`, is the provider's declaration. */
   filename?: string | null;
   contentType?: string | null;
+  /** Learned from a download-link reply. It names the stored file but never declares a type. */
+  resolvedFilename?: string | null;
   messageId?: string | null;
   fetchViaBackground?: boolean;
   inlineBytes?: Uint8Array;
@@ -58,6 +61,7 @@ export async function uploadProviderAssets(
   options: UploadProviderAssetsOptions = {},
 ): Promise<UploadedAsset[]> {
   if (!uploadAsset || candidates.length === 0) return [];
+  mergeDeclarations(candidates);
   const maxBytes = options.maxBytes ?? await configuredAssetLimit();
   const uploaded: UploadedAsset[] = [];
   const seen = new Set<string>();
@@ -66,6 +70,8 @@ export async function uploadProviderAssets(
   for (const candidate of candidates) {
     if (!candidate.pointer || seen.has(`${candidate.messageId ?? ""}:${candidate.pointer}`)) continue;
     seen.add(`${candidate.messageId ?? ""}:${candidate.pointer}`);
+    // The provider's declaration is read now: a resolver may later fill in a filename from a download response.
+    const declared = { filename: candidate.filename, contentType: candidate.contentType };
     const outcomeKey = assetOutcomeKey(candidate);
     // Best effort: an unreadable memory means attempt the asset, never abandon the batch.
     const remembered = memory ? await memory.recall(outcomeKey).catch(() => null) : null;
@@ -88,7 +94,7 @@ export async function uploadProviderAssets(
       const downloaded = inlineBytes ? { bytes: inlineBytes, contentType: candidate.contentType } : candidate.downloadResponse
         ? await fetchCandidateBytes(fetcher, url!, maxBytes, candidate.headers, candidate.source, candidate.downloadResponse, pageBlobId)
         : (candidate.fetchViaBackground || useBackgroundForAsset(url!))
-        ? await (options.fetchAsset ?? ((url) => fetchAssetViaBackground(url, maxBytes, candidate)))(url!)
+        ? await (options.fetchAsset ?? ((url) => fetchAssetViaBackground(url, maxBytes, candidate, declared)))(url!)
         : await fetchCandidateBytes(fetcher, url!, maxBytes, candidate.headers, candidate.source, undefined, pageBlobId);
       if (downloaded.asset) {
         uploaded.push({ ...downloaded.asset, pointer: candidate.pointer, message_id: candidate.messageId ?? downloaded.asset.message_id ?? null });
@@ -96,9 +102,11 @@ export async function uploadProviderAssets(
         continue;
       }
       if (downloaded.bytes.length > maxBytes) throw new Error("asset_too_large");
-      validateAssetBytes(new Uint8Array(downloaded.bytes), downloaded.contentType);
-      const contentType = assetContentType(downloaded.contentType, candidate.contentType);
-      const filename = candidate.filename ?? downloaded.filename ?? null;
+      const kind = validateAssetBytes(new Uint8Array(downloaded.bytes), downloaded.contentType,
+        { ...declared, responseFilename: downloaded.filename });
+      const contentType = kind ? documentContentType(kind, downloaded.contentType, candidate.contentType)
+        : assetContentType(downloaded.contentType, candidate.contentType);
+      const filename = candidate.filename ?? candidate.resolvedFilename ?? downloaded.filename ?? null;
       const request: AssetUploadRequest = {
         messageId: candidate.messageId,
         originalUrl: url,
@@ -139,17 +147,33 @@ export async function uploadProviderAssets(
   return uploaded;
 }
 
+/**
+ * Duplicate pointers in one message collapse to their first candidate. Let that candidate take a
+ * filename or mime type the provider declared on a later duplicate, so the order in which a
+ * message lists its metadata does not decide whether a declared attachment is archived.
+ */
+function mergeDeclarations(candidates: ProviderAssetCandidate[]): void {
+  const first = new Map<string, ProviderAssetCandidate>();
+  for (const candidate of candidates) {
+    const key = JSON.stringify([candidate.messageId ?? null, candidate.pointer]);
+    const head = first.get(key);
+    if (!head) { first.set(key, candidate); continue; }
+    head.filename ??= candidate.filename;
+    if (isGenericType(head.contentType) && candidate.contentType) head.contentType = candidate.contentType;
+  }
+}
+
 function estimatedBase64Bytes(data: string): number {
   const padding = data.endsWith("==") ? 2 : data.endsWith("=") ? 1 : 0;
   return Math.max(0, Math.floor(data.length * 3 / 4) - padding);
 }
 
-async function fetchAssetViaBackground(url: string, maxBytes: number, candidate: ProviderAssetCandidate): Promise<ProviderAssetBytes> {
+async function fetchAssetViaBackground(url: string, maxBytes: number, candidate: ProviderAssetCandidate, declared?: AssetDeclaration): Promise<ProviderAssetBytes> {
   if (typeof chrome === "undefined" || !chrome.runtime?.sendMessage) {
     throw new Error("Background asset fetch is unavailable");
   }
   const response = await new Promise<any>((resolve) => {
-    chrome.runtime.sendMessage({ type: "SCROBBLER_ASSET_FETCH", url, maxBytes, upload: { source: candidate.source, sourceId: candidate.sourceId, pointer: candidate.pointer, messageId: candidate.messageId, filename: candidate.filename, contentType: candidate.contentType, originalUrl: url } }, resolve);
+    chrome.runtime.sendMessage({ type: "SCROBBLER_ASSET_FETCH", url, maxBytes, declared, upload: { source: candidate.source, sourceId: candidate.sourceId, pointer: candidate.pointer, messageId: candidate.messageId, filename: candidate.filename ?? candidate.resolvedFilename, contentType: candidate.contentType, originalUrl: url } }, resolve);
   });
   if (!response?.ok) throw backgroundAssetError(response);
   return {
@@ -224,6 +248,7 @@ export async function configuredAssetLimit(): Promise<number> {
 }
 
 export function assetReferences(candidates: ProviderAssetCandidate[]): import("../../../shared/src").AssetBackfillReference[] {
+  mergeDeclarations(candidates);
   const seen = new Set<string>();
   let downloadBlock: unknown;
   return candidates.flatMap(candidate => {

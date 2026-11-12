@@ -1,0 +1,212 @@
+import { expect, test } from "bun:test";
+import { assetReferences, uploadProviderAssets, type ProviderAssetCandidate } from "../packages/extension/src/providers/assets";
+import { createChatgptAdapter } from "../packages/extension/src/providers/chatgpt";
+import { declaredDocumentKind, validateAssetBytes } from "../packages/extension/src/providers/asset-response";
+import type { AssetFailure } from "../packages/shared/src";
+
+const ROUTE = "/backend-api/files/file-1/download";
+const enc = (text: string) => new TextEncoder().encode(text);
+
+async function run(candidate: Partial<ProviderAssetCandidate>, response: () => Response) {
+  const uploads: any[] = [], failures: AssetFailure[] = [];
+  const assets = await uploadProviderAssets(async () => response(), async request => {
+    uploads.push(request); return { pointer: request.pointer, local_path: "assets/chatgpt/c/hash" };
+  }, [{ source: "chatgpt", sourceId: "c", pointer: "file-1", url: ROUTE, ...candidate }],
+  { reportFailure: async failure => { failures.push(failure); }, outcomes: null });
+  return { assets, uploads, failures };
+}
+
+test("a .json attachment the provider declared is archived", async () => {
+  const body = '{"name":"config","token":"user-authored data"}';
+  const { assets, uploads, failures } = await run({ filename: "config.json", contentType: "application/json" },
+    () => new Response(body, { headers: { "content-type": "application/json; charset=utf-8" } }));
+  expect(failures).toEqual([]);
+  expect(assets).toHaveLength(1);
+  expect(new TextDecoder().decode(new Uint8Array(uploads[0].bytes))).toBe(body);
+  expect(uploads[0]).toMatchObject({ filename: "config.json", contentType: "application/json; charset=utf-8" });
+});
+
+test("a .html attachment the provider declared is archived", async () => {
+  const { assets, failures } = await run({ filename: "report.html", contentType: "text/html" },
+    () => new Response("<!doctype html><html><body>Quarterly report</body></html>", { headers: { "content-type": "text/html" } }));
+  expect(failures).toEqual([]);
+  expect(assets).toHaveLength(1);
+});
+
+test("an archived document carries a document mime type even when the response header is wrong or generic", async () => {
+  const cases: Array<[string, string, string]> = [
+    ["data.json", "application/octet-stream", "application/json"],
+    ["data.json", "image/png", "application/json"],
+    ["page.html", "application/octet-stream", "text/html"],
+    ["page.html", "text/html; charset=utf-8", "text/html; charset=utf-8"],
+  ];
+  for (const [filename, served, archived] of cases) {
+    const body = filename.endsWith(".json") ? '{"a":1}' : "<html><body>x</body></html>";
+    const { uploads } = await run({ filename }, () => new Response(body, { headers: { "content-type": served } }));
+    expect(uploads.map(u => u.contentType)).toEqual([archived]);
+  }
+});
+
+test("a declared .json served as application/octet-stream is archived", async () => {
+  const { assets, failures } = await run({ filename: "data.json" },
+    () => new Response("[1,2,3]", { headers: { "content-type": "application/octet-stream" } }));
+  expect(failures).toEqual([]);
+  expect(assets).toHaveLength(1);
+});
+
+test("an HTML sign-in page served where an image was expected is rejected", async () => {
+  const { assets, uploads, failures } = await run({ filename: "photo.png", contentType: "image/png" },
+    () => new Response("<!DOCTYPE html><html><body>Sign in to continue</body></html>", { headers: { "content-type": "text/html" } }));
+  expect(assets).toEqual([]);
+  expect(uploads).toEqual([]);
+  expect(failures.map(f => f.reason)).toEqual(["asset_download_failed"]);
+});
+
+test("an HTML sign-in page served for a declared .json attachment is rejected", async () => {
+  for (const contentType of ["text/html", "application/octet-stream"]) {
+    const { uploads, failures } = await run({ filename: "config.json", contentType: "application/json" },
+      () => new Response("<html><body>Please log in</body></html>", { headers: { "content-type": contentType } }));
+    expect(uploads).toEqual([]);
+    expect(failures).toHaveLength(1);
+  }
+});
+
+test("an auth JSON document served for a declared .html attachment is rejected", async () => {
+  const { uploads, failures } = await run({ filename: "page.html", contentType: "text/html" },
+    () => new Response('{"accessToken":"SECRET"}', { headers: { "content-type": "application/json" } }));
+  expect(uploads).toEqual([]);
+  expect(failures).toHaveLength(1);
+});
+
+test("JSON served for an undeclared or non-document attachment is still rejected", async () => {
+  for (const declared of [{}, { filename: "photo.png", contentType: "image/png" }, { filename: "notes.txt", contentType: "application/json" }]) {
+    const { uploads, failures } = await run(declared, () => new Response('{"accessToken":"SECRET"}', { headers: { "content-type": "application/json" } }));
+    expect(uploads).toEqual([]);
+    expect(failures).toHaveLength(1);
+  }
+});
+
+test("a response filename cannot declare a document type the provider did not", async () => {
+  const { uploads } = await run({}, () => new Response('{"accessToken":"SECRET"}', { headers: { "content-type": "application/json", "content-disposition": 'attachment; filename="session.json"' } }));
+  expect(uploads).toEqual([]);
+});
+
+test("a content-disposition filename that contradicts the declared type is rejected", async () => {
+  const { uploads } = await run({ filename: "page.html", contentType: "text/html" },
+    () => new Response("<html>x</html>", { headers: { "content-type": "text/html", "content-disposition": 'attachment; filename="session.json"' } }));
+  expect(uploads).toEqual([]);
+});
+
+test("declaredDocumentKind trusts a provider filename extension, then a mime type without a filename", () => {
+  expect(declaredDocumentKind("a.JSON", null)).toBe("json");
+  expect(declaredDocumentKind("a.htm", "text/html")).toBe("html");
+  expect(declaredDocumentKind(null, "application/json")).toBe("json");
+  expect(declaredDocumentKind(null, "application/vnd.api+json")).toBe("json");
+  expect(declaredDocumentKind("a.json", "text/html")).toBeNull();
+  expect(declaredDocumentKind("a.png", "application/json")).toBeNull();
+  expect(declaredDocumentKind("noextension", "text/html")).toBe("html");
+  expect(declaredDocumentKind(null, null)).toBeNull();
+});
+
+test("a document filename contradicted by a concrete non-document mime type declares nothing", async () => {
+  expect(declaredDocumentKind("report.json", "image/png")).toBeNull();
+  expect(declaredDocumentKind("page.html", "application/pdf")).toBeNull();
+  for (const generic of ["application/octet-stream", "binary/octet-stream", "text/plain; charset=utf-8", ""]) {
+    expect(declaredDocumentKind("report.json", generic)).toBe("json");
+  }
+  const { uploads } = await run({ filename: "report.json", contentType: "image/png" },
+    () => new Response('{"a":1}', { headers: { "content-type": "application/json" } }));
+  expect(uploads).toEqual([]);
+});
+
+test("a filename with any other extension declares nothing, however long", async () => {
+  expect(declaredDocumentKind("notes.properties", "application/json")).toBeNull();
+  expect(declaredDocumentKind("archive.tar.gzip-compressed", "text/html")).toBeNull();
+  const { uploads } = await run({ filename: "notes.properties", contentType: "application/json" },
+    () => new Response('{"a":1}', { headers: { "content-type": "application/json" } }));
+  expect(uploads).toEqual([]);
+});
+
+test("a filename from a ChatGPT download link does not declare a document type", async () => {
+  const payload = { id: "c", mapping: { u: { message: { id: "u", author: { role: "user" }, content: { content_type: "text", parts: ["see attached"] },
+    metadata: { attachments: [{ id: "file_x" }] } } } } };
+  const uploads: any[] = [];
+  await createChatgptAdapter(async input => {
+    if (input === "/api/auth/session") return Response.json({ accessToken: "provider-only" });
+    if (input === "/backend-api/conversation/c") return Response.json(payload);
+    if (input.startsWith("/backend-api/files/")) return Response.json({ status: "success", download_url: "https://files.oaiusercontent.com/x", file_name: "session.json" });
+    return new Response('{"accessToken":"SECRET"}', { headers: { "content-type": "application/json" } });
+  }).captureOne!("c", null, {
+    emitCapture: async () => {},
+    uploadAsset: async value => { uploads.push(value); return { pointer: value.pointer, local_path: "assets/chatgpt/c/hash" }; },
+  });
+  expect(uploads).toEqual([]);
+});
+
+test("a download-link filename never reaches the backfill reference as a declaration", async () => {
+  const payload = { id: "c", mapping: { u: { message: { id: "u", author: { role: "user" }, content: { content_type: "text", parts: ["see attached"] },
+    metadata: { attachments: [{ id: "file_x" }] } } } } };
+  let capture: any;
+  await createChatgptAdapter(async input => {
+    if (input === "/api/auth/session") return Response.json({ accessToken: "provider-only" });
+    if (input === "/backend-api/conversation/c") return Response.json(payload);
+    if (input.startsWith("/backend-api/files/")) return Response.json({ status: "success", download_url: "https://files.oaiusercontent.com/x", file_name: "session.json" });
+    return new Response('{"accessToken":"SECRET"}', { headers: { "content-type": "application/json" } });
+  }).captureOne!("c", null, { emitCapture: async value => { capture = value; }, uploadAsset: async value => ({ pointer: value.pointer, local_path: "assets/x" }) });
+  expect(capture.asset_references).toEqual([{ pointer: "file_x", message_id: "u", filename: null, content_type: null }]);
+});
+
+test("a later duplicate pointer lends its declaration to the first candidate", async () => {
+  const body = '{"a":1}';
+  const uploads: any[] = [];
+  const candidates: ProviderAssetCandidate[] = [
+    { source: "chatgpt", sourceId: "c", messageId: "m", pointer: "file-1", url: ROUTE },
+    { source: "chatgpt", sourceId: "c", messageId: "m", pointer: "file-1", url: ROUTE, filename: "a.json", contentType: "application/json" },
+  ];
+  const references = assetReferences(candidates);
+  expect(references).toEqual([{ pointer: "file-1", message_id: "m", filename: "a.json", content_type: "application/json" }]);
+  const assets = await uploadProviderAssets(async () => new Response(body, { headers: { "content-type": "application/json" } }),
+    async request => { uploads.push(request); return { pointer: request.pointer, local_path: "assets/x" }; },
+    candidates, { reportFailure: async () => {}, outcomes: null });
+  expect(assets).toHaveLength(1);
+  expect(uploads[0]).toMatchObject({ filename: "a.json" });
+});
+
+test("a later concrete mime type replaces a generic one on a duplicate pointer, and a conflict still rejects", async () => {
+  const duplicate = (first: string, second: string): ProviderAssetCandidate[] => [
+    { source: "chatgpt", sourceId: "c", messageId: "m", pointer: "file-1", url: ROUTE, contentType: first },
+    { source: "chatgpt", sourceId: "c", messageId: "m", pointer: "file-1", url: ROUTE, contentType: second },
+  ];
+  const uploads: any[] = [];
+  const upload = async (candidates: ProviderAssetCandidate[]) => uploadProviderAssets(
+    async () => new Response('{"a":1}', { headers: { "content-type": "application/json" } }),
+    async request => { uploads.push(request); return { pointer: request.pointer, local_path: "assets/x" }; },
+    candidates, { reportFailure: async () => {}, outcomes: null });
+  expect(await upload(duplicate("application/octet-stream", "application/json"))).toHaveLength(1);
+  expect(assetReferences(duplicate("application/octet-stream", "application/json"))[0].content_type).toBe("application/json");
+  expect(await upload(duplicate("image/png", "application/json"))).toHaveLength(0);
+});
+
+test("validateAssetBytes keeps the undeclared guard", () => {
+  expect(() => validateAssetBytes(enc('{"a":1}'), "application/json")).toThrow();
+  expect(() => validateAssetBytes(enc("<html></html>"), "image/png")).toThrow();
+  expect(() => validateAssetBytes(enc("﻿  [1]"), null)).toThrow();
+  expect(() => validateAssetBytes(enc("\x89PNG"), "image/png")).not.toThrow();
+});
+
+test("ChatGPT archives a declared .json upload that the CDN serves as application/json", async () => {
+  const payload = { id: "c", mapping: { u: { message: { id: "u", author: { role: "user" }, content: { content_type: "text", parts: ["see attached"] },
+    metadata: { attachments: [{ id: "file_json", name: "export.json", mime_type: "application/json" }] } } } } };
+  const uploads: any[] = [];
+  await createChatgptAdapter(async input => {
+    if (input === "/api/auth/session") return Response.json({ accessToken: "provider-only" });
+    if (input === "/backend-api/conversation/c") return Response.json(payload);
+    if (input.startsWith("/backend-api/files/")) return Response.json({ status: "success", download_url: "https://files.oaiusercontent.com/export" });
+    return new Response('{"rows":[1,2]}', { headers: { "content-type": "application/json" } });
+  }).captureOne!("c", null, {
+    emitCapture: async () => {},
+    uploadAsset: async value => { uploads.push(value); return { pointer: value.pointer, local_path: "assets/chatgpt/c/hash" }; },
+  });
+  expect(uploads.map(u => u.filename)).toEqual(["export.json"]);
+  expect(new TextDecoder().decode(new Uint8Array(uploads[0].bytes))).toBe('{"rows":[1,2]}');
+});
