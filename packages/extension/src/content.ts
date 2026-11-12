@@ -82,6 +82,11 @@ async function syncProvider(message: SyncRequest): Promise<SyncResponse> {
     emitCapture,
     shouldIgnore: (_source, sourceId) => ignoredIds.has(sourceId),
     uploadAsset,
+    getStatuses: async (conversations) => {
+      const res = await sendRuntimeMessage({ type: "SCROBBLER_CONVERSATION_STATES", provider: provider!.source, conversations });
+      if (!res?.ok) throw new Error("Receiver status unavailable");
+      return res.statuses as Record<string, string>;
+    },
   });
   return { ok: true, ...result };
 }

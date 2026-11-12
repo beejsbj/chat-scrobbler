@@ -1,5 +1,6 @@
 import { fetchAuthenticatedDetail } from "./authenticated-detail";
 import { DetailFailureStreak } from "./detail-failure-streak";
+import { DetailPacer, receiverSyncedIds } from "./sync-pacing";
 import { abortTransientCapture } from "./sync-errors";
 import { logSyncFailure, SyncFailureTracker } from "./sync-failures";
 import { buildRawCapture } from "../../../shared/src";
@@ -93,6 +94,7 @@ async function syncChatgpt(fetcher: FetchLike, options: ProviderSyncOptions): Pr
   let skipped = 0;
   let failed = 0;
   let maxConversationUpdatedAt: string | null = null;
+  const pacer = new DetailPacer(options);
 
   try {
   while (true) {
@@ -112,6 +114,7 @@ async function syncChatgpt(fetcher: FetchLike, options: ProviderSyncOptions): Pr
       break;
     }
 
+    const synced = await receiverSyncedIds(options, items);
     for (const item of items) {
       failures.observed(item.id);
       const retry = failures.shouldRetry(item.id, item.updatedAt);
@@ -119,6 +122,12 @@ async function syncChatgpt(fetcher: FetchLike, options: ProviderSyncOptions): Pr
       if (options.shouldIgnore?.("chatgpt", item.id)) {
         failures.succeeded(item.id);
         skipped += 1;
+        continue;
+      }
+      if (synced.has(item.id)) {
+        failures.succeeded(item.id);
+        skipped += 1;
+        maxConversationUpdatedAt = maxIso(maxConversationUpdatedAt, item.updatedAt);
         continue;
       }
       if (failures.isQuarantined(item.id, item.updatedAt)) {
@@ -133,7 +142,7 @@ async function syncChatgpt(fetcher: FetchLike, options: ProviderSyncOptions): Pr
 
       try {
         const detailEndpoint = `/backend-api/conversation/${encodeURIComponent(item.id)}`;
-        const payload = await fetchAuthenticatedDetail(fetcher, detailEndpoint, { headers }, async () => await getAccessToken(fetcher) === token && token !== null);
+        const payload = await pacer.fetch(() => fetchAuthenticatedDetail(fetcher, detailEndpoint, { headers }, async () => await getAccessToken(fetcher) === token && token !== null));
         const candidates = chatgptAssetCandidates(payload, item.id, headers);
         const assets = await uploadProviderAssets(
           fetcher,
