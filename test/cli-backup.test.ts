@@ -119,7 +119,7 @@ test("runRestore reports raw captures restored, repaired and already present", a
     writeFileSync(join(rawDir, ref), "truncated");
     await runRestore({ cfg, snapshot, force: true, write });
     expect(out.join("\n")).toContain("Raw captures: 0 restored, 1 repaired, 1 already present");
-    expect(out.join("\n")).toContain(".mismatch-");
+    expect(out.join("\n")).toContain(`${join(rawDir, ref)}.mismatch-`);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

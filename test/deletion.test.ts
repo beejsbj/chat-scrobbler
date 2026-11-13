@@ -236,3 +236,23 @@ test("legacy ownership initialization defers blob cleanup when a provider direct
     expect(referenceStoreReady(opts.canonicalDir)).toBe(false);
   } finally { errors.mockRestore(); }
 });
+
+test("a restore that fails partway still erases what it restored for tombstoned sessions", async () => {
+  const opts = setup();
+  writeSession(opts.canonicalDir, session("gone"));
+  const privateAsset = storeCanonicalAsset({ canonicalDir: opts.canonicalDir, source: "chatgpt", sourceId: "gone", pointer: "p", bytes: Buffer.from("private") });
+  storeRawCapture(opts.rawDir, buildRawCapture({ source: "chatgpt", sourceId: "remaining", endpoint: "/detail", payload: {} }));
+  const target = new LocalDirTarget(join(opts.root, "backups"));
+  const { snapshot } = await createBackup({ ...opts, target });
+  await handleIngestRequest(new Request("http://local/captures?source=chatgpt&source_id=gone", { method: "DELETE" }), opts);
+  await target.putFile(snapshot, "deleted/chatgpt/gone.json", join(opts.canonicalDir, ".deleted", "chatgpt", "gone.json"));
+  class RawOffline extends LocalDirTarget {
+    override getFile(name: string, relPath: string, dest: string) {
+      if (relPath.startsWith("raw/")) throw new Error("target offline");
+      return super.getFile(name, relPath, dest);
+    }
+  }
+  const restored = setup();
+  await expect(restoreBackup({ ...restored, target: new RawOffline(join(opts.root, "backups")), snapshot })).rejects.toThrow("target offline");
+  expect(existsSync(assetBlobPath(restored.canonicalDir, privateAsset.sha256))).toBe(false);
+});

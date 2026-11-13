@@ -352,6 +352,7 @@ test("forced restore repairs a corrupt raw version, keeps the bad bytes aside, a
   expect(statSync(path).mtimeMs).toBe(arrival);
   const aside = readdirSync(join(path, "..")).filter(name => name.includes(".mismatch-"));
   expect(aside).toHaveLength(1);
+  expect(result.mismatch_raw_paths).toEqual([join(path, "..", aside[0])]);
   expect(aside[0]).toMatch(/^.+-[a-f0-9]{64}\.json\.gz\.mismatch-[0-9TZ-]+$/);
   expect(readFileSync(join(path, "..", aside[0]))).toEqual(truncated);
 
@@ -368,8 +369,17 @@ test("forced restore repairs a corrupt raw version, keeps the bad bytes aside, a
   // A second forced restore finds nothing left to repair.
   expect(await restoreBackup({ canonicalDir, target, snapshot, force: true })).toMatchObject({ restored_raw_count: 0, repaired_raw_count: 0, already_present_raw_count: 2 });
 
+  // A local copy that cannot be read at all is repaired too, not a reason to abort.
+  if (process.getuid?.() !== 0) {
+    const { chmodSync } = await import("node:fs");
+    writeFileSync(path, truncated);
+    chmodSync(path, 0o000);
+    expect(await restoreBackup({ canonicalDir, target, snapshot, force: true })).toMatchObject({ repaired_raw_count: 1, already_present_raw_count: 1 });
+    expect(readFileSync(path)).toEqual(good);
+  }
+
   // Deleting the session erases the kept-aside bytes with the rest of its raw history.
   const { deleteSessionArchive } = await import("../src/store/delete");
   deleteSessionArchive(canonicalDir, "chatgpt", "damaged", rawDir);
-  expect(existsSync(join(path, "..", aside[0]))).toBe(false);
+  expect(readdirSync(join(rawDir, "chatgpt")).includes("damaged")).toBe(false);
 });
