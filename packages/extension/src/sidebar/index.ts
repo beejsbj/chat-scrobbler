@@ -265,16 +265,16 @@ export function runSidebarBadges(provider: ProviderAdapter, deps: SidebarDeps): 
           }),
           { isRateLimit: isRateLimitError, wait, delayMs: CAPTURE_RETRY_DELAY_MS },
         );
-        lastCapturedAt.set(activeId, liveMs);
-        captureFailures.delete(activeId);
         // Fast-path kind heuristic: a brand-new chat has no prior lastCapturedAt
         // entry AND no cached status (or a "missing" cached status). Everything
-        // else is an update to a chat we've seen before.
+        // else is an update to a chat we've seen before. Read before recording this capture.
         const fastKind: CaptureKind =
           !lastCapturedAt.has(activeId) &&
           (cachedStatuses[activeId] === undefined || cachedStatuses[activeId] === "missing")
             ? "new"
             : "update";
+        lastCapturedAt.set(activeId, liveMs);
+        captureFailures.delete(activeId);
         cachedStatuses[activeId] = "synced";
         if (anchor) paintBadge(anchor, activeId, "synced");
         if (deps.onCaptured) {
