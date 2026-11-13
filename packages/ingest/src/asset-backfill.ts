@@ -1,7 +1,7 @@
 import type { Database } from "bun:sqlite";
-import type { AssetBackfillPage, ProviderSource } from "../../shared/src";
+import { BACKFILL_MAX_BODY_BYTES, type AssetBackfillPage, type ProviderSource } from "../../shared/src";
 import { ignoredAssetKeys, ignoreKey, reportedPointer } from "../../../src/monitor/asset-ignores";
-import { BACKFILL_MAX_BODY_BYTES, BackfillError, commitBackfill, listBackfillPage, parseBackfillLimit } from "../../../src/core/asset-backfill";
+import { BackfillError, commitBackfill, listBackfillPage, parseBackfillLimit } from "../../../src/core/asset-backfill";
 import { BodyTooLargeError, readBoundedBody } from "./bounded-body";
 
 type Reply = (body: unknown, status?: number) => Response;

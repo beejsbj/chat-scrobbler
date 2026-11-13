@@ -1,4 +1,4 @@
-import { BACKFILL_MAX_ASSETS, type AssetBackfillCommit, type AssetBackfillPage } from "../../shared/src";
+import { BACKFILL_MAX_ASSETS, BACKFILL_MAX_BODY_BYTES, type AssetBackfillCommit, type AssetBackfillPage, type UploadedAsset } from "../../shared/src";
 import type { ProviderAdapter, ProviderSyncOptions } from "./providers/types";
 
 interface BackfillOptions {
@@ -21,6 +21,19 @@ function assertBackfillReceipt(receipt: unknown, committed: number) {
   if (!valid) throw new Error("Backfill commit acknowledgement does not match the committed assets");
 }
 
+/** Keeps each commit under the receiver's asset count and body size limits (a lone oversized asset still goes alone). */
+function* chunkAssets(sourceId: string, source: string, assets: UploadedAsset[]): Generator<UploadedAsset[]> {
+  const budget = BACKFILL_MAX_BODY_BYTES - 1024 - new TextEncoder().encode(JSON.stringify({ source, source_id: sourceId, assets: [] })).length;
+  let chunk: UploadedAsset[] = [], bytes = 0;
+  for (const asset of assets) {
+    const size = new TextEncoder().encode(JSON.stringify(asset)).length + 1;
+    if (chunk.length && (chunk.length >= BACKFILL_MAX_ASSETS || bytes + size > budget)) { yield chunk; chunk = []; bytes = 0; }
+    chunk.push(asset);
+    bytes += size;
+  }
+  if (chunk.length) yield chunk;
+}
+
 /** A bounded page per click; the background persists next_after so later clicks resume. */
 export async function backfillProviderAssets(provider: ProviderAdapter, page: AssetBackfillPage, options: BackfillOptions) {
   if (!provider.backfillAssets) throw new Error("Provider asset backfill is unavailable");
@@ -34,8 +47,7 @@ export async function backfillProviderAssets(provider: ProviderAdapter, page: As
     });
     // Chunks commit in order and a failed one throws, so the page never advances past an unsaved chunk.
     // Re-linking an already-linked asset is idempotent on the receiver, so a retried session is safe.
-    for (let i = 0; i < assets.length; i += BACKFILL_MAX_ASSETS) {
-      const chunk = assets.slice(i, i + BACKFILL_MAX_ASSETS);
+    for (const chunk of chunkAssets(session.source_id, provider.source, assets)) {
       assertBackfillReceipt(await options.commit({ source: provider.source, source_id: session.source_id, assets: chunk }), chunk.length);
     }
     attempted += session.references.length;

@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { backfillProviderAssets } from "../packages/extension/src/asset-backfill";
-import { BACKFILL_MAX_ASSETS, type AssetBackfillPage } from "../packages/shared/src";
+import { BACKFILL_MAX_ASSETS, BACKFILL_MAX_BODY_BYTES, type AssetBackfillPage } from "../packages/shared/src";
 
 test("backfill fetches canonical pointers at a bounded pace and commits only successes", async () => {
   const pauses: number[] = [];
@@ -82,4 +82,21 @@ test("backfill checks the receipt of every chunk against that chunk", async () =
     uploadAsset: async () => { throw new Error("unused"); }, pause: async () => {},
     commit: async () => ({ ok: true, linked: 1000, raw_ref: null }),
   })).rejects.toThrow(/acknowledgement/);
+});
+
+test("backfill also splits a chunk by encoded size so a commit stays under the receiver body limit", async () => {
+  const longPointer = (i: number) => `https://example.test/${i}/${"x".repeat(3000)}`;
+  const provider: any = { source: "gemini", backfillAssets: async (_id: string, refs: any[]) =>
+    refs.map(ref => ({ pointer: ref.pointer, message_id: ref.message_id, local_path: "assets/gemini/c/hash", sha256: "a".repeat(64) })) };
+  const page: AssetBackfillPage = { ok: true, next_after: null, sessions: [{ source_id: "c",
+    references: Array.from({ length: 700 }, (_, i) => ({ pointer: longPointer(i), message_id: "m", filename: null, content_type: null })) }] };
+  const bodies: number[] = [];
+  const counts: number[] = [];
+  await backfillProviderAssets(provider, page, {
+    uploadAsset: async () => { throw new Error("unused"); }, pause: async () => {},
+    commit: async value => { bodies.push(new TextEncoder().encode(JSON.stringify(value)).length); counts.push(value.assets.length); return { ok: true, linked: value.assets.length, raw_ref: null }; },
+  });
+  expect(counts.reduce((a, b) => a + b, 0)).toBe(700);
+  expect(counts.length).toBeGreaterThan(1);
+  expect(Math.max(...bodies)).toBeLessThan(BACKFILL_MAX_BODY_BYTES);
 });

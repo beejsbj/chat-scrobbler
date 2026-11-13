@@ -17,7 +17,6 @@ import { isSessionDeleted } from "../store/tombstones";
 
 export const BACKFILL_DEFAULT_LIMIT = 25;
 export const BACKFILL_MAX_LIMIT = 100;
-export const BACKFILL_MAX_BODY_BYTES = 1024 * 1024;
 
 /** Categorical failure: `message` is safe to return to clients. */
 export class BackfillError extends Error {
