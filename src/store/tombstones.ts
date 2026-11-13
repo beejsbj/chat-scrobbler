@@ -9,8 +9,9 @@ const tombstonePath = (dir: string, source: string, id: string) => join(tombston
 export function isSessionDeleted(dir: string, source: string, id: string): boolean {
   return existsSync(tombstonePath(dir, source, id));
 }
+export class SessionDeletedError extends Error { constructor() { super("session was deleted"); } }
 export function assertSessionNotDeleted(dir: string, source: string, id: string): void {
-  if (isSessionDeleted(dir, source, id)) throw new Error("session was deleted");
+  if (isSessionDeleted(dir, source, id)) throw new SessionDeletedError();
 }
 export function markSessionDeleted(dir: string, record: Tombstone): void {
   writeImmutableFile(tombstonePath(dir, record.source, record.source_id), JSON.stringify({ source: record.source, source_id: record.source_id, deleted_at: record.deleted_at }));

@@ -57,5 +57,5 @@ export function hasOtherAssetOwners(root: string, hash: string, source: string, 
   return filesUnder(join(referenceDir(root), "by-hash", hash), "*/*.json").some(file => file !== own);
 }
 function removeFile(file: string): void {
-  if (existsSync(file)) { rmSync(file); syncDirectory(dirname(file)); }
+  if (existsSync(file)) { rmSync(file, { force: true }); syncDirectory(dirname(file)); }
 }

@@ -7,6 +7,7 @@ import type { Database } from "bun:sqlite";
 import type { RawCapture } from "../../shared/src";
 import { getParser } from "../../../src/parsers/registry";
 import { writeSession } from "../../../src/store/sessions";
+import { SessionDeletedError } from "../../../src/store/tombstones";
 import { indexSession, type EmbeddingProvider } from "../../../src/indexer/sqlite";
 
 export interface SpineResult {
@@ -22,6 +23,8 @@ export interface SpineContext {
   db: Database;
   rawRef?: string;
   onParse?: (success: boolean) => void;
+  /** Called before each session is written, so a caller can recheck its tombstone afterwards. */
+  onWrite?: (source: string, sourceId: string) => void;
   /** Compatibility option. Capture folding never runs inference. */
   embeddingProvider?: EmbeddingProvider | null;
 }
@@ -30,12 +33,15 @@ export interface SpineContext {
  *  Returns one result per canonical session produced (usually exactly one). */
 export function foldCaptureIntoSpine(capture: RawCapture, ctx: SpineContext): SpineResult[] {
   const sessions = parseCapture(capture, ctx);
-  return sessions.map((session) => {
+  return sessions.flatMap((session) => {
     if (ctx.rawRef) session.raw_ref = ctx.rawRef;
-    writeSession(ctx.canonicalDir, session);
+    ctx.onWrite?.(session.source, session.source_id);
+    // A deleted session is skipped; the capture's other sessions are still written.
+    try { writeSession(ctx.canonicalDir, session); }
+    catch (error) { if (error instanceof SessionDeletedError) return []; throw error; }
     // Persist canonical and FTS immediately; missing vectors remain pending for backfill.
     indexSession(ctx.db, session, { canonicalDir: ctx.canonicalDir });
-    return { session_id: session.id, source: session.source, source_id: session.source_id, indexed: true };
+    return [{ session_id: session.id, source: session.source, source_id: session.source_id, indexed: true }];
   });
 }
 

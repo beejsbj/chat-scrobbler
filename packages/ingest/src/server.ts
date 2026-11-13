@@ -8,6 +8,7 @@ import type { MonitorConfig } from "../../../src/monitor/config";
 import { backfillHealth, cachedIngestHealth } from "./health";
 import type { BackfillSchedulerStatus } from "../../../src/indexer/backfill-scheduler";
 import { Database } from "bun:sqlite";
+import { createHash } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { foldCaptureIntoSpine, type SpineResult } from "./pipeline";
@@ -32,7 +33,8 @@ import { captureJsonEntries } from "../../../src/store/raw-json";
 import { rawDirForCanonicalDir } from "../../../src/store/raw";
 import { archiveCaptureWithGeminiMedia } from "./gemini-media-retention";
 import { deleteSessionArchive } from "../../../src/store/delete";
-import { deleteSessionEverywhere } from "../../../src/core/delete-session";
+import { deleteSessionEverywhere, eraseIfDeletedMeanwhile, SessionDeletedError, writeUnlessDeleted } from "../../../src/core/delete-session";
+import { assetHashes } from "../../../src/store/asset-hashes";
 import { isSessionDeleted } from "../../../src/store/tombstones";
 import type { EmbeddingProvider } from "../../../src/indexer/sqlite";
 
@@ -108,6 +110,36 @@ function fatMode(opts: IngestServerOptions): { canonicalDir: string; indexPath: 
   return opts.canonicalDir && opts.indexPath
     ? { canonicalDir: opts.canonicalDir, indexPath: opts.indexPath }
     : null;
+}
+
+function deletionPaths(fat: { canonicalDir: string; indexPath: string }, opts: IngestServerOptions) {
+  return { canonicalDir: fat.canonicalDir, rawDir: opts.rawDir, monitorStatePath: monitorStatePath(fat.indexPath, opts.monitorStatePath) };
+}
+
+/** Erase each session this request wrote (raw under the capture's id, canonical under
+ *  the id its payload names) whose tombstone appeared meanwhile. */
+function eraseDeletedMeanwhile(opts: IngestServerOptions & { canonicalDir: string }, fat: ReturnType<typeof fatMode>, captures: RawCapture[], sessions: Array<{ source: string; source_id: string }>): Set<string> {
+  const written = new Map<string, { source: string; source_id: string; hashes: Set<string> }>();
+  const add = (source: string, source_id: string, hashes: Set<string>) => {
+    const key = `${source}:${source_id}`;
+    const entry = written.get(key) ?? { source, source_id, hashes: new Set<string>() };
+    for (const hash of hashes) entry.hashes.add(hash);
+    written.set(key, entry);
+  };
+  for (const capture of captures) add(capture.source, capture.source_id, assetHashes(capture));
+  for (const entry of sessions) add(entry.source, entry.source_id, new Set());
+  const deleted = new Set<string>();
+  for (const [key, { source, source_id, hashes }] of written) {
+    try {
+      const paths = fat ? deletionPaths(fat, opts) : { canonicalDir: opts.canonicalDir, rawDir: opts.rawDir };
+      if (eraseIfDeletedMeanwhile(paths, fat ? indexFor(fat.indexPath) : null, source, source_id, hashes)) deleted.add(key);
+    } catch {
+      // Tombstoned either way; rerunning `chat-scrobbler delete` erases what is left.
+      deleted.add(key);
+      console.error(JSON.stringify({ event: "deleted_during_capture_cleanup_failed" }));
+    }
+  }
+  return deleted;
 }
 
 export async function handleIngestRequest(req: Request, opts: IngestServerOptions): Promise<Response> {
@@ -193,17 +225,18 @@ export async function handleIngestRequest(req: Request, opts: IngestServerOption
       const sourceId = requiredParam(url, "source_id");
       const pointer = requiredParam(url, "pointer");
       if (isSessionDeleted(fat.canonicalDir, source, sourceId)) return json({ ok: false, error: "session was deleted" }, 410);
-      const stored = referenceExistingAsset({
+      const stored = writeUnlessDeleted(deletionPaths(fat, opts), indexFor(fat.indexPath), source, sourceId, () => referenceExistingAsset({
         canonicalDir: fat.canonicalDir,
         source,
         sourceId,
         sha256,
         filename: url.searchParams.get("filename"),
         contentType: url.searchParams.get("content_type"),
-      });
+      }), new Set([sha256]));
       forgetAssetFailure(fat.indexPath, opts.monitorStatePath, { source, source_id: sourceId, message_id: url.searchParams.get("message_id"), pointer });
       return json({ ok: true, pointer, ...stored } satisfies AssetUploadResponse);
     } catch (error) {
+      if (error instanceof SessionDeletedError) return json({ ok: false, error: error.message }, 410);
       if (error instanceof AssetBlobMissingError) return json({ ok: false, error: error.message }, 404);
       return json({ ok: false, error: error instanceof Error ? error.message : String(error) }, 400);
     }
@@ -220,7 +253,7 @@ export async function handleIngestRequest(req: Request, opts: IngestServerOption
       const contentType = req.headers.get("content-type") ?? url.searchParams.get("content_type");
       const maxBytes = opts.maxAssetBytes ?? MAX_ASSET_BYTES;
       const bytes = await readBoundedBody(req, maxBytes);
-      const stored = storeCanonicalAsset({
+      const stored = writeUnlessDeleted(deletionPaths(fat, opts), indexFor(fat.indexPath), source, sourceId, () => storeCanonicalAsset({
         canonicalDir: fat.canonicalDir,
         source,
         sourceId,
@@ -231,7 +264,7 @@ export async function handleIngestRequest(req: Request, opts: IngestServerOption
         contentType,
         bytes,
         maxBytes,
-      });
+      }), new Set([createHash("sha256").update(bytes).digest("hex")]));
       forgetAssetFailure(fat.indexPath, opts.monitorStatePath, { source, source_id: sourceId, message_id: url.searchParams.get("message_id"), pointer });
       return json({
         ok: true,
@@ -239,6 +272,7 @@ export async function handleIngestRequest(req: Request, opts: IngestServerOption
         ...stored,
       } satisfies AssetUploadResponse);
     } catch (error) {
+      if (error instanceof SessionDeletedError) return json({ ok: false, error: error.message }, 410);
       if (error instanceof BodyTooLargeError) return json({ ok: false, error: error.message }, 413);
       return json({ ok: false, error: error instanceof Error ? error.message : String(error) }, 400);
     }
@@ -284,45 +318,64 @@ export async function handleIngestRequest(req: Request, opts: IngestServerOption
     });
     const rawDir = opts.rawDir ?? (opts.canonicalDir ? rawDirForCanonicalDir(opts.canonicalDir) : null);
     if (!rawDir) return json({ ok: false, error: "raw store is not configured" }, 503);
-    let archived: Array<{ capture: RawCapture; rawRef: string }>;
-    try { archived = accepted.map(entry => archiveCaptureWithGeminiMedia(rawDir, entry.capture, entry.serialized)); }
-    catch {
-      console.error(JSON.stringify({ event: "raw_capture_store_failed", reason: "raw_store_write_failed" }));
-      return json({ ok: false, error: "raw_store_write_failed" }, 503);
-    }
-    const captures = archived.map(entry => entry.capture);
-    const rawRefs = archived.map(entry => entry.rawRef);
-    if (opts.indexPath && captures.length) {
-      const path = monitorStatePath(opts.indexPath, opts.monitorStatePath);
-      monitorWrite(path, () => {
-        for (const source of new Set(captures.map(capture => capture.source))) recordCaptureReceipt(path, source);
-      });
-    }
     const spine: SpineResult[] = [];
-    if (fat && captures.length) {
-      const db = indexFor(fat.indexPath);
-      for (const [i, capture] of captures.entries()) {
-        let parsed = false;
-        try {
-          // ACK waits for raw + canonical + FTS only. There is no async DB work
-          // or inference job to outlive this request or block the next capture.
-          spine.push(...foldCaptureIntoSpine(capture, {
-            canonicalDir: fat.canonicalDir,
-            rawRef: rawRefs[i],
-            onParse: success => {
-              parsed = success;
-              const path = monitorStatePath(fat.indexPath, opts.monitorStatePath);
-              monitorWrite(path, () => recordParseOutcome(path, capture.source, capture.source_id, success));
-            },
-            db,
-          }));
-        } catch (error) {
-          if (!parsed) logCaptureParseFailure(capture, error);
-          throw error;
+    // Sessions the fold wrote, under the ids their payloads name.
+    const folded: Array<{ source: string; source_id: string }> = [];
+    let count = 0;
+    // A deletion that landed after the check above is caught by this one after the writes.
+    let deletedMeanwhile = new Set<string>();
+    try {
+      let archived: Array<{ capture: RawCapture; rawRef: string }>;
+      try { archived = accepted.map(entry => archiveCaptureWithGeminiMedia(rawDir, entry.capture, entry.serialized)); }
+      catch {
+        console.error(JSON.stringify({ event: "raw_capture_store_failed", reason: "raw_store_write_failed" }));
+        return json({ ok: false, error: "raw_store_write_failed" }, 503);
+      }
+      const captures = archived.map(entry => entry.capture);
+      const rawRefs = archived.map(entry => entry.rawRef);
+      count = captures.length;
+      if (opts.indexPath && captures.length) {
+        const path = monitorStatePath(opts.indexPath, opts.monitorStatePath);
+        monitorWrite(path, () => {
+          for (const source of new Set(captures.map(capture => capture.source))) recordCaptureReceipt(path, source);
+        });
+      }
+      if (fat && captures.length) {
+        const db = indexFor(fat.indexPath);
+        for (const [i, capture] of captures.entries()) {
+          let parsed = false;
+          try {
+            // ACK waits for raw + canonical + FTS only. There is no async DB work
+            // or inference job to outlive this request or block the next capture.
+            spine.push(...foldCaptureIntoSpine(capture, {
+              canonicalDir: fat.canonicalDir,
+              rawRef: rawRefs[i],
+              onWrite: (source, source_id) => folded.push({ source, source_id }),
+              onParse: success => {
+                parsed = success;
+                const path = monitorStatePath(fat.indexPath, opts.monitorStatePath);
+                monitorWrite(path, () => recordParseOutcome(path, capture.source, capture.source_id, success));
+              },
+              db,
+            }));
+          } catch (error) {
+            if (!parsed) logCaptureParseFailure(capture, error);
+            // Deleted meanwhile: erased below and reported as skipped.
+            if (isSessionDeleted(fat.canonicalDir, capture.source, capture.source_id)) continue;
+            throw error;
+          }
         }
       }
+    } finally {
+      if (opts.canonicalDir) deletedMeanwhile = eraseDeletedMeanwhile({ ...opts, canonicalDir: opts.canonicalDir }, fat, accepted.map(entry => entry.capture), folded);
     }
-    return json({ ok: true, count: captures.length, spine, skipped_deleted } satisfies IngestResponse);
+    for (const { capture } of accepted) {
+      if (!deletedMeanwhile.has(`${capture.source}:${capture.source_id}`)) continue;
+      skipped_deleted.push({ source: capture.source, source_id: capture.source_id });
+      count--;
+    }
+    const kept = spine.filter(entry => !deletedMeanwhile.has(`${entry.source}:${entry.source_id}`));
+    return json({ ok: true, count, spine: kept, skipped_deleted } satisfies IngestResponse);
   } catch (error) {
     return json({ ok: false, error: error instanceof Error ? error.message : String(error) }, 400);
   }

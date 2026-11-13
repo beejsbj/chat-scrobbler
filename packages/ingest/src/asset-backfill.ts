@@ -3,6 +3,8 @@ import { BACKFILL_MAX_BODY_BYTES, type AssetBackfillPage, type ProviderSource } 
 import { ignoredAssetKeys, ignoreKey, reportedPointer } from "../../../src/monitor/asset-ignores";
 import { BackfillError, commitBackfill, listBackfillPage, parseBackfillLimit } from "../../../src/core/asset-backfill";
 import { BodyTooLargeError, readBoundedBody } from "./bounded-body";
+import { SessionDeletedError, writeUnlessDeleted } from "../../../src/core/delete-session";
+import { isSessionDeleted } from "../../../src/store/tombstones";
 
 type Reply = (body: unknown, status?: number) => Response;
 
@@ -40,9 +42,13 @@ export async function handleAssetBackfill(
     }
     if (!body || typeof body !== "object" || typeof body.source_id !== "string") throw new BackfillError(400, "body requires { source, source_id, assets[] }");
     const source = ctx.readSource(typeof body.source === "string" ? body.source : null);
-    const result = commitBackfill({ canonicalDir: ctx.canonicalDir, rawDir: ctx.rawDir, db: ctx.db, source, sourceId: body.source_id, assets: body.assets });
+    if (isSessionDeleted(ctx.canonicalDir, source, body.source_id)) throw new BackfillError(410, "session was deleted");
+    const result = writeUnlessDeleted(ctx, ctx.db, source, body.source_id,
+      () => commitBackfill({ canonicalDir: ctx.canonicalDir, rawDir: ctx.rawDir, db: ctx.db, source, sourceId: body.source_id, assets: body.assets }),
+      new Set(Array.isArray(body.assets) ? body.assets.map((asset: any) => asset?.sha256).filter((hash: unknown) => typeof hash === "string" && /^[a-f0-9]{64}$/.test(hash)) : []));
     return reply({ ok: true, ...result });
   } catch (error) {
+    if (error instanceof SessionDeletedError) return reply({ ok: false, error: error.message }, 410);
     if (error instanceof BackfillError) return reply({ ok: false, error: error.message }, error.status);
     if (error instanceof Error && /^(source|source_id) is invalid$/.test(error.message)) return reply({ ok: false, error: error.message }, 400);
     console.error(JSON.stringify({ event: "asset_backfill_failed", reason: "unexpected_error" }));
