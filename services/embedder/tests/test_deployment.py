@@ -9,12 +9,12 @@ import unittest
 ROOT = Path(__file__).resolve().parents[3]
 
 
-def compose(*options, overrides=None):
+def compose(*options, overrides=None, files=('docker-compose.bjslab.yml',)):
     env = {**os.environ, 'MCP_AUTH_TOKEN': 'test-only', 'INGEST_TOKEN': 'test-only',
            'COMPOSE_PROFILES': '', 'CHAT_SCROBBLER_EMBED_PROVIDER': '',
            'CHAT_SCROBBLER_EMBED_MODEL': '', 'CHAT_SCROBBLER_EMBED_BASE_URL': '',
            **(overrides or {})}
-    result = subprocess.run(['docker', 'compose', '-f', str(ROOT / 'docker-compose.bjslab.yml'),
+    result = subprocess.run(['docker', 'compose', *[a for f in files for a in ('-f', str(ROOT / f))],
                              *options, 'config', '--format', 'json'],
                             env=env, capture_output=True, text=True, check=True)
     return json.loads(result.stdout)
@@ -47,6 +47,13 @@ class DeploymentTests(unittest.TestCase):
         self.assertEqual(env['CHAT_SCROBBLER_EMBED_MODEL'], 'litert-community/embeddinggemma-2-740m-litert-lm')
         self.assertEqual(env['CHAT_SCROBBLER_EMBED_BASE_URL'], 'http://embedder:4320')
 
+    def test_overlay_leaves_the_embedder_out_and_turns_semantic_search_off(self):
+        plan = compose(files=('docker-compose.bjslab.yml', 'docker-compose.no-embedder.yml'))
+        self.assertNotIn('embedder', plan['services'])
+        scrobbler = plan['services']['scrobbler']
+        self.assertEqual(scrobbler['environment']['CHAT_SCROBBLER_EMBED_PROVIDER'], 'none')
+        self.assertFalse(scrobbler['depends_on']['embedder']['required'])
+
     def test_data_owner_can_be_set_once_for_both_images(self):
         plan = compose(overrides={'DATA_UID': '2000', 'DATA_GID': '2001'})
         self.assertEqual(plan['services']['embedder']['user'], '2000:2001')
@@ -78,6 +85,15 @@ class DeploymentFileTests(unittest.TestCase):
         self.assertIn('user: "${DATA_UID:-999}:${DATA_GID:-999}"', text)
         self.assertEqual(text.count('DATA_UID: ${DATA_UID:-999}'), 2)
         self.assertNotIn('1001', text)
+
+    def test_embedder_is_optional_without_editing_the_main_file(self):
+        main = (ROOT / 'docker-compose.bjslab.yml').read_text()
+        self.assertIn('required: false', main)
+        self.assertIn('CHAT_SCROBBLER_EMBED_PROVIDER: ${CHAT_SCROBBLER_EMBED_PROVIDER:-embeddinggemma}', main)
+        self.assertNotIn('profiles', main)  # the default deployment keeps the sidecar on
+        overlay = (ROOT / 'docker-compose.no-embedder.yml').read_text()
+        self.assertIn('profiles: ["embedder-disabled"]', overlay)
+        self.assertIn('CHAT_SCROBBLER_EMBED_PROVIDER: none', overlay)
 
     def test_embedder_keeps_its_hardening_and_gets_a_fresh_cache_volume(self):
         text = (ROOT / 'docker-compose.bjslab.yml').read_text()

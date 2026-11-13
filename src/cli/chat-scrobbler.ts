@@ -114,6 +114,11 @@ Operate
     --source <s>           Filter by provider
     --json                 Output counts for automation
 
+  prune-embeddings       Remove stored vectors the configured embedding provider does not own
+                           (all of them when CHAT_SCROBBLER_EMBED_PROVIDER=none). Dry run unless:
+    --apply                Delete. Never automatic. Sessions and literal search are untouched
+    --json                 Output the counts as JSON
+
   unify [--force]        Refresh index; --force permits pruning more than 10%
                            Enable semantic recall with:
                            CHAT_SCROBBLER_EMBED_PROVIDER=gemini|ollama
@@ -263,6 +268,12 @@ async function main(argv: string[]): Promise<void> {
       case "embed-backfill": {
         const { runEmbedBackfill } = await import("./embed-backfill");
         await runEmbedBackfill(rest, cfg, write);
+        break;
+      }
+
+      case "prune-embeddings": {
+        const { runPruneEmbeddings } = await import("./prune-embeddings");
+        await runPruneEmbeddings(rest, cfg, write);
         break;
       }
 

@@ -528,7 +528,7 @@ async function checkEmbeddingProvider(
   line: (kind: DoctorLineKind, label: string, detail: string) => void,
 ): Promise<void> {
   if (cfg.embeddingProvider === "none") {
-    line("WARN", "embedding provider", "none, semantic recall dormant");
+    line("PASS", "embedding provider", "none, search is literal-only");
     return;
   }
   if (cfg.embeddingProvider === "gemini") {

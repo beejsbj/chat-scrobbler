@@ -128,13 +128,14 @@ test("runDoctor fails when local MCP does not return a structured response", asy
   expect(out.join("\n")).toContain("FAIL MCP HTTP");
 });
 
-test("runDoctor warns without failing when semantic recall is dormant", async () => {
+test("runDoctor treats provider none as a clean state, not a warning", async () => {
   const { run, out } = makeDoctor({ cfg: cfgWith({ embeddingProvider: "none" }) });
 
   const result = await run();
 
   expect(result.exitCode).toBe(0);
-  expect(out.join("\n")).toContain("WARN embedding provider: none, semantic recall dormant");
+  expect(out.join("\n")).toContain("PASS embedding provider: none, search is literal-only");
+  expect(out.join("\n")).not.toMatch(/WARN .*embedding/);
 });
 
 test("runDoctor fails when configured Ollama model is absent", async () => {

@@ -39,7 +39,10 @@ services:
       - default
       - embeddings
     depends_on:
-      - embedder
+      # Start order only. Not required, so docker-compose.no-embedder.yml can leave the sidecar out.
+      embedder:
+        condition: service_started
+        required: false
 
   embedder:
     # Same uid:gid as the scrobbler, which writes asset blobs 0600. The asset

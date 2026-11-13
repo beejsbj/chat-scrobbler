@@ -561,6 +561,7 @@ The CLI is a thin frontend over the same core functions the MCP uses. Commands:
 | `get <id>` | Fetch session by id (`source:source_id`); `--format json|markdown` |
 | `list` | List sessions; `--source`, `--title`, `--limit`, `--json` |
 | `unify` | Rebuild SQLite index from canonical store |
+| `prune-embeddings` | Remove stored vectors the configured provider does not own (all, with provider `none`); dry run unless `--apply`; `--json` |
 | `reparse` | Rebuild from latest raw; `--source`, `--session`, `--dry-run`, `--json` |
 | `unknown-types` | Count opaque content by provider/type; `--source`, `--json` |
 | `assets` | `failing` / `ignored` list assets (`--json`); `ignore <id>` stops retries for one failing asset, `unignore <id>` undoes it |

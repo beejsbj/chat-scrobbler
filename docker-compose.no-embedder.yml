@@ -1,0 +1,15 @@
+# Overlay that leaves the bundled embedder out. The default stays "on".
+#
+#   docker compose -f docker-compose.bjslab.yml -f docker-compose.no-embedder.yml up -d
+#
+# The sidecar is parked behind a profile nobody enables, and the scrobbler runs
+# with CHAT_SCROBBLER_EMBED_PROVIDER=none: no backfill, no embedding warnings,
+# literal-only search. Drop the overlay to turn the embedder back on. Vectors
+# stored earlier stay until `chat-scrobbler prune-embeddings --apply` removes them.
+
+services:
+  embedder:
+    profiles: ["embedder-disabled"]
+  scrobbler:
+    environment:
+      CHAT_SCROBBLER_EMBED_PROVIDER: none
