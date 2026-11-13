@@ -1,4 +1,4 @@
-import { DEFAULT_MAX_ASSET_BYTES, LEGACY_MAX_ASSET_BYTES, type AssetFailure, type AssetFailureReason, type ProviderSource, type UploadedAsset } from "../../../shared/src";
+import { DEFAULT_MAX_ASSET_BYTES, LEGACY_MAX_ASSET_BYTES, MAX_BACKFILL_DOWNLOAD_URL_CHARS, type AssetFailure, type AssetFailureReason, type ProviderSource, type UploadedAsset } from "../../../shared/src";
 import type { AssetFetchResponse, AssetUploadRequest } from "../messages";
 import { isRateLimitError, type FetchLike, type ProviderSyncOptions } from "./types";
 import { allowedAssetUrl, useBackgroundForAsset } from "./asset-url";
@@ -247,7 +247,11 @@ export async function configuredAssetLimit(): Promise<number> {
   return effectiveAssetLimit(stored["scrobbler.settings"]?.maxAssetBytes);
 }
 
-export function assetReferences(candidates: ProviderAssetCandidate[]): import("../../../shared/src").AssetBackfillReference[] {
+/**
+ * `retainUrls` also archives a candidate's https download URL when it differs from the pointer, for a
+ * provider whose pointer is an id that backfill cannot fetch. Only URLs the asset policy would fetch qualify.
+ */
+export function assetReferences(candidates: ProviderAssetCandidate[], options: { retainUrls?: boolean } = {}): import("../../../shared/src").AssetBackfillReference[] {
   mergeDeclarations(candidates);
   const seen = new Set<string>();
   let downloadBlock: unknown;
@@ -255,6 +259,9 @@ export function assetReferences(candidates: ProviderAssetCandidate[]): import(".
     const key = JSON.stringify([candidate.messageId ?? null, candidate.pointer]);
     if (seen.has(key)) return [];
     seen.add(key);
-    return [{ pointer: candidate.pointer, message_id: candidate.messageId ?? null, filename: candidate.filename ?? null, content_type: candidate.contentType ?? null }];
+    const reference = { pointer: candidate.pointer, message_id: candidate.messageId ?? null, filename: candidate.filename ?? null, content_type: candidate.contentType ?? null };
+    const url = candidate.url;
+    return [options.retainUrls && url && url !== candidate.pointer && url.length <= MAX_BACKFILL_DOWNLOAD_URL_CHARS && allowedAssetUrl(url, candidate.source)
+      ? { ...reference, download_url: url } : reference];
   });
 }

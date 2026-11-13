@@ -30,7 +30,7 @@ export async function handleAssetBackfill(
     if (req.method === "GET") {
       const source = ctx.readSource(url.searchParams.get("source"));
       const limit = parseBackfillLimit(url.searchParams.get("limit"));
-      return reply(withoutIgnoredAssets(listBackfillPage(ctx.canonicalDir, source, url.searchParams.get("after"), limit), source, ctx.monitorStatePath));
+      return reply(withoutIgnoredAssets(listBackfillPage(ctx.canonicalDir, source, url.searchParams.get("after"), limit, ctx.rawDir), source, ctx.monitorStatePath));
     }
     let body: any;
     try { body = JSON.parse(new TextDecoder().decode(await readBoundedBody(req, BACKFILL_MAX_BODY_BYTES))); }

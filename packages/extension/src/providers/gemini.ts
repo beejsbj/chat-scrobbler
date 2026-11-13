@@ -35,7 +35,7 @@ import { logSyncFailure, SyncFailureTracker } from "./sync-failures";
  * - Unit tests mock page/fetch — no live browser required for tests.
  */
 
-import { buildRawCapture } from "../../../shared/src";
+import { buildRawCapture, MAX_BACKFILL_DOWNLOAD_URL_CHARS, type AssetBackfillReference } from "../../../shared/src";
 import { assetReferences, configuredAssetLimit, uploadProviderAssets, type ProviderAssetCandidate } from "./assets";
 import { inlineDataCandidates, isDataUrl, scanGeminiApiAssets, type InlineDataMedia } from "./gemini-assets";
 import { captureHash } from "./capture-hash";
@@ -177,16 +177,22 @@ export function createGeminiAdapter(
       const inline = new Map((await inlineDataCandidates(page.inline, id, await configuredAssetLimit())).map(asset => [asset.pointer, asset.inlineBase64]));
       return uploadProviderAssets(fetcher, options.uploadAsset, references.map(ref => ({
       source: "gemini", sourceId: id, pointer: ref.pointer, messageId: ref.message_id,
-      url: /^(https?:|blob:|\/)/.test(ref.pointer) ? ref.pointer : null,
+      url: backfillUrl(ref),
       filename: ref.filename, contentType: ref.content_type,
       providerPageBlob: liveBlobs.has(ref.pointer), inlineBase64: inline.get(ref.pointer),
-      fetchViaBackground: /^https?:/.test(ref.pointer) && !ref.pointer.startsWith("https://gemini.google.com/"),
+      fetchViaBackground: /^https?:/.test(backfillUrl(ref) ?? "") && !backfillUrl(ref)!.startsWith("https://gemini.google.com/"),
       })), { beforeFetch: options.beforeFetch, retryRemembered: true });
     },
     sync: (options) => syncGemini(fetcher, pageCtx, options),
     listConversations: (pages = 1) => listGemini(pageCtx, pages),
     captureOne: async (id, updatedAt, options) => { await captureGeminiOne(fetcher, pageCtx, id, updatedAt, options); },
   };
+}
+
+/** A URL-like pointer is fetched as is; otherwise the archived download_url is a hint that may have expired. */
+function backfillUrl(ref: AssetBackfillReference): string | null {
+  if (/^(https?:|blob:|\/)/.test(ref.pointer)) return ref.pointer;
+  return typeof ref.download_url === "string" && ref.download_url.length <= MAX_BACKFILL_DOWNLOAD_URL_CHARS && ref.download_url.startsWith("https://") ? ref.download_url : null;
 }
 
 /**
@@ -242,7 +248,7 @@ async function captureGeminiOne(
         endpoint: `${BATCHEXECUTE_PATH}?rpcids=${CONVERSATION_RPC_ID}`,
         payload,
         assets,
-        assetReferences: assetReferences(candidates),
+        assetReferences: assetReferences(candidates, { retainUrls: true }),
         fetchedAt,
         conversationUpdatedAt: updatedAt,
         rawUrl: `https://gemini.google.com/app/${id}`,

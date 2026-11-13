@@ -4,7 +4,7 @@
 import type { Database } from "bun:sqlite";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
-import { BACKFILL_MAX_ASSETS, type AssetBackfillPage, type AssetBackfillReference, type ProviderSource, type UploadedAsset } from "../../packages/shared/src";
+import { BACKFILL_MAX_ASSETS, MAX_BACKFILL_DOWNLOAD_URL_CHARS, type AssetBackfillPage, type AssetBackfillReference, type ProviderSource, type UploadedAsset } from "../../packages/shared/src";
 import { indexSession } from "../indexer/sqlite";
 import { renderText } from "../parsers/render";
 import type { Block, Session } from "../schema/types";
@@ -54,8 +54,28 @@ function sessionReferences(canonicalDir: string, session: Session): AssetBackfil
   return out;
 }
 
-/** One page of canonical sessions with unlinked media. Reads at most `limit` session files. */
-export function listBackfillPage(canonicalDir: string, source: ProviderSource, after: string | null, limit: number): AssetBackfillPage {
+/** Download URLs the latest raw capture archived, by message and pointer. Best effort: an unreadable capture offers none. */
+function archivedDownloadUrls(rawDir: string, source: ProviderSource, sourceId: string): Map<string, string> {
+  const urls = new Map<string, string>();
+  try {
+    const ref = latestRawReference(rawDir, source, sourceId);
+    const archived = ref ? readRawCapture(rawDir, ref).asset_references : null;
+    if (!Array.isArray(archived)) return urls;
+    for (const item of archived) {
+      const url = item?.download_url;
+      if (typeof item?.pointer === "string" && typeof url === "string" && url.length <= MAX_BACKFILL_DOWNLOAD_URL_CHARS && url.startsWith("https://"))
+        urls.set(JSON.stringify([item.message_id ?? null, item.pointer]), url);
+    }
+  } catch { /* the references stay without a hint */ }
+  return urls;
+}
+
+/**
+ * One page of canonical sessions with unlinked media. Reads at most `limit` session files, plus (Gemini
+ * only, the one provider that archives download URLs) the latest raw capture of each session with references
+ * when `rawDir` is given: references then carry the download_url that capture archived, if it did.
+ */
+export function listBackfillPage(canonicalDir: string, source: ProviderSource, after: string | null, limit: number, rawDir?: string): AssetBackfillPage {
   if (after !== null) sessionFilePath(canonicalDir, source, after);
   let names: string[] = [];
   try { names = readdirSync(join(canonicalDir, source)); } catch { /* no sessions for this provider */ }
@@ -69,7 +89,10 @@ export function listBackfillPage(canonicalDir: string, source: ProviderSource, a
     try { session = JSON.parse(readFileSync(sessionFilePath(canonicalDir, source, sourceId), "utf8")); }
     catch { continue; }
     const references = sessionReferences(canonicalDir, session);
-    if (references.length) sessions.push({ source_id: sourceId, references });
+    if (!references.length) continue;
+    const urls = rawDir && source === "gemini" ? archivedDownloadUrls(rawDir, source, sourceId) : null;
+    sessions.push({ source_id: sourceId, references: urls?.size
+      ? references.map(ref => { const url = urls.get(JSON.stringify([ref.message_id, ref.pointer])); return url ? { ...ref, download_url: url } : ref; }) : references });
   }
   return { ok: true, sessions, next_after: ids.length > limit ? scanned[scanned.length - 1] : null };
 }
