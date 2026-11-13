@@ -1,14 +1,20 @@
 import type { Block } from "../schema/types";
 import { assetLookupFromRaw, type AssetLookup } from "./assets";
-import { capturedAssetBlocks, mediaKind } from "./captured-assets";
+import { capturedAssetBlocks, linkedPointers, mediaKind } from "./captured-assets";
 import { childLocation, mediaBlock, toolCall, unknownBlock, type PartLocation } from "./parts";
 import type { RawClaudeMsg } from "./claude";
 
 type Artifact = Extract<Block, { type: "artifact" }>;
+// Content types with nothing to show: the raw capture keeps them. A type not listed here stays unknown.
+const IGNORED_CONTENT = new Set([
+  "token_budget", // remaining-budget counter, no reader-facing content
+  "flag",         // classifier flag with a helpline card the interface renders itself
+]);
 export function blocksFromClaude(m: RawClaudeMsg, allAssets: AssetLookup = assetLookupFromRaw(null),
   loc: PartLocation = { raw_ref: "", raw_path: "" }, artifacts = new Map<string, Artifact>()): Block[] {
   const assets = allAssets.scoped([m.uuid]);
   const blocks: Block[] = [];
+  const citedUrls = new Set<string>();
   for (const [i, c] of (m.content ?? []).entries()) {
     const at = childLocation(loc, "content", i);
     switch (c?.type) {
@@ -29,11 +35,12 @@ export function blocksFromClaude(m: RawClaudeMsg, allAssets: AssetLookup = asset
             title: input.title ?? prior?.title ?? null, version: input.version_uuid ?? null,
             content: typeof input.content === "string" ? input.content : "",
             operation: input.command ?? "create", previous_version: input.parent_version_uuid ?? prior?.version ?? null };
-          if (typeof input.old_str === "string" && typeof input.new_str === "string") {
-            artifact.edits = [{ old_str: input.old_str, new_str: input.new_str }];
+          // The API leaves out an empty side of an edit, so an insertion carries only new_str and a deletion only old_str.
+          if (typeof input.old_str === "string" || typeof input.new_str === "string") {
+            artifact.edits = [{ old_str: typeof input.old_str === "string" ? input.old_str : "", new_str: typeof input.new_str === "string" ? input.new_str : "" }];
           }
-          // An unrecognized edit shape is preserved alongside its artifact label.
-          if (!artifact.content && !artifact.edits) blocks.push(unknownBlock(c, at));
+          // A create that names the artifact but carries no body is complete. Any other bodiless shape is preserved alongside its artifact label.
+          if (!artifact.content && !artifact.edits && !(artifact.operation === "create" && artifact.title)) blocks.push(unknownBlock(c, at));
           blocks.push(artifact);
           artifacts.set(input.id, artifact);
         } else blocks.push(toolCall(typeof c.name === "string" ? c.name : "tool"));
@@ -42,8 +49,16 @@ export function blocksFromClaude(m: RawClaudeMsg, allAssets: AssetLookup = asset
         blocks.push(toolCall(typeof c.name === "string" ? c.name : "tool"));
         blocks.push(...nestedMedia(c.content, assets));
         break;
+      case "image": {
+        const pointer = c.file_uuid ?? c.source?.file_uuid ?? c.source?.file_id;
+        if (typeof pointer === "string" && pointer) {
+          const mime = c.source?.media_type ?? assets.byPointer(pointer)?.content_type ?? null;
+          blocks.push(mediaBlock("image", pointer, assets, null, mime));
+        } else blocks.push(unknownBlock(c, at));
+        break;
+      }
       default:
-        blocks.push(unknownBlock(c, at));
+        if (!IGNORED_CONTENT.has(c?.type)) blocks.push(unknownBlock(c, at));
     }
     for (const [j, citation] of (Array.isArray(c?.citations) ? c.citations : []).entries()) {
       // Documented Messages API citation shape. Other web-client references stay opaque.
@@ -51,16 +66,27 @@ export function blocksFromClaude(m: RawClaudeMsg, allAssets: AssetLookup = asset
         blocks.push({ type: "citation", provider_type: citation.type, url: citation.url,
           title: typeof citation.title === "string" ? citation.title : null,
           text: typeof citation.cited_text === "string" ? citation.cited_text : null });
+      } else if (typeof citation?.url === "string" && citation.url && citation.type === undefined) {
+        // Web-client citation: no type tag, the page in url/title, the span in start_index/end_index.
+        const key = citation.url;
+        if (citedUrls.has(key)) continue;
+        citedUrls.add(key);
+        blocks.push({ type: "citation", provider_type: typeof citation.metadata?.type === "string" ? citation.metadata.type : "web_citation",
+          url: citation.url, title: typeof citation.title === "string" && citation.title ? citation.title : null, text: null });
       } else blocks.push(unknownBlock(citation, childLocation(at, "citations", j), "citation"));
     }
   }
   if (!blocks.some(block => ["text", "reasoning", "artifact"].includes(block.type)) && m.text?.trim()) {
     blocks.push({ type: "text", text: m.text });
   }
+  const linked = linkedPointers(blocks);
   for (const key of ["files", "files_v2", "generated_files", "attachments"] as const) {
     for (const [i, file] of (m[key] ?? []).entries()) {
       const pointer = file?.file_uuid ?? file?.uuid ?? file?.id ?? file?.attachment_uuid ?? file?.path;
       if (typeof pointer !== "string" || !pointer) { blocks.push(unknownBlock(file, childLocation(loc, key, i), key)); continue; }
+      // An image content block already links this upload.
+      if (linked.has(pointer)) continue;
+      linked.add(pointer);
       const mime = file.content_type ?? file.mime_type ?? assets.byPointer(pointer)?.content_type;
       const type = typeof mime === "string" && mime.startsWith("image/") ? "image"
         : typeof mime === "string" && mime.startsWith("audio/") ? "audio"
