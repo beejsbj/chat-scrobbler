@@ -300,3 +300,22 @@ test("backup and restore retain raw capture versions alongside canonical and ass
   expect((await restoreBackup({ canonicalDir: restoredDir, target, snapshot, force: true })).restored_raw_count).toBe(1);
   expect(listRawCaptures(restoredRaw, "chatgpt", "raw-session")).toHaveLength(1);
 });
+
+test("backup and the restore guard refuse an incomplete canonical scan", async () => {
+  const { symlinkSync } = await import("node:fs");
+  const canonicalDir = makeTmp("canonical-incomplete-");
+  const backupDir = makeTmp("backup-incomplete-");
+  writeSession(canonicalDir, makeSession("chatgpt", "gpt-001"));
+  // A provider directory on an unmounted volume.
+  symlinkSync(join(backupDir, "unmounted"), join(canonicalDir, "claude"));
+  const target = new LocalDirTarget(backupDir);
+  await expect(createBackup({ canonicalDir, target, rawDir: makeTmp("raw-incomplete-") })).rejects.toThrow("canonical scan incomplete");
+  expect(await listBackups(target)).toHaveLength(0);
+
+  const emptyCanonical = makeTmp("canonical-restore-incomplete-");
+  const source = makeTmp("canonical-source-");
+  writeSession(source, makeSession("gemini", "gm-001"));
+  const { snapshot } = await createBackup({ canonicalDir: source, target, rawDir: makeTmp("raw-source-") });
+  symlinkSync(join(backupDir, "unmounted"), join(emptyCanonical, "claude"));
+  await expect(restoreBackup({ target, snapshot, canonicalDir: emptyCanonical, rawDir: makeTmp("raw-restore-") })).rejects.toThrow("canonical scan incomplete");
+});

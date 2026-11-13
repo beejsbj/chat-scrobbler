@@ -7,7 +7,7 @@ import { getParser } from "../parsers/registry";
 import type { Session, Source } from "../schema/types";
 import { latestRawReference, listRawSessions, SOURCES, type RawIdentity } from "../store/raw-catalog";
 import { rawDirForCanonicalDir, readRawCapture } from "../store/raw";
-import { listSessionFiles, readSession, sessionFilePath, writeSession } from "../store/sessions";
+import { readSession, scanSessionFiles, sessionFilePath, writeSession } from "../store/sessions";
 import { isSessionDeleted } from "../store/tombstones";
 import { parseSessionId } from "./session-id";
 
@@ -35,7 +35,9 @@ function identities(opts: ReparseOptions, rawDir: string): RawIdentity[] {
     return [{ source: parsed.source as Source, source_id: parsed.sourceId }];
   }
   const all = new Map<string, RawIdentity>();
-  const canonical = listSessionFiles(opts.canonicalDir).flatMap(file => {
+  // Reparse never prunes, and archived raw is listed separately, so a canonical
+  // directory that cannot be read only hides sessions that have nothing to rebuild.
+  const canonical = scanSessionFiles(opts.canonicalDir).files.flatMap(file => {
     const source = basename(dirname(file)) as Source;
     return SOURCES.includes(source) ? [{ source, source_id: basename(file, ".json") }] : [];
   });

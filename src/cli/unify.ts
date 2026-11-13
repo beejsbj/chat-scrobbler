@@ -4,7 +4,7 @@
 import { existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { Session } from "../schema/types";
-import { listSessionFiles } from "../store/sessions";
+import { scanSessionFiles } from "../store/sessions";
 import { deleteIndexedSession, openIndex, indexSessionWithEmbeddings, type EmbeddingProvider } from "../indexer/sqlite";
 import { loadConfig } from "../config";
 import { embeddingProviderFromConfig } from "../indexer/embedding-providers";
@@ -13,14 +13,16 @@ export interface UnifyOptions { canonicalDir: string; indexPath: string; embeddi
 
 export async function runUnify(opts: UnifyOptions): Promise<number> {
   const canPrune = existsSync(opts.canonicalDir);
-  const files = listSessionFiles(opts.canonicalDir);
+  const scan = scanSessionFiles(opts.canonicalDir);
+  const files = scan.files;
 
   mkdirSync(dirname(opts.indexPath), { recursive: true });
   const db = openIndex(opts.indexPath);
   const pruneCandidates = db.query("SELECT id, source, source_id FROM sessions").all() as Array<{ id: string; source: string; source_id: string }>;
   let count = 0;
   const retained = new Set<string>();
-  let unreadable = false;
+  // Sessions in an unreadable directory look absent, so any gap disables pruning.
+  let unreadable = scan.unreadableDirs.length > 0;
   let consecutiveFailures = 0;
   let circuitOpen = false;
   const failureLimit = opts.embeddingFailureLimit ?? 3;
@@ -50,6 +52,7 @@ export async function runUnify(opts: UnifyOptions): Promise<number> {
     }
     // Refresh in place so failed embedding calls and concurrent readers keep
     // their existing vectors. Prune absent sessions only after a complete read.
+    if (canPrune && unreadable) console.error(JSON.stringify({ event: "unify_prune_refused", reason: "incomplete_canonical_scan", unreadable_dirs: scan.unreadableDirs.length }));
     if (canPrune && !unreadable) db.transaction(() => {
       const absent = pruneCandidates.filter(row => !retained.has(row.id) && !existsSync(join(opts.canonicalDir, row.source, `${row.source_id}.json`)));
       if (absent.length && !opts.force && (!files.length || absent.length / pruneCandidates.length > 0.1)) {

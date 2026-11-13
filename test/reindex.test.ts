@@ -262,3 +262,30 @@ test("unify skips vector replacement when canonical mtime or indexed revision ch
     } finally { db.close(); rmSync(dir, { recursive: true, force: true }); }
   }
 });
+
+test("unify keeps index rows for an unreadable provider directory, even when forced", async () => {
+  const { mkdirSync, symlinkSync, writeFileSync } = await import("node:fs");
+  const { spyOn } = await import("bun:test");
+  const { indexSession, listSessions } = await import("../src/indexer/sqlite");
+  const dir = mkdtempSync(join(tmpdir(), "unify-incomplete-"));
+  const opts = { canonicalDir: join(dir, "canonical", "sessions"), indexPath: join(dir, "index.db") };
+  const logs = spyOn(console, "error").mockImplementation(() => {});
+  const db = openIndex(opts.indexPath);
+  try {
+    for (let i = 0; i < 10; i++) writeSession(opts.canonicalDir, { ...sessionA, id: `chatgpt:kept-${i}`, source_id: `kept-${i}` });
+    indexSession(db, { ...sessionA, id: "claude:offline", source: "claude", source_id: "offline" });
+    // A provider directory on an unmounted volume: readdir fails and its files look absent.
+    symlinkSync(join(dir, "unmounted", "claude"), join(opts.canonicalDir, "claude"));
+    await runUnify(opts);
+    await runUnify({ ...opts, force: true });
+    expect(listSessions(db).map(row => row.id)).toContain("claude:offline");
+    expect(JSON.stringify(logs.mock.calls)).toContain("incomplete_canonical_scan");
+
+    // A stray file beside the provider directories is not an incomplete scan.
+    rmSync(join(opts.canonicalDir, "claude"));
+    writeFileSync(join(opts.canonicalDir, "notes.txt"), "not a provider");
+    mkdirSync(join(opts.canonicalDir, "claude"));
+    await runUnify({ ...opts, force: true });
+    expect(listSessions(db).map(row => row.id)).not.toContain("claude:offline");
+  } finally { db.close(); logs.mockRestore(); rmSync(dir, { recursive: true, force: true }); }
+});

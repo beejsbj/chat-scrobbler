@@ -39,16 +39,31 @@ export function deleteSession(baseDir: string, source: string, sourceId: string)
   return { sessionPath, assetDir, sessionDeleted, assetsDeleted };
 }
 
-export function listSessionFiles(baseDir: string): string[] {
-  const out: string[] = [];
-  if (!existsSync(baseDir)) return out;
+export interface SessionFileScan { files: string[]; unreadableDirs: string[] }
+
+/** List canonical session files and every directory that could not be read.
+ *  Stray files beside the provider directories are skipped, not unreadable. */
+export function scanSessionFiles(baseDir: string): SessionFileScan {
+  const scan: SessionFileScan = { files: [], unreadableDirs: [] };
+  if (!existsSync(baseDir)) return scan;
   for (const source of readdirSync(baseDir)) {
     const dir = join(baseDir, source);
-    let entries: string[] = [];
-    try { entries = readdirSync(dir); } catch { continue; }
-    for (const f of entries) if (f.endsWith(".json") && !isSessionDeleted(baseDir, source, f.slice(0, -5))) out.push(join(dir, f));
+    let entries: string[];
+    try { entries = readdirSync(dir); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOTDIR") scan.unreadableDirs.push(dir);
+      continue;
+    }
+    for (const f of entries) if (f.endsWith(".json") && !isSessionDeleted(baseDir, source, f.slice(0, -5))) scan.files.push(join(dir, f));
   }
-  return out;
+  return scan;
+}
+
+/** Throws rather than return a partial listing that could pass for the whole store. */
+export function listSessionFiles(baseDir: string): string[] {
+  const { files, unreadableDirs } = scanSessionFiles(baseDir);
+  if (unreadableDirs.length) throw new Error(`canonical scan incomplete: cannot read ${unreadableDirs.join(", ")}`);
+  return files;
 }
 
 /** Return the active branch of a session as an ordered message array.

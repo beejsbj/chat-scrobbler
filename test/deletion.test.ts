@@ -221,3 +221,18 @@ test("session ownership keeps historical asset links collectable after canonical
   await remove("remaining");
   expect(existsSync(assetBlobPath(opts.canonicalDir, asset.sha256))).toBe(false);
 });
+
+test("legacy ownership initialization defers blob cleanup when a provider directory is unreadable", async () => {
+  const { symlinkSync } = await import("node:fs");
+  const { unreferencedAssetHashes } = await import("../src/store/asset-references");
+  const { referenceStoreReady } = await import("../src/store/asset-reference-store");
+  const opts = setup();
+  mkdirSync(opts.canonicalDir, { recursive: true });
+  // Sessions on an unmounted volume may still reference the candidate blob.
+  symlinkSync(join(opts.root, "unmounted"), join(opts.canonicalDir, "claude"));
+  const errors = (await import("bun:test")).spyOn(console, "error").mockImplementation(() => {});
+  try {
+    expect(unreferencedAssetHashes(opts.canonicalDir, opts.rawDir, new Set(["b".repeat(64)]))).toBeNull();
+    expect(referenceStoreReady(opts.canonicalDir)).toBe(false);
+  } finally { errors.mockRestore(); }
+});
