@@ -1,0 +1,9 @@
+# Publishes the ingest receiver and the MCP connector on the host. Loopback by
+# default; set BIND_ADDRESS=0.0.0.0 only if tokens are set and the network is yours.
+# .env.example enables this file through COMPOSE_FILE. Leave it out behind a proxy.
+
+services:
+  scrobbler:
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${INGEST_PORT:-4318}:4318"
+      - "${BIND_ADDRESS:-127.0.0.1}:${MCP_PORT:-4319}:4321"

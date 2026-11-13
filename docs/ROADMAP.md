@@ -25,7 +25,7 @@ Current backend note: real providers are configurable without changing the recal
 surface. `gemini` uses `gemini-embedding-2` by default for cloud embeddings; `ollama`
 uses `mxbai-embed-large` by default for local embeddings; `embeddinggemma` runs
 EmbeddingGemma 2 in a local sidecar and also embeds image/audio/video assets (the
-bjslab choice, see issue #41); `none` keeps literal-only search. The deterministic `hash` provider remains only as a test/debug backend.
+reference deployment's choice, see issue #41); `none` keeps literal-only search. The deterministic `hash` provider remains only as a test/debug backend.
 Embeddings are stored in SQLite JSON rows under `index/` for now; a vector extension or
 external vector store can replace that implementation later if corpus size demands it.
 

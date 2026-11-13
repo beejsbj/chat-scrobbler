@@ -1,5 +1,5 @@
 // Synthetic only. Compare the complete search scan with identical 768d data.
-// Run in disposable compute, not alongside the model on a busy bjslab.
+// Run in disposable compute, not alongside the model on a busy shared host.
 import { openIndex, indexSession, searchMessages } from "../src/indexer/sqlite";
 import type { Session } from "../src/schema/types";
 const size = 4096, dimension = 768;

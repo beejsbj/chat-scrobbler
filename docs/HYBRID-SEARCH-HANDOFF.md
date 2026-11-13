@@ -1,8 +1,8 @@
-# BJS-24 Handoff: Hybrid Search With Real Providers
+# Handoff: Hybrid Search With Real Providers
 
 ## Assessment
 
-BJS-24 now has the real provider choice wired behind the existing hybrid seam.
+Hybrid search now has the real provider choice wired behind the existing hybrid seam.
 
 Implemented:
 

@@ -135,7 +135,7 @@ exponential backoff, capped at one hour or the configured interval if longer.
 | `CHAT_SCROBBLER_EMBED_BACKFILL_INTERVAL_MS` | `600000` | `embeddingBackfillIntervalMs` |
 | `CHAT_SCROBBLER_EMBED_BACKFILL_BATCH_SIZE` | `25` | `embeddingBackfillBatchSize` |
 
-The bjslab Compose service forwards these controls from Coolify. Set enabled to
+The Compose files forward these controls from the environment. Set enabled to
 `false` to disable scheduling. With no configured provider, scheduling is disabled.
 Authenticated `GET /health/deep` includes live `backfill` progress, scan cursors,
 the last run, and the next run time. Its counts describe the batch; background
@@ -215,40 +215,56 @@ bun run build:dist          # compiles dist/chat-scrobbler + dist/extension/
 
 ## Run with Docker
 
-The repo includes a root [Dockerfile](Dockerfile) and a bjslab Coolify compose
-file at [docker-compose.bjslab.yml](docker-compose.bjslab.yml). The image keeps
-the normal local default intact, while the container sets `BIND_HOST=0.0.0.0`
-so Coolify Traefik can reach the ingest and MCP HTTP servers on the Docker
-network.
+The repo includes a root [Dockerfile](Dockerfile) and a generic
+[docker-compose.yml](docker-compose.yml). The image keeps the normal local default
+intact, while the container sets `BIND_HOST=0.0.0.0` so a published port or a
+reverse proxy can reach the ingest and MCP HTTP servers.
 
-Provide `MCP_AUTH_TOKEN` and `INGEST_TOKEN` through Coolify env. The compose
-file always runs the EmbeddingGemma 2 sidecar (`embedder`) and defaults to it:
+```bash
+cp .env.example .env            # set MCP_AUTH_TOKEN and INGEST_TOKEN (openssl rand -hex 32)
+mkdir -p data/canonical/assets && sudo chown -R 999:999 data
+docker compose up -d
+```
+
+Everything site specific is an environment value, documented in
+[.env.example](.env.example): the data directory (`DATA_DIR`, default `./data`),
+the asset directory mounted into the embedder (`ASSETS_DIR`), and the data owner
+(`DATA_UID`/`DATA_GID`, default `999:999`; the images and the embedder's `user:` all
+take it from there). The ingest and MCP ports are published on `127.0.0.1` by
+[docker-compose.ports.yml](docker-compose.ports.yml), which `.env.example` enables
+through `COMPOSE_FILE`. Behind a reverse proxy, drop that overlay and route to
+container ports 4318 (ingest) and 4321 (MCP). `docker-compose.bjslab.yml` is the
+reference deployment's file for Coolify; it is being retired in favor of
+`docker-compose.yml`.
+
+The compose file runs the EmbeddingGemma 2 sidecar (`embedder`) by default:
 `CHAT_SCROBBLER_EMBED_PROVIDER=embeddinggemma`,
 `CHAT_SCROBBLER_EMBED_MODEL=litert-community/embeddinggemma-2-740m-litert-lm`,
 and `CHAT_SCROBBLER_EMBED_BASE_URL=http://embedder:4320`. No profile or extra
 environment variable is needed; see
 [services/embedder/README.md](services/embedder/README.md).
 
-The image build downloads and verifies the model, so there is no pull step. The
-compose change is merged, but the homelab deploy is still pending
-([#41](https://github.com/beejsbj/chat-scrobbler/issues/41)).
+The image build downloads and verifies the model, so there is no pull step.
 
 ## Embeddings: use the bundled embedder, or turn it off
 
 Semantic search needs vectors. You have two choices.
 
-**Use the bundled embedder (the default in `docker-compose.bjslab.yml`).** The
+**Use the bundled embedder (the default in the compose files).** The
 `embedder` sidecar runs EmbeddingGemma 2 and `serve` fills vectors in the
 background. It runs as the same uid:gid as the data owner (`DATA_UID` and
 `DATA_GID`, default `999:999`) so it can read asset blobs, which are written
 mode `0600`.
 
 **Turn it off.** Set `CHAT_SCROBBLER_EMBED_PROVIDER=none` and leave the sidecar
-out. With Docker Compose, add the overlay instead of editing the file:
+out. With Docker Compose, add the overlay instead of editing the file (or append
+`:docker-compose.no-embedder.yml` to `COMPOSE_FILE` in `.env`):
 
 ```bash
-docker compose -f docker-compose.bjslab.yml -f docker-compose.no-embedder.yml up -d
+docker compose -f docker-compose.yml -f docker-compose.ports.yml -f docker-compose.no-embedder.yml up -d
 ```
+
+(`-f` replaces `COMPOSE_FILE`, so list the ports overlay too, or use the `.env` form.)
 
 With `none` there is no background backfill, and `monitor` and `doctor` raise no
 embedding warnings. **Search is literal-only**: chat-scrobbler's own `search`
@@ -282,14 +298,11 @@ chat-scrobbler, so an outside reader must run as that user or be given access.
 
 ## How I am using it
 
-- The whole thing lives on my homelab now: the Docker compose above runs the
-  server plus an embedding sidecar, the browser extension on my laptop posts
-  captures to it over my tailnet with an ingest token, and embeddings are
-  local, so semantic search costs nothing and leaves nothing. EmbeddingGemma 2 is
-  the chosen embedder and the compose file now defaults to it, but the homelab
-  deploy is still pending
-  ([#41](https://github.com/beejsbj/chat-scrobbler/issues/41)), so the running
-  service still uses Ollama with `nomic-embed-text` for now. It started as a launchd agent on the Mac
+- The whole thing lives on my homelab: the Docker compose above runs the
+  server plus the EmbeddingGemma 2 sidecar, the browser extension on my laptop
+  posts captures to it over my tailnet with an ingest token, and embeddings are
+  local, so semantic search costs nothing and leaves nothing. It started as a
+  launchd agent on the Mac
   ([docs/examples/com.chat-scrobbler.serve.plist](docs/examples/com.chat-scrobbler.serve.plist));
   that still works fine for a single-machine setup.
 - The MCP endpoint is reachable two ways: privately for the CLI agents that

@@ -14,6 +14,8 @@ export interface HttpServerOptions {
   canonicalDir: string;
   embeddingProvider?: EmbeddingProvider | null;
   mcpAuthToken?: string | null;
+  /** Named in the MCP server instructions; null keeps them generic. */
+  ownerName?: string | null;
   /** Cooperatively prepare search caches after the socket is listening. */
   warmSearchCaches?: boolean;
 }
@@ -144,6 +146,7 @@ export async function startHttpServer(
         indexPath: opts.indexPath,
         canonicalDir: opts.canonicalDir,
         embeddingProvider: opts.embeddingProvider ?? null,
+        ownerName: opts.ownerName,
         database: getDatabase(),
       });
 
@@ -186,6 +189,7 @@ if (import.meta.main) {
     canonicalDir: cfg.canonicalDir,
     embeddingProvider: embeddingProviderFromConfig(cfg),
     mcpAuthToken: cfg.mcpAuthToken,
+    ownerName: cfg.ownerName,
     warmSearchCaches: true,
   });
 }

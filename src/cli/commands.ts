@@ -742,6 +742,7 @@ export async function startServe(cfg: ChatHistoryConfig): Promise<ServeHandles> 
     canonicalDir: cfg.canonicalDir,
     embeddingProvider,
     mcpAuthToken: cfg.mcpAuthToken,
+    ownerName: cfg.ownerName,
     warmSearchCaches: true,
   }); } catch(error) {ingestServer.stop(true);throw error;}
 

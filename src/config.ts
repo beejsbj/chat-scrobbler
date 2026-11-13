@@ -27,6 +27,8 @@ export interface ChatHistoryConfig extends MonitorConfig {
   mcpHttpPort: number;
   /** Interface both HTTP servers bind to. Defaults to localhost. */
   bindHost: string;
+  /** Name used in the MCP server instructions ("<name>'s AI chat history"). Null keeps them generic. */
+  ownerName: string | null;
   /** Optional shared secret for MCP HTTP. Null keeps localhost /mcp anonymous. */
   mcpAuthToken: string | null;
   /** Optional public HTTPS tunnel base used only for printed connector URLs. */
@@ -70,6 +72,7 @@ export const DEFAULT_CONFIG: ChatHistoryConfig = {
   maxAssetBytes: DEFAULT_MAX_ASSET_BYTES,
   mcpHttpPort: 4319,
   bindHost: "127.0.0.1",
+  ownerName: null,
   mcpAuthToken: null,
   mcpPublicBaseUrl: null,
   ingestBaseUrl: DEFAULT_INGEST_BASE_URL,
@@ -112,6 +115,7 @@ const FILE_KEYS: Array<keyof ChatHistoryConfig> = [
   "maxAssetBytes",
   "mcpHttpPort",
   "bindHost",
+  "ownerName",
   "mcpAuthToken",
   "mcpPublicBaseUrl",
   "ingestBaseUrl",
@@ -161,6 +165,7 @@ export function loadConfig(opts: LoadConfigOptions = {}): ChatHistoryConfig {
   cfg.maxAssetBytes = Number.isSafeInteger(assetLimit) && assetLimit > 0 ? assetLimit : DEFAULT_CONFIG.maxAssetBytes;
   applyNumber(cfg, "mcpHttpPort", env.MCP_HTTP_PORT);
   applyString(cfg, "bindHost", env.CHAT_SCROBBLER_BIND_HOST ?? env.BIND_HOST);
+  applyNullableString(cfg, "ownerName", env.CHAT_SCROBBLER_OWNER_NAME);
   applyNullableString(cfg, "mcpAuthToken", env.MCP_AUTH_TOKEN ?? env.CHAT_SCROBBLER_MCP_AUTH_TOKEN);
   applyNullableString(cfg, "mcpPublicBaseUrl", env.MCP_PUBLIC_BASE_URL ?? env.CHAT_SCROBBLER_MCP_PUBLIC_BASE_URL);
   applyEmbeddingProvider(cfg, env.CHAT_SCROBBLER_EMBED_PROVIDER ?? env.EMBED_PROVIDER);
@@ -247,7 +252,7 @@ function applyString(cfg: ChatHistoryConfig, key: "canonicalDir" | "indexPath" |
   if (v !== undefined && v !== "") cfg[key] = v;
 }
 
-function applyNullableString(cfg: ChatHistoryConfig, key: "mcpAuthToken" | "mcpPublicBaseUrl" | "embeddingModel" | "geminiApiKey", v: string | undefined): void {
+function applyNullableString(cfg: ChatHistoryConfig, key: "ownerName" | "mcpAuthToken" | "mcpPublicBaseUrl" | "embeddingModel" | "geminiApiKey", v: string | undefined): void {
   if (v !== undefined) cfg[key] = v || null;
 }
 
