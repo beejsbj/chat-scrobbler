@@ -1,4 +1,5 @@
 import { maxIso } from "./providers/types";
+import { routeBackfillPage } from "./backfill-routing";
 import { captureAcknowledged } from "./capture-acknowledgement";
 import { fetchAllowedAsset } from "./providers/asset-fetch";
 import "./chrome-api";
@@ -625,14 +626,21 @@ async function commitBackfill(value: import("../../shared/src").AssetBackfillCom
   return res.json();
 }
 
+/** Names the tab in an error so the user reloads the right one among several. */
+function tabPath(rawUrl?: string): string {
+  try { return `showing ${new URL(rawUrl ?? "").pathname}`; } catch { return ""; }
+}
+
 async function backfillOpenTabs(): Promise<unknown> {
   const tabs = await queryTabs({});
-  const providers = new Set<ProviderSource>();
-  const results: unknown[] = [];
+  const byProvider = new Map<ProviderSource, any[]>();
   for (const tab of tabs) {
     const provider = providerFromUrl(tab.url);
-    if (!tab.id || !provider || providers.has(provider)) continue;
-    providers.add(provider);
+    if (!tab.id || !provider) continue;
+    byProvider.set(provider, [...(byProvider.get(provider) ?? []), tab]);
+  }
+  const results: unknown[] = [];
+  for (const [provider, providerTabs] of byProvider) {
     const status = await getStatus();
     const settings = await getSettings();
     const url = new URL(`${assetsUrl(settings.ingestBaseUrl)}/backfill`);
@@ -645,14 +653,21 @@ async function backfillOpenTabs(): Promise<unknown> {
     const res = await fetch(url.toString(), { headers, credentials: "omit", signal: AbortSignal.timeout(30_000) });
     if (!res.ok) throw new Error(`Backfill queue unavailable (${res.status}); receiver needs the BJS-547 build`);
     const page = await res.json() as AssetBackfillPage;
-    const response = await sendTabMessage(tab.id, { type: "SCROBBLER_BACKFILL_ASSETS", provider, page }) as any;
-    if (!response?.ok) throw new Error(response?.error ?? "Reload the provider tab before backfill");
+    // One page, possibly several tabs; any tab failing throws before the cursor is saved. Work already
+    // committed by earlier tabs stays linked and drops out of the next page.
+    const total = { sessions: 0, attempted: 0, captured: 0, unavailable: 0 };
+    for (const route of routeBackfillPage(provider, page, providerTabs)) {
+      const response = await sendTabMessage(route.tab.id!, { type: "SCROBBLER_BACKFILL_ASSETS", provider, page: route.page }) as any;
+      if (!response?.ok) throw new Error(response?.error ?? `Reload the ${provider} tab ${tabPath(route.tab.url)} before backfill`);
+      for (const key of Object.keys(total) as Array<keyof typeof total>) total[key] += response.result[key];
+    }
+    const result = { ...total, next_after: page.next_after };
     await mutateStatus(next => {
       const previous = next.providers[provider] ?? { lastSync: null, lastVisitSync: null, lastResult: null, lastError: null };
-      next.providers[provider] = { ...previous, lastBackfill: { ...response.result, completed_at: new Date().toISOString() } };
+      next.providers[provider] = { ...previous, lastBackfill: { ...result, completed_at: new Date().toISOString() } };
     });
-    results.push({ provider, ...response.result });
+    results.push({ provider, ...result });
   }
-  if (!providers.size) throw new Error("Open a logged-in provider tab before backfill");
+  if (!byProvider.size) throw new Error("Open a logged-in provider tab before backfill");
   return { ok: true, results };
 }
