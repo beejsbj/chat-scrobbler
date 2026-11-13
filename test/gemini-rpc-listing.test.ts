@@ -57,7 +57,7 @@ test("an empty sidebar lists through MaZiqc, strips the c_ prefix and captures e
   expect(f.detail().map((c) => c.inner)).toEqual([A, B, C].map((id) => JSON.stringify([`c_${id}`])));
   const [recent, pinned] = f.list();
   expect(recent!.inner).toBe(JSON.stringify([13, null, [0, null, 1]]));
-  expect(pinned!.inner).toBe(JSON.stringify([1, null, 1]));
+  expect(pinned!.inner).toBe(JSON.stringify([13, null, [1, null, 1]]));
   expect(recent!.url).toContain("rpcids=MaZiqc");
   expect(new URL(recent!.url, "https://gemini.google.com").searchParams.get("source-path")).toBe("/app");
   expect(recent!.body.get("at")).toBe("csrf");

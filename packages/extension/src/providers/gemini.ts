@@ -16,7 +16,7 @@ import { logSyncFailure, SyncFailureTracker } from "./sync-failures";
  *    FALLBACK, conversation-list RPC `MaZiqc`: a hidden tab (the periodic sync) never
  *    renders the sidebar, so when the DOM gives no ids the list comes from MaZiqc.
  *    UNVERIFIED against live traffic: the request payloads are `[13, null, [0, null, 1]]`
- *    (recent) and `[1, null, 1]` (pinned) as documented by the gemini-webapi client, and
+ *    (recent) and `[13, null, [1, null, 1]]` (pinned) as documented by the gemini-webapi client, and
  *    the response is read by content (`c_<16 hex>` strings), not by position.
  *
  * 2. CONTENT CAPTURE — batchexecute RPC `hNvQHb` (VERIFIED working, 2026-06-06).
@@ -66,7 +66,7 @@ const CONVERSATION_RPC_ID = "hNvQHb";
 // The conversation-list RPC ID. UNVERIFIED against live traffic; see the header comment.
 const LIST_RPC_ID = "MaZiqc";
 const LIST_RPC_RECENT = [13, null, [0, null, 1]];
-const LIST_RPC_PINNED = [1, null, 1];
+const LIST_RPC_PINNED = [13, null, [1, null, 1]];
 
 // Gemini batchexecute endpoint (same-origin from content script).
 const BATCHEXECUTE_PATH = "/_/BardChatUi/data/batchexecute";
