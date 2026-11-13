@@ -3,7 +3,7 @@ import { basename, dirname, join } from "node:path";
 import { sanitizePathSegment } from "../../packages/shared/src";
 import { assetBlobPath, assetsDirForCanonicalDir, assetsDirForSession } from "./assets";
 import { captureHashes, collectAssetHashes, filesUnder, unreferencedAssetHashes } from "./asset-references";
-import { ownedAssetHashes, referenceStoreReady, removeAssetOwner } from "./asset-reference-store";
+import { hasOtherAssetOwners, ownedAssetHashes, referenceStoreReady, removeAssetOwner } from "./asset-reference-store";
 import { deleteSession, sessionFilePath } from "./sessions";
 import { rawDirForCanonicalDir } from "./raw";
 import { encodedSegment, markSessionDeleted } from "./tombstones";
@@ -62,4 +62,21 @@ export function deleteSessionArchives(canonicalDir: string, identities: SessionI
     if (existsSync(dirname(blob))) syncDirectory(dirname(blob));
   }
   return { sessions, blobsDeleted };
+}
+
+/** Read-only count of blobs deleting this session would erase. Null while ownership
+ *  records are not built (deletion builds them) or a reference cannot be read. */
+export function privateBlobCount(canonicalDir: string, source: string, sourceId: string, rawDir = rawDirForCanonicalDir(canonicalDir)): number | null {
+  const roots = [canonicalDir, rawDir, assetsDirForCanonicalDir(canonicalDir)];
+  if (!roots.every(referenceStoreReady)) return null;
+  const candidates = new Set<string>();
+  try {
+    const sessionPath = sessionFilePath(canonicalDir, source, sourceId);
+    if (existsSync(sessionPath)) captureHashes(sessionPath, candidates);
+    for (const file of filesUnder(join(rawDir, encodedSegment(source), encodedSegment(sourceId)), "*.json.gz")) captureHashes(file, candidates);
+    for (const file of filesUnder(assetsDirForSession(canonicalDir, source, sourceId))) collectAssetHashes(basename(file), candidates);
+    for (const root of roots) for (const hash of ownedAssetHashes(root, source, sourceId)) candidates.add(hash);
+    return [...candidates].filter(hash => existsSync(assetBlobPath(canonicalDir, hash))
+      && !roots.some(root => hasOtherAssetOwners(root, hash, source, sourceId))).length;
+  } catch { return null; }
 }

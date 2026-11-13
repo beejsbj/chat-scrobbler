@@ -51,6 +51,11 @@ export function removeAssetOwner(root: string, source: string, id: string, known
 export function hasAssetOwners(root: string, hash: string): boolean {
   return filesUnder(join(referenceDir(root), "by-hash", hash), "*/*.json").length > 0;
 }
+/** Read-only: whether anything besides this session owns the hash. */
+export function hasOtherAssetOwners(root: string, hash: string, source: string, id: string): boolean {
+  const own = hashOwnerPath(root, hash, source, id);
+  return filesUnder(join(referenceDir(root), "by-hash", hash), "*/*.json").some(file => file !== own);
+}
 function removeFile(file: string): void {
   if (existsSync(file)) { rmSync(file); syncDirectory(dirname(file)); }
 }
