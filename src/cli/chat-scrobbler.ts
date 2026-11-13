@@ -1,6 +1,6 @@
 // src/cli/chat-scrobbler.ts
 // CLI entrypoint for the chat-scrobbler tool.
-// Subcommands: search, get, list, unify, serve, doctor, backup, backups, restore
+// Subcommands: search, get, list, unify, delete, serve, doctor, backup, backups, restore
 // Arg parsing: manual / node:util parseArgs (no extra packages).
 
 import { runMonitorCmd } from "./monitor";
@@ -118,6 +118,12 @@ Operate
                            (all of them when CHAT_SCROBBLER_EMBED_PROVIDER=none). Dry run unless:
     --apply                Delete. Never automatic. Sessions and literal search are untouched
     --json                 Output the counts as JSON
+
+  delete <id>            Erase one session for good: canonical file, raw history,
+                           private blobs and index rows; a tombstone stops recapture
+    --dry-run              Show what would be removed and change nothing
+    --yes                  Confirm without a prompt (required when not on a terminal)
+    --json                 Output a machine-readable summary
 
   unify [--force]        Refresh index; --force permits pruning more than 10%
                            Enable semantic recall with:
@@ -277,6 +283,20 @@ async function main(argv: string[]): Promise<void> {
         break;
       }
 
+      case "delete": {
+        const { positionals, values } = parseArgs({ args: rest, allowPositionals: true, options: {
+          "dry-run": { type: "boolean", default: false }, yes: { type: "boolean", default: false }, json: { type: "boolean", default: false },
+        } });
+        if (positionals.length !== 1) {
+          process.stderr.write("Error: delete requires one session id, e.g. chat-scrobbler delete chatgpt:abc123\n");
+          process.exit(1);
+        }
+        const { runDeleteCmd } = await import("./delete");
+        await runDeleteCmd({ cfg, id: positionals[0], dryRun: values["dry-run"], yes: values.yes, json: values.json, write,
+          confirm: process.stdin.isTTY ? askYesNo : undefined });
+        break;
+      }
+
       case "unify": {
         const { values } = parseArgs({ args: rest, options: { force: { type: "boolean", default: false } } });
         await runUnifyCmd({ cfg, write, force: values.force });
@@ -414,6 +434,14 @@ async function main(argv: string[]): Promise<void> {
     process.stderr.write(`Error: ${msg}\n`);
     process.exit(1);
   }
+}
+
+/** Interactive confirmation for irreversible commands; only "y" or "yes" proceeds. */
+async function askYesNo(prompt: string): Promise<boolean> {
+  const { createInterface } = await import("node:readline/promises");
+  const rl = createInterface({ input: process.stdin, output: process.stderr });
+  try { return /^y(es)?$/i.test((await rl.question(prompt)).trim()); }
+  finally { rl.close(); }
 }
 
 if (import.meta.main) {
