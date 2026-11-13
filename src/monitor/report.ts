@@ -10,6 +10,7 @@ import { monitorHealth } from "./health";
 import type { IngestServerOptions } from "../../packages/ingest/src/server";
 import { unknownTypes } from "../core/unknown-types";
 import { rawDirForCanonicalDir } from "../store/raw";
+import { countPendingBlobCleanup } from "../store/delete";
 import { SOURCES } from "../store/raw-catalog";
 import { monitorSettings } from "./config";
 import { rawObservations } from "./raw";
@@ -87,6 +88,9 @@ export async function monitorReport(opts: IngestServerOptions, ack = false) {
   const missingAssets = canonical.missingAssets;
   if (canonical.unreadable || unknown.unreadable_sessions) fail("canonical", `unreadable_sessions=${Math.max(canonical.unreadable, unknown.unreadable_sessions)}`);
   if (missingAssets) fail("assets", `missing_recent_blocks=${missingAssets}`);
+  // A deletion that could not collect its blobs; rerunning the delete finishes it.
+  const pendingCleanup = canonicalDir ? countPendingBlobCleanup(canonicalDir) : 0;
+  if (pendingCleanup) fail("assets", `pending_blob_cleanup=${pendingCleanup}`);
   let coverage = null;
   try {
     const skipped = skippedEmbeddingFailure(opts.indexPath, opts.embeddingProvider);

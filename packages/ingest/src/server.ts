@@ -2,7 +2,7 @@ import { syncIssueReports } from "./sync-issues";
 import { recordParseOutcome } from "../../../src/monitor/parse-state";
 import { monitorWrite } from "../../../src/monitor/state-fault";
 import { persistEmbeddingStatus } from "../../../src/indexer/embedding-status";
-import { clearAssetOutcome, clearSessionAssetOutcomes, monitorStatePath, recordCaptureReceipt, type AssetOutcomeIdentity } from "../../../src/monitor/state";
+import { clearAssetOutcome, monitorStatePath, recordCaptureReceipt, type AssetOutcomeIdentity } from "../../../src/monitor/state";
 import { cachedLiveMonitorReport } from "../../../src/monitor/live-report";
 import type { MonitorConfig } from "../../../src/monitor/config";
 import { backfillHealth, cachedIngestHealth } from "./health";
@@ -32,6 +32,7 @@ import { captureJsonEntries } from "../../../src/store/raw-json";
 import { rawDirForCanonicalDir } from "../../../src/store/raw";
 import { archiveCaptureWithGeminiMedia } from "./gemini-media-retention";
 import { deleteSessionArchive } from "../../../src/store/delete";
+import { deleteSessionEverywhere } from "../../../src/core/delete-session";
 import { isSessionDeleted } from "../../../src/store/tombstones";
 import type { EmbeddingProvider } from "../../../src/indexer/sqlite";
 
@@ -164,10 +165,8 @@ export async function handleIngestRequest(req: Request, opts: IngestServerOption
     try {
       const source = readSource(url.searchParams.get("source"));
       const sourceId = requiredParam(url, "source_id");
-      const canonical = deleteSessionArchive(fat.canonicalDir, source, sourceId, opts.rawDir);
-      const index = deleteIndexedSession(indexFor(fat.indexPath), source, sourceId);
-      const statePath = monitorStatePath(fat.indexPath, opts.monitorStatePath);
-      monitorWrite(statePath, () => clearSessionAssetOutcomes(statePath, source, sourceId));
+      const { canonical, index } = deleteSessionEverywhere({ canonicalDir: fat.canonicalDir, rawDir: opts.rawDir,
+        monitorStatePath: monitorStatePath(fat.indexPath, opts.monitorStatePath) }, indexFor(fat.indexPath), source, sourceId);
       return json({
         ok: true,
         source,

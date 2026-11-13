@@ -31,6 +31,8 @@ them through a CLI and a read-only MCP connector.
 | `src/cli/chat-scrobbler.ts` | CLI entrypoint |
 | `src/cli/commands.ts` | Command implementations (thin frontends over core fns) |
 | `src/cli/unify.ts` | Rebuild index from canonical |
+| `src/cli/delete.ts` | `delete <id>`: dry-run preview, confirmation, then `deleteSessionEverywhere` |
+| `src/core/delete-session.ts` | Erase one session from archive, index and monitor state (CLI and `DELETE /captures`) |
 | `src/core/session-id.ts` | `parseSessionId` -- validates `source:source_id` format |
 | `packages/extension/src/` | Browser extension (background, content, providers, popup) |
 | `packages/ingest/src/` | Ingest server (POST /captures, POST /status, GET /health) |
@@ -48,7 +50,7 @@ bun install
 bun test
 bun x tsc --noEmit
 
-bun run cli <command>        # run CLI from source (search/get/list/unify/init/doctor/serve/mcp/connect/backup/backups/restore)
+bun run cli <command>        # run CLI from source (search/get/list/unify/delete/init/doctor/serve/mcp/connect/backup/backups/restore)
 bun run cli doctor           # verify install chain: config, tokens, ingest, MCP, embeddings, index, public URL
 bun run serve                # ingest receiver (port 4318) + MCP HTTP (port 4319) together
 bun run unify                # rebuild SQLite index from canonical

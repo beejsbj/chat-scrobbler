@@ -80,6 +80,18 @@ chat-scrobbler get chatgpt:<id> --markdown
 chat-scrobbler backup
 ```
 
+To erase a chat you regret capturing, preview it, then delete it. Deletion is
+irreversible: it removes the canonical file, raw history, blobs no other chat
+uses, and the index rows, and leaves a tombstone so the chat is not captured
+again. Only a backup taken before the deletion, restored into an empty data
+directory, brings it back: a forced restore over the live store keeps the
+tombstone and skips the chat.
+
+```bash
+chat-scrobbler delete chatgpt:<id> --dry-run
+chat-scrobbler delete chatgpt:<id>          # asks first; --yes when scripted
+```
+
 Search is literal by default and becomes hybrid when you enable embeddings. To
 run an explicit regex search, use `--grep`:
 
@@ -340,6 +352,11 @@ searchable, so treat the data dir accordingly.
   until it is updated.
 - If you switch to a different branch of a forked chat without sending a new
   message, the recorded active branch can lag until the next real change.
+- A chat you delete at the provider stays in your archive: outliving the
+  provider's copy is the point, so nothing watches for provider deletions.
+  There is also no minimum-size capture filter, since it would drop chats
+  silently. Disable sync for a chat in the extension, or remove it with the
+  extension's delete control or `chat-scrobbler delete`.
 - Chromium-only for now.
 
 ## License
