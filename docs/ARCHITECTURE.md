@@ -243,12 +243,12 @@ needs live verification is marked above.
 
 ### Document guard: JSON and HTML bodies
 
-Origin: PR #14 (BJS-547), commit `db3779b`. A review probe put
+Origin: PR #14, commit `db3779b`. A review probe put
 `image_url: "/api/auth/session"` in a conversation payload. The extension fetched it with
 the user's provider credentials and would have uploaded `{"accessToken": ...}` to the
 archive, where any MCP client could read it back through `get_asset`. The fix was two
 layers, and the notes that cited an "explicit user security constraint" were describing the
-second layer too broadly. No such constraint from Burooj has been found; the reason is the
+second layer too broadly. No such constraint from the owner has been found; the reason is the
 credential leak above.
 
 1. **URL allowlist (primary).** `asset-url.ts` fetches with credentials only from fixed
@@ -342,7 +342,7 @@ Claude and ChatGPT Canvas content is retained as artifacts. Canvas edit replacem
 and comments are searchable; edit patterns stay structured. Unknown parts retain up
 to 16 KiB of JSON per part and 64 KiB inline JSON per session, plus raw references
 and JSON pointers. Known Gemini metadata stays in raw only. Version 1 files
-remain loadable. See [BJS-545 handoff](../HANDOFF-BJS-545.md) for the contract.
+remain loadable. The contract is the `Block` types in `src/schema/types.ts`.
 Media blocks preserve the provider `pointer`; `local_path` is a
 canonical-relative asset path when bytes were captured successfully, otherwise null.
 
@@ -455,6 +455,7 @@ Config file auto-discovery order:
 | `indexPath` | `~/.local/share/chat-scrobbler/index/sessions.db` |
 | `ingestPort` | `4318` |
 | `mcpHttpPort` | `4319` |
+| `ownerName` | `null` (MCP instructions say "the owner's AI chat history") |
 | `mcpAuthToken` | `null` (no MCP HTTP auth) |
 | `mcpPublicBaseUrl` | `null` (no printed public connector URL) |
 | `ingestBaseUrl` | `http://127.0.0.1:4318` (tracks `ingestPort` unless overridden) |
@@ -468,6 +469,7 @@ Config file auto-discovery order:
 |---------|-------|
 | `CANONICAL_DIR` | `canonicalDir` |
 | `INDEX_PATH` | `indexPath` |
+| `CHAT_SCROBBLER_OWNER_NAME` | `ownerName` |
 | `PORT` | `ingestPort` |
 | `MCP_HTTP_PORT` | `mcpHttpPort` |
 | `MCP_AUTH_TOKEN` or `CHAT_SCROBBLER_MCP_AUTH_TOKEN` | `mcpAuthToken` |
@@ -603,7 +605,7 @@ state files and SQLite sidecars must have that same owner.
 For the checked-in Compose service, the host invocation is:
 
 ```sh
-docker compose -f docker-compose.bjslab.yml exec -T scrobbler /usr/local/bin/chat-scrobbler monitor
+docker compose exec -T scrobbler /usr/local/bin/chat-scrobbler monitor
 ```
 
 The CLI exits 0, prints nothing when healthy, and otherwise prints sorted,
@@ -643,7 +645,7 @@ These bootstrap dates show conversation activity, not proof of a recent browser
 poll. An unused provider can have JSON `null` or env `off` for its staleness
 setting. Providers with no history alert until the next sync or that override.
 Invalid threshold values fall back to defaults. Provider overrides merge with the
-other providers' defaults. The bjslab Compose service defaults to ChatGPT 7 days,
+other providers' defaults. The Compose files default to ChatGPT 7 days,
 Claude 14 days and Gemini 21 days. Set the corresponding environment variables
 on the host to tune these Compose overrides.
 

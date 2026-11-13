@@ -2,7 +2,7 @@
   "date": "2026-10-13",
   "dataset": "synthetic only, 35718 messages / 31143 vectors / 768 dimensions / 77 MB text; not a production copy",
   "query_inference_excluded": true,
-  "host": "bjslab",
+  "host": "reference deployment",
   "caps": {
     "memory_max_bytes": 2147483648,
     "memory_swap_max_bytes": 0,

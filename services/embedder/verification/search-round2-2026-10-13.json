@@ -1,6 +1,6 @@
 {
   "source_commit": "8e2f29b",
-  "host": "bjslab",
+  "host": "reference deployment",
   "dataset": "synthetic, no archive content",
   "messages": 35718,
   "vectors": 31143,

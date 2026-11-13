@@ -1,6 +1,6 @@
 # Embeddings: EmbeddingGemma 2 service, backfill, and cutover
 
-Operational reference for BJS-548 (part of BJS-542). Measurements were taken on bjslab on 2026-10-13 and may drift.
+Operational reference for the EmbeddingGemma 2 service. Measurements were taken on the reference deployment (a single shared home server) on 2026-10-13 and may drift.
 
 ## Architecture, API, and deployment
 
@@ -63,7 +63,7 @@ seconds, configurable up to 300. Idle close exceptions set
 Filesystem readiness is not proof of successful inference.
 
 Chosen deployment: `services/embedder/Dockerfile` and the always-on `embedder` service
-in **`docker-compose.bjslab.yml`**, the file Coolify already deploys. No overlay is
+in the Compose files (`docker-compose.yml`, and `docker-compose.bjslab.yml` for the reference deployment). No overlay is
 required. `services/embedder/compose.embedder.yml` is now an empty compatibility
 overlay; all service definitions live in the main compose. This choice preserves one deployment plan
 when Coolify recreates services.
@@ -164,7 +164,7 @@ was 1.30 GiB including its generated SQLite database and retained JSON; that is
 not the memory cost of the matrix. The file-backed HTTP MCP benchmark initially measured 189 ms median, 197 ms
 maximum, 1.95 seconds cold, and 195 MiB RSS in Daytona.
 
-A capped **bjslab** run exposed the remaining substring I/O: matrix-only HTTP
+A capped run on the reference deployment exposed the remaining substring I/O: matrix-only HTTP
 search took 634 ms median and 889 ms maximum. Adding the literal cache brought
 complete HTTP MCP search to **64 ms median, 144 ms maximum**, five warm requests,
 with **406 MiB total process RSS**. This includes SDK transport and response
@@ -183,7 +183,7 @@ Systemd's final summary sometimes understates peak memory; use the measured proc
 RSS. Receipts: `search-host-{review,final-review}-2026-10-13.log`.
 
 Reproduce: `bun scripts/benchmark-search-review.ts --assert` on disposable compute,
-or `sh scripts/verify-bjs-548.sh scripts/benchmark-search-review.ts --assert` for
+or `sh scripts/verify-embedder.sh scripts/benchmark-search-review.ts --assert` for
 pinned Bun 1.3.14. The assertion checks a five-run warm median below 300 ms.
 
 ## Backfill and pending ingest vectors
@@ -316,17 +316,17 @@ use the explicit `/proc` and `memory.peak` samples above instead.
 
 ## Cutover, decided 2026-10-26, Compose step done, deploy pending
 
-Burooj chose a direct swap over the side-by-side plan this section used to describe.
+The operator chose a direct swap over the side-by-side plan this section used to describe.
 There is no parallel Gemma backfill while Ollama keeps serving, and no rollback
 window. Semantic recall falls back to literal matches until the Gemma backfill
-finishes (about 36k messages, roughly one to two days on bjslab). Issue
+finishes (about 36k messages, roughly one to two days on the reference deployment). Issue
 [#41](https://github.com/beejsbj/chat-scrobbler/issues/41) tracks the work.
 
 1. **Wait for a quiet window.** No other agents working, at least 6 GiB available,
    and memory pressure near zero. The deploy builds the embedder image, including
    its roughly 1 GB model fetch, and adds a container of about 1.1 GB.
 2. **Retire Ollama in Compose. Done in code, deploy still pending.** The `ollama`
-   service and its dependency are gone from `docker-compose.bjslab.yml`, the
+   service and its dependency are gone from the Compose files, the
    `embeddings` profile is dropped so `embedder` always runs, and provider and
    model default to `embeddinggemma` and
    `litert-community/embeddinggemma-2-740m-litert-lm`. Nothing is deployed yet.
@@ -340,14 +340,13 @@ finishes (about 36k messages, roughly one to two days on bjslab). Issue
    litert-community/embeddinggemma-2-740m-litert-lm --limit 100` inside the
    container to check RSS, speed and failures, then let the scheduler finish.
    Do not use `unify` as the bulk inference job.
-5. **Judge the results.** Once coverage settles, Burooj tries real queries such as
-   "why did semantic recall disappear when the server was swapping?", "what did we
-   decide about preserving raw chat captures?", "where did I discuss sincerity and
-   ikhlas?" and "what is the phone and server embedding plan?". Check paraphrases,
+5. **Judge the results.** Once coverage settles, the operator tries real queries whose answers
+   they remember: a paraphrase of something said in a past chat, a question about a
+   decision made earlier, and a topic discussed in passing. Check paraphrases,
    literal anchors, inactive branches, irrelevant ranks, warm/cold latency, and
    whether captured images surface for descriptive queries.
-6. **Delete the Ollama store.** Remove `/mnt/server-ssd/ollama` (about 2.8 GB:
-   nomic and the unused `qwen3:4b`) once Gemma serves search.
+6. **Delete the Ollama store.** Remove the Ollama model store (about 2.8 GB
+   in the reference deployment: nomic and an unused `qwen3:4b`) once Gemma serves search.
 
 Going back to Ollama later means restoring the provider settings and the service,
 then catching up only the missing or stale nomic rows, since vectors are stored per
@@ -372,7 +371,7 @@ Bun 1.3.14 and frozen dependencies:
   existing capped Ollama service; see the metrics above. Coordination regressions
   still verify the lease does not dirty the active matrix.
 
-Run `sh scripts/verify-bjs-548.sh` on disposable compute for all portable gates.
+Run `sh scripts/verify-embedder.sh` on disposable compute for all portable gates.
 Local Python: `python3 -m unittest discover -s services/embedder/tests -v`.
 Round-4 receipt: `test-results-round4-2026-10-14.json`.
 Historical heartbeat receipt: `test-results-lease-2026-10-13.json`.

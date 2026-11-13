@@ -21,3 +21,7 @@ node_modules/
 packages/extension/build/
 .DS_Store
 *.log
+
+# Local deployment settings and data
+.env
+/data/

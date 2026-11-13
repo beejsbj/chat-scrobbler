@@ -1,5 +1,5 @@
 {
-  "source": "/mnt/server-ssd/spikes/bjs-544/venv-a/lib/python3.12/site-packages/litert_lm/embedding_engine.py",
+  "source": "<spike>/venv-a/lib/python3.12/site-packages/litert_lm/embedding_engine.py",
   "sha256": "c299c71137bf2aa43755322f3837bf5512141b42cfce07c9f0f454376571737f",
   "engine_parameters": [
     "audio_backend",

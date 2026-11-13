@@ -35,6 +35,8 @@ them through a CLI and a read-only MCP connector.
 | `packages/extension/src/` | Browser extension (background, content, providers, popup) |
 | `packages/ingest/src/` | Ingest server (POST /captures, POST /status, GET /health) |
 | `packages/shared/src/` | Shared constants and `RawCapture` schema |
+| `docker-compose.yml`, `.env.example` | Generic deployment: data dir, owner uid and tokens from env; `docker-compose.ports.yml` publishes ports, `docker-compose.no-embedder.yml` leaves the embedder out |
+| `test/no-host-paths.test.ts` | CI guard: tracked files carry no host paths |
 | `scripts/build-dist.ts` | Compiles `dist/chat-scrobbler` + bundles `dist/extension/` |
 | `scripts/release.ts` | Release assets; `--build-only` / `--publish-only` split for CI |
 | `.github/workflows/` | `ci.yml` (typecheck + tests on PRs and main), `release.yml` (v* tags) |
@@ -60,7 +62,7 @@ bun run mcp:http             # read-only MCP over HTTP at /mcp (env MCP_HTTP_POR
 Config resolution: defaults < JSON config file (`CHAT_SCROBBLER_CONFIG`,
 `./chat-scrobbler.config.json`, or `~/.config/chat-scrobbler/config.json`) < env
 (`CANONICAL_DIR`, `INDEX_PATH`, `PORT`, `MCP_HTTP_PORT`, `INGEST_BASE_URL`,
-`INGEST_TOKEN`, `BACKUP_TARGET`, `BIND_HOST`).
+`INGEST_TOKEN`, `BACKUP_TARGET`, `BIND_HOST`, `CHAT_SCROBBLER_OWNER_NAME`).
 
 ## Conventions
 

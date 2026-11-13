@@ -651,7 +651,7 @@ async function backfillOpenTabs(): Promise<unknown> {
     const headers: Record<string, string> = {};
     if (settings.ingestToken) headers.authorization = `Bearer ${settings.ingestToken}`;
     const res = await fetch(url.toString(), { headers, credentials: "omit", signal: AbortSignal.timeout(30_000) });
-    if (!res.ok) throw new Error(`Backfill queue unavailable (${res.status}); receiver needs the BJS-547 build`);
+    if (!res.ok) throw new Error(`Backfill queue unavailable (${res.status}); receiver needs a newer build`);
     const page = await res.json() as AssetBackfillPage;
     // One page, possibly several tabs; any tab failing throws before the cursor is saved. Work already
     // committed by earlier tabs stays linked and drops out of the next page.

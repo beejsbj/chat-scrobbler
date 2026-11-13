@@ -1,6 +1,8 @@
 # Overlay that leaves the bundled embedder out. The default stays "on".
 #
-#   docker compose -f docker-compose.bjslab.yml -f docker-compose.no-embedder.yml up -d
+#   docker compose -f docker-compose.yml -f docker-compose.no-embedder.yml up -d
+#
+# or append it to COMPOSE_FILE in .env (see .env.example).
 #
 # The sidecar is parked behind a profile nobody enables, and the scrobbler runs
 # with CHAT_SCROBBLER_EMBED_PROVIDER=none: no backfill, no embedding warnings,

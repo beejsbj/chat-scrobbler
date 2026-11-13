@@ -141,12 +141,13 @@ SHA-256 is `e7a8a2204b91e0f96e92960e84a09a89212e1633dcb7575a9bf3378b4df77f4c`.
 The fetch verifies that hash, reuses a verified local file, and atomically installs
 it at `/opt/models/embeddinggemma-2-740m.litertlm`. Serving never downloads.
 Native host verification alone reuses the existing Python 3.12 venv, pinned model
-snapshot and compilation cache under `/mnt/server-ssd/spikes/bjs-544`.
+snapshot and compilation cache from a spike workspace; point `EMBEDDER_SPIKE_DIR` at it
+(default `./spike`).
 
 Run from the repo root:
 
 ```sh
-/mnt/server-ssd/spikes/bjs-544/venv-a/bin/python -B -m unittest discover -s services/embedder/tests -v
+"$EMBEDDER_SPIKE_DIR"/venv-a/bin/python -B -m unittest discover -s services/embedder/tests -v
 python3 -B -m services.embedder.verify_api
 ```
 
@@ -168,7 +169,7 @@ confirms that distinction.
 The [Google model card](https://huggingface.co/google/embeddinggemma-2) specifies
 text task prefixes, the unified 768-dimensional space, re-normalization after
 truncation, and 16 kHz mono audio. The service uses conservative operational
-bounds informed by `spikes/bjs-544/REPORT.md`; its tests are synthetic correctness
+bounds informed by the spike workspace's report; its tests are synthetic correctness
 checks, not retrieval quality measurements.
 
 ## Preferred deployment: private Docker sidecar
@@ -182,11 +183,12 @@ user that owns the asset blobs); assets use an existing read-only bind at
 The asset bind must exist and its files must be readable by it. An unreadable or
 missing media path answers HTTP 400 with error code `media_unreadable`.
 
-The main `docker-compose.bjslab.yml` always runs the sidecar; there is no
-profile and no Ollama service. Validate the plan from the repo root:
+The main Compose files (`docker-compose.yml`, and `docker-compose.bjslab.yml` for the reference
+deployment) run the sidecar by default; there is no Ollama service. To leave it out, add
+`docker-compose.no-embedder.yml` (see the main README). Validate the plan from the repo root:
 
 ```sh
-docker compose -f docker-compose.bjslab.yml config --quiet
+docker compose config --quiet
 ```
 
 `compose.embedder.yml` remains an empty compatibility overlay; it is unnecessary.
