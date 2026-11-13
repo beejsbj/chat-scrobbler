@@ -332,3 +332,12 @@ test("keepProviderTabs off leaves the user's tabs discardable", async () => {
   await syncAll("periodic");
   expect(tabs[0].autoDiscardable).toBe(true);
 });
+
+test("a keeper fallback does not confirm an earlier reload that never helped", async () => {
+  await syncAll("periodic");
+  tabs.push({ id: 7, url: "https://chatgpt.com/c/a", active: true });
+  alive.delete(7);
+  keeperState().touched.chatgpt = Date.now() - 1_000;
+  await syncAll("periodic");
+  expect(keeperState().confirmed?.chatgpt).toBeUndefined();
+});

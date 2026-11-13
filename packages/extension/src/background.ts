@@ -454,8 +454,9 @@ async function syncTab(tab: any, provider: ProviderSource, reason: "manual" | "p
   for (let attempt = 0; !response && options.recover && attempt < 2; attempt++) {
     const next = await recoverDeadTab(provider, tab);
     if (!next) break;
+    // recoverDeadTab hands back the same tab after a reload, a different one for the keeper fallback.
+    revived = next === tab;
     tab = next;
-    revived = true;
     response = await request(tab);
     // A reloaded tab reports "complete" slightly before its content script listens; give it a bounded moment.
     for (let wait = 1; !response && wait < keeperTimings.reviveAttempts; wait++) {
