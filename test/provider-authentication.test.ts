@@ -42,3 +42,30 @@ for (const source of ["chatgpt", "claude"] as const) for (const status of [401, 
     expect(captured).toBe(3);
   });
 }
+
+for (const source of ["chatgpt", "claude"] as const) for (const status of [401, 403]) {
+  test(`${source} manual retry with the provider session logged out (${status}) aborts on the first chat and touches no attempts`, async () => {
+    const { retryCapturedFailures } = await import("../packages/extension/src/retry-captures");
+    let detailCalls = 0;
+    const adapter = (source === "chatgpt" ? createChatgptAdapter : createClaudeAdapter)(async url => {
+      if (url === "/api/auth/session") return Response.json({});
+      if (url === "/api/organizations") return new Response("unauthorized", { status });
+      detailCalls++;
+      return new Response("unauthorized", { status });
+    });
+    const records = ["a", "b", "c"].map(source_id => ({ source_id, attempts: 2, quarantined: false, updated_at: stamp, retry_after: "2000-01-01T00:00:00Z" }));
+    const result = await retryCapturedFailures(adapter, { captureFailures: records, emitCapture: async () => {}, pause: async () => {} }).then(() => null, error => error);
+    expect(result).toMatchObject({ name: "TransientSyncError" });
+    expect(syncErrorResponse(result).captureFailures).toEqual(records);
+    expect(records.every(r => r.attempts === 2)).toBe(true);
+    expect(detailCalls).toBe(source === "chatgpt" ? 1 : 0);
+  });
+}
+
+test("claude backfill and listing surface a logged-out organization request as transient", async () => {
+  const adapter = createClaudeAdapter(async () => new Response("unauthorized", { status: 401 }));
+  await expect(adapter.listConversations!(1)).rejects.toMatchObject({ name: "TransientSyncError", status: 401 });
+  await expect(adapter.sync({ emitCapture: async () => {} })).rejects.toMatchObject({ name: "TransientSyncError", status: 401 });
+  await expect(adapter.backfillAssets!("c", [], { uploadAsset: async () => { throw new Error("unused"); }, beforeFetch: async () => {} }))
+    .rejects.toMatchObject({ name: "TransientSyncError", status: 401 });
+});
