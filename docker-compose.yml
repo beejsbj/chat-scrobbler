@@ -45,7 +45,13 @@ services:
       CHAT_SCROBBLER_MONITOR_STALE_DAYS_GEMINI: "${CHAT_SCROBBLER_MONITOR_STALE_DAYS_GEMINI:-21}"
       BIND_HOST: 0.0.0.0
     volumes:
-      - ${DATA_DIR}:/data
+      # Long form on purpose: an explicit bind, never a named volume. A missing data
+      # directory is an error, not a fresh empty archive.
+      - type: bind
+        source: ${DATA_DIR}
+        target: /data
+        bind:
+          create_host_path: false
     networks:
       - default
       - embeddings
