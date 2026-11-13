@@ -44,7 +44,8 @@ export async function handleAssetBackfill(
     const source = ctx.readSource(typeof body.source === "string" ? body.source : null);
     if (isSessionDeleted(ctx.canonicalDir, source, body.source_id)) throw new BackfillError(410, "session was deleted");
     const result = writeUnlessDeleted(ctx, ctx.db, source, body.source_id,
-      () => commitBackfill({ canonicalDir: ctx.canonicalDir, rawDir: ctx.rawDir, db: ctx.db, source, sourceId: body.source_id, assets: body.assets }));
+      () => commitBackfill({ canonicalDir: ctx.canonicalDir, rawDir: ctx.rawDir, db: ctx.db, source, sourceId: body.source_id, assets: body.assets }),
+      new Set(Array.isArray(body.assets) ? body.assets.map((asset: any) => asset?.sha256).filter((hash: unknown) => typeof hash === "string" && /^[a-f0-9]{64}$/.test(hash)) : []));
     return reply({ ok: true, ...result });
   } catch (error) {
     if (error instanceof SessionDeletedError) return reply({ ok: false, error: error.message }, 410);

@@ -6,10 +6,15 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as rawLatest from "../src/store/raw-latest";
 import * as references from "../src/store/asset-reference-store";
+import * as sessions from "../src/store/sessions";
 
 let hook: ((point: string, root?: string, id?: string) => void) | null = null;
 const realLatestRaw = rawLatest.latestRaw;
 const realRecordAssetReferences = references.recordAssetReferences;
+const realDeleteSession = sessions.deleteSession;
+// Inside the CLI's deletion: after it collected the session's blob hashes, before it removes aliases and owners.
+mock.module("../src/store/sessions", () => ({ ...sessions,
+  deleteSession: (dir: string, source: string, id: string) => { hook?.("cli-collected", dir, id); return realDeleteSession(dir, source, id); } }));
 mock.module("../src/store/raw-latest", () => ({ ...rawLatest, latestRaw: (dir: string) => { hook?.("raw"); return realLatestRaw(dir); } }));
 mock.module("../src/store/asset-reference-store", () => ({ ...references,
   recordAssetReferences: (root: string, source: string, id: string, hashes: Set<string>) => {
@@ -18,7 +23,7 @@ mock.module("../src/store/asset-reference-store", () => ({ ...references,
 
 const { handleIngestRequest } = await import("../packages/ingest/src/server");
 const { buildRawCapture } = await import("../packages/shared/src");
-const { deleteSessionEverywhere } = await import("../src/core/delete-session");
+const { deleteSessionEverywhere, SessionDeletedError, writeUnlessDeleted } = await import("../src/core/delete-session");
 const { openIndex, listSessions } = await import("../src/indexer/sqlite");
 const { listRawCaptures, storeRawCapture } = await import("../src/store/raw");
 const { assetsDirForCanonicalDir, assetsDirForSession, assetBlobPath } = await import("../src/store/assets");
@@ -140,4 +145,48 @@ test("a CLI delete landing during an asset backfill leaves nothing of the sessio
   expect(response.status).toBe(410);
   expectErased(opts, "gone");
   expect(existsSync(assetBlobPath(opts.canonicalDir, sha256))).toBe(false);
+}, 30000);
+
+test("an upload the CLI deletion missed after collecting hashes still has its private blob erased", async () => {
+  const opts = setup();
+  expect((await post(opts, capture("gone", "first"))).status).toBe(200);
+  const assetsDir = assetsDirForCanonicalDir(opts.canonicalDir);
+  const bytes = Buffer.from("late private bytes");
+  const sha = new Bun.CryptoHasher("sha256").update(bytes).digest("hex");
+  const { writeImmutableFile } = await import("../src/store/immutable-file");
+  const { linkSync, mkdirSync } = await import("node:fs");
+  const db = openIndex(opts.indexPath);
+  try {
+    const paths = { canonicalDir: opts.canonicalDir, rawDir: opts.rawDir, monitorStatePath: join(opts.root, "monitor.json") };
+    // storeCanonicalAsset passed its tombstone assert; its writes land inside the CLI's deletion.
+    const upload = () => {
+      hook = p => {
+        if (p !== "cli-collected") return;
+        hook = null;
+        realRecordAssetReferences(assetsDir, "chatgpt", "gone", new Set([sha]));
+        writeImmutableFile(assetBlobPath(opts.canonicalDir, sha), bytes);
+        mkdirSync(assetsDirForSession(opts.canonicalDir, "chatgpt", "gone"), { recursive: true });
+        linkSync(assetBlobPath(opts.canonicalDir, sha), join(assetsDirForSession(opts.canonicalDir, "chatgpt", "gone"), `${sha}.bin`));
+      };
+      cliDelete(opts, "gone");
+    };
+    expect(() => writeUnlessDeleted(paths, db, "chatgpt", "gone", upload, new Set([sha]))).toThrow(SessionDeletedError);
+  } finally { db.close(); }
+  expectErased(opts, "gone");
+  expect(existsSync(assetBlobPath(opts.canonicalDir, sha))).toBe(false);
+}, 30000);
+
+test("the recheck covers the session id a capture's payload names, not only its envelope id", async () => {
+  const opts = setup();
+  const mismatched = capture("gone", "second");
+  mismatched.source_id = "other-envelope";
+  let deleted = false;
+  hook = (p, root, id) => { if (!deleted && p === "references" && root === opts.canonicalDir && id === "gone") { deleted = true; cliDelete(opts, "gone"); } };
+  const response = await post(opts, mismatched);
+  hook = null;
+  expect(deleted).toBe(true);
+  const body = await response.json() as any;
+  expect(body.spine.map((entry: any) => entry.source_id)).not.toContain("gone");
+  expect(existsSync(join(opts.canonicalDir, "chatgpt", "gone.json"))).toBe(false);
+  expect(indexed(opts)).not.toContain("chatgpt:gone");
 }, 30000);

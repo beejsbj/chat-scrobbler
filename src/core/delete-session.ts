@@ -10,42 +10,44 @@ import { assetsDirForSession } from "../store/assets";
 import { deleteSessionArchive, hasPendingBlobCleanup, privateBlobCount } from "../store/delete";
 import { listRawCaptures, rawDirForCanonicalDir } from "../store/raw";
 import { sessionFilePath } from "../store/sessions";
-import { isSessionDeleted } from "../store/tombstones";
+import { isSessionDeleted, SessionDeletedError } from "../store/tombstones";
+
+export { SessionDeletedError };
 
 export interface SessionDeletionPaths { canonicalDir: string; rawDir?: string; monitorStatePath: string }
 
 /** Archive first (it writes the tombstone), then the derived index and monitor rows. */
-export function deleteSessionEverywhere(paths: SessionDeletionPaths, db: Database, source: string, sourceId: string) {
-  const canonical = deleteSessionArchive(paths.canonicalDir, source, sourceId, paths.rawDir);
+export function deleteSessionEverywhere(paths: SessionDeletionPaths, db: Database, source: string, sourceId: string, extraCandidates?: Set<string>) {
+  const canonical = deleteSessionArchive(paths.canonicalDir, source, sourceId, paths.rawDir, extraCandidates);
   const index = deleteIndexedSession(db, source, sourceId);
   monitorWrite(paths.monitorStatePath, () => clearSessionAssetOutcomes(paths.monitorStatePath, source, sourceId));
   return { canonical, index };
 }
 
-export class SessionDeletedError extends Error { constructor() { super("session was deleted"); } }
-
 /** Ingest checks the tombstone before it writes, but `chat-scrobbler delete` runs in
  *  another process and can write it in between. Deletion writes the tombstone before it
  *  erases anything, so a second check after the write closes that gap: absent now, any
  *  later deletion starts after this write and erases it; present, erase again here.
+ *  `written` names blobs the write may have added: a deletion that collected its
+ *  candidates first and removed owner records after would otherwise orphan them.
  *  Erasure is idempotent, so it may run beside the CLI's. Never touches another session. */
-export function eraseIfDeletedMeanwhile(paths: { canonicalDir: string; rawDir?: string; monitorStatePath?: string }, db: Database | null, source: string, sourceId: string): boolean {
+export function eraseIfDeletedMeanwhile(paths: { canonicalDir: string; rawDir?: string; monitorStatePath?: string }, db: Database | null, source: string, sourceId: string, written?: Set<string>): boolean {
   if (!isSessionDeleted(paths.canonicalDir, source, sourceId)) return false;
-  if (db && paths.monitorStatePath) deleteSessionEverywhere({ ...paths, monitorStatePath: paths.monitorStatePath }, db, source, sourceId);
-  else deleteSessionArchive(paths.canonicalDir, source, sourceId, paths.rawDir);
+  if (db && paths.monitorStatePath) deleteSessionEverywhere({ ...paths, monitorStatePath: paths.monitorStatePath }, db, source, sourceId, written);
+  else deleteSessionArchive(paths.canonicalDir, source, sourceId, paths.rawDir, written);
   return true;
 }
 
 /** Run one session-scoped write; if the session was deleted meanwhile, erase what it
  *  wrote and throw SessionDeletedError instead of returning or rethrowing. */
-export function writeUnlessDeleted<T>(paths: { canonicalDir: string; rawDir?: string; monitorStatePath?: string }, db: Database | null, source: string, sourceId: string, write: () => T): T {
+export function writeUnlessDeleted<T>(paths: { canonicalDir: string; rawDir?: string; monitorStatePath?: string }, db: Database | null, source: string, sourceId: string, write: () => T, written?: Set<string>): T {
   let result: T;
   try { result = write(); }
   catch (error) {
-    if (eraseIfDeletedMeanwhile(paths, db, source, sourceId)) throw new SessionDeletedError();
+    if (eraseIfDeletedMeanwhile(paths, db, source, sourceId, written)) throw new SessionDeletedError();
     throw error;
   }
-  if (eraseIfDeletedMeanwhile(paths, db, source, sourceId)) throw new SessionDeletedError();
+  if (eraseIfDeletedMeanwhile(paths, db, source, sourceId, written)) throw new SessionDeletedError();
   return result;
 }
 

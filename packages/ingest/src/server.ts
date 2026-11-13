@@ -8,6 +8,7 @@ import type { MonitorConfig } from "../../../src/monitor/config";
 import { backfillHealth, cachedIngestHealth } from "./health";
 import type { BackfillSchedulerStatus } from "../../../src/indexer/backfill-scheduler";
 import { Database } from "bun:sqlite";
+import { createHash } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { foldCaptureIntoSpine, type SpineResult } from "./pipeline";
@@ -33,6 +34,7 @@ import { rawDirForCanonicalDir } from "../../../src/store/raw";
 import { archiveCaptureWithGeminiMedia } from "./gemini-media-retention";
 import { deleteSessionArchive } from "../../../src/store/delete";
 import { deleteSessionEverywhere, eraseIfDeletedMeanwhile, SessionDeletedError, writeUnlessDeleted } from "../../../src/core/delete-session";
+import { assetHashes } from "../../../src/store/asset-hashes";
 import { isSessionDeleted } from "../../../src/store/tombstones";
 import type { EmbeddingProvider } from "../../../src/indexer/sqlite";
 
@@ -114,15 +116,23 @@ function deletionPaths(fat: { canonicalDir: string; indexPath: string }, opts: I
   return { canonicalDir: fat.canonicalDir, rawDir: opts.rawDir, monitorStatePath: monitorStatePath(fat.indexPath, opts.monitorStatePath) };
 }
 
-/** Erase each batch session whose tombstone appeared while this request wrote it. */
-function eraseDeletedMeanwhile(opts: IngestServerOptions & { canonicalDir: string }, fat: ReturnType<typeof fatMode>, captures: RawCapture[]): Set<string> {
-  const deleted = new Set<string>();
-  for (const { source, source_id } of captures) {
+/** Erase each session this request wrote (raw under the capture's id, canonical under
+ *  the id its payload names) whose tombstone appeared meanwhile. */
+function eraseDeletedMeanwhile(opts: IngestServerOptions & { canonicalDir: string }, fat: ReturnType<typeof fatMode>, captures: RawCapture[], spine: SpineResult[]): Set<string> {
+  const written = new Map<string, { source: string; source_id: string; hashes: Set<string> }>();
+  const add = (source: string, source_id: string, hashes: Set<string>) => {
     const key = `${source}:${source_id}`;
-    if (deleted.has(key)) continue;
+    const entry = written.get(key) ?? { source, source_id, hashes: new Set<string>() };
+    for (const hash of hashes) entry.hashes.add(hash);
+    written.set(key, entry);
+  };
+  for (const capture of captures) add(capture.source, capture.source_id, assetHashes(capture));
+  for (const entry of spine) add(entry.source, entry.source_id, new Set());
+  const deleted = new Set<string>();
+  for (const [key, { source, source_id, hashes }] of written) {
     try {
       const paths = fat ? deletionPaths(fat, opts) : { canonicalDir: opts.canonicalDir, rawDir: opts.rawDir };
-      if (eraseIfDeletedMeanwhile(paths, fat ? indexFor(fat.indexPath) : null, source, source_id)) deleted.add(key);
+      if (eraseIfDeletedMeanwhile(paths, fat ? indexFor(fat.indexPath) : null, source, source_id, hashes)) deleted.add(key);
     } catch {
       // Tombstoned either way; rerunning `chat-scrobbler delete` erases what is left.
       deleted.add(key);
@@ -222,7 +232,7 @@ export async function handleIngestRequest(req: Request, opts: IngestServerOption
         sha256,
         filename: url.searchParams.get("filename"),
         contentType: url.searchParams.get("content_type"),
-      }));
+      }), new Set([sha256]));
       forgetAssetFailure(fat.indexPath, opts.monitorStatePath, { source, source_id: sourceId, message_id: url.searchParams.get("message_id"), pointer });
       return json({ ok: true, pointer, ...stored } satisfies AssetUploadResponse);
     } catch (error) {
@@ -254,7 +264,7 @@ export async function handleIngestRequest(req: Request, opts: IngestServerOption
         contentType,
         bytes,
         maxBytes,
-      }));
+      }), new Set([createHash("sha256").update(bytes).digest("hex")]));
       forgetAssetFailure(fat.indexPath, opts.monitorStatePath, { source, source_id: sourceId, message_id: url.searchParams.get("message_id"), pointer });
       return json({
         ok: true,
@@ -347,14 +357,14 @@ export async function handleIngestRequest(req: Request, opts: IngestServerOption
             }));
           } catch (error) {
             if (!parsed) logCaptureParseFailure(capture, error);
-            // Deleted meanwhile: erased below and reported as skipped.
-            if (isSessionDeleted(fat.canonicalDir, capture.source, capture.source_id)) continue;
+            // Deleted meanwhile (under its capture id or its payload's): erased below and reported as skipped.
+            if (error instanceof SessionDeletedError || isSessionDeleted(fat.canonicalDir, capture.source, capture.source_id)) continue;
             throw error;
           }
         }
       }
     } finally {
-      if (opts.canonicalDir) deletedMeanwhile = eraseDeletedMeanwhile({ ...opts, canonicalDir: opts.canonicalDir }, fat, accepted.map(entry => entry.capture));
+      if (opts.canonicalDir) deletedMeanwhile = eraseDeletedMeanwhile({ ...opts, canonicalDir: opts.canonicalDir }, fat, accepted.map(entry => entry.capture), spine);
     }
     for (const { capture } of accepted) {
       if (!deletedMeanwhile.has(`${capture.source}:${capture.source_id}`)) continue;

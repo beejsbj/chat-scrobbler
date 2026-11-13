@@ -10,8 +10,8 @@ import { encodedSegment, markSessionDeleted } from "./tombstones";
 import { syncDirectory, writeAtomicFile } from "./atomic-file";
 
 type SessionIdentity = { source: string; source_id: string };
-export function deleteSessionArchive(canonicalDir: string, source: string, sourceId: string, rawDir = rawDirForCanonicalDir(canonicalDir)) {
-  const result = deleteSessionArchives(canonicalDir, [{ source, source_id: sourceId }], rawDir);
+export function deleteSessionArchive(canonicalDir: string, source: string, sourceId: string, rawDir = rawDirForCanonicalDir(canonicalDir), extraCandidates?: Set<string>) {
+  const result = deleteSessionArchives(canonicalDir, [{ source, source_id: sourceId }], rawDir, { extraCandidates });
   return { ...result.sessions[0], blobsDeleted: result.blobsDeleted, blobCleanupPending: result.blobCleanupPending };
 }
 
@@ -43,8 +43,10 @@ function readPendingBlobCleanup(canonicalDir: string, source: string, id: string
 }
 
 /** Restore erases all tombstoned files before one shared blob-ownership check.
- *  deferBlobCleanup skips that check when the store may be missing live references. */
-export function deleteSessionArchives(canonicalDir: string, identities: SessionIdentity[], rawDir = rawDirForCanonicalDir(canonicalDir), options: { deferBlobCleanup?: boolean } = {}) {
+ *  deferBlobCleanup skips that check when the store may be missing live references.
+ *  extraCandidates are blobs a caller may have written for these sessions after another
+ *  deletion collected its candidates; like every candidate, they go only if unowned. */
+export function deleteSessionArchives(canonicalDir: string, identities: SessionIdentity[], rawDir = rawDirForCanonicalDir(canonicalDir), options: { deferBlobCleanup?: boolean; extraCandidates?: Set<string> } = {}) {
   const assetsDir = assetsDirForCanonicalDir(canonicalDir);
   const candidates = new Set<string>();
   let collectionFailed = false;
@@ -70,7 +72,7 @@ export function deleteSessionArchives(canonicalDir: string, identities: SessionI
   const sessions = identities.map(({ source, source_id: sourceId }) => {
     const sessionPath = sessionFilePath(canonicalDir, source, sourceId);
     const rawSessionDir = join(rawDir, encodedSegment(source), encodedSegment(sourceId));
-    const owned = new Set(legacyCandidates.get(`${source}:${sourceId}`));
+    const owned = new Set([...legacyCandidates.get(`${source}:${sourceId}`) ?? [], ...options.extraCandidates ?? []]);
     collect(() => readPendingBlobCleanup(canonicalDir, source, sourceId, owned));
     collect(() => { if (existsSync(sessionPath)) captureHashes(sessionPath, owned); });
     collect(() => { for (const file of filesUnder(rawSessionDir, "*.json.gz")) collect(() => captureHashes(file, owned)); });
