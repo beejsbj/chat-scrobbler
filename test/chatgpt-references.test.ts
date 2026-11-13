@@ -151,12 +151,14 @@ test("alt_text is ignored only when the matched span carries the alt, map lists 
     ref({ type: "map", matched_text: "\ue200map\ue201", entities: [
       { id: "e1", name: "Harbour Cafe", latitude: 1, longitude: 2, entity: { name: "Harbour Cafe", address: "1 Quay St", website_url: "https://cafe.example.org", provider_url: "" }, extra_params: { address: "1 Quay St" } },
       { id: "e2", name: "Old Bakery", entity: { name: "Old Bakery", address: null, website_url: null }, extra_params: { address: "2 Quay St" } },
-      { id: "e3", name: "Harbour Cafe", entity: { website_url: "https://cafe.example.org" } }] }),
+      { id: "e3", name: "Harbour Cafe", entity: { address: "1 Quay St", website_url: "https://cafe.example.org" } },
+      { id: "e4", name: "Harbour Cafe North", entity: { address: "9 North Rd", website_url: "https://cafe.example.org" } }] }),
   ] });
   expect(unknownTypes(message)).toEqual([]);
   expect(citations(message).map(b => [b.provider_type, b.title, b.url, b.text])).toEqual([
     ["map", "Harbour Cafe", "https://cafe.example.org", "1 Quay St"],
     ["map", "Old Bakery", null, "2 Quay St"],
+    ["map", "Harbour Cafe North", "https://cafe.example.org", "9 North Rd"],
   ]);
   const odd = parseWith({ content_references: [
     ref({ type: "alt_text", matched_text: "something else", alt: "Bergen" }),
@@ -183,10 +185,11 @@ test("widgets whose payload sits in the span are ignored, a span that cannot hol
   const odd = parseWith({ content_references: [
     ref({ type: "client_defined_widget", matched_text: "short", data: { widget_type: "graphable_function_v2_learning_block_parameterized", content: expr } }),
     ref({ ...form, matched_text: "unrelated span" }),
+    ref({ ...form, matched_text: JSON.stringify({ questions: ["What should it look like?", "Which style?"] }) }),
     ref({ type: "client_defined_widget", matched_text: JSON.stringify({ q: 1 }), data: { widget_type: "imagegen_ask_user_input", questions: "nope" } }),
   ] });
   expect(unknownTypes(odd)).toEqual(["client_defined_widget:graphable_function_v2_learning_block_parameterized",
-    "client_defined_widget:imagegen_ask_user_input", "client_defined_widget:imagegen_ask_user_input"]);
+    "client_defined_widget:imagegen_ask_user_input", "client_defined_widget:imagegen_ask_user_input", "client_defined_widget:imagegen_ask_user_input"]);
 });
 
 test("types nobody has seen, and shapes that do not match, still alert under a distinct label", () => {

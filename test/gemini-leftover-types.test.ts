@@ -175,12 +175,23 @@ test("an uploaded file that was captured links to the asset once, under its real
   expect(session.messages[0].text).toContain("[file: report.pdf -> assets/gemini/id/abc.pdf]");
 });
 
+test("an upload whose url was recorded but not captured stays one block, named, under the recorded pointer", () => {
+  const session = parseWith((turn, capture) => {
+    turn[2][0][4] = [[null, null, null, null, [descriptor("big.mp4", "tok-vid")]]];
+    capture.asset_references = [{ pointer: "https://lh3.googleusercontent.com/big.mp4-preview", message_id: USER_ID, filename: null, content_type: null }];
+  });
+  const media = session.messages[0].blocks.filter((b: any) => b.type !== "text");
+  expect(media).toHaveLength(1);
+  expect(media[0]).toMatchObject({ type: "video", filename: "big.mp4", local_path: null, pointer: "https://lh3.googleusercontent.com/big.mp4-preview" });
+});
+
 test("upload slots that do not match keep alerting, and the user text survives", () => {
   const deep = [[[[[[[[descriptor("x.pdf", "tok")]]]]]]]];
   for (const value of [
     [[null, null, null, null, [[null, 11, "x.pdf"]]]],                         // no token
     [[null, null, null, null, [descriptor("x.pdf", "tok"), "stray string"]]],  // a leaf that is not a descriptor
     [[null, null, null, null, [[null, "11", "x.pdf", null, null, "tok"]]]],    // type code changed shape
+    [[null, null, null, null, [[null, 11, "x.pdf", null, null, "tok", null, null, ["https://lh3.googleusercontent.com/u"]]]]], // url list moved
     deep,                                                                       // nested past the depth cap
   ]) {
     const session = parseWith(turn => { turn[2][0][4] = value; });

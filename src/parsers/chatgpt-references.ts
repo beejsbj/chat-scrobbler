@@ -39,10 +39,10 @@ const widgetCarried = (entry: Record<string, any>, data: Record<string, any>): b
     case "writing_block_final_output": case "app_block": case "code_block": return spanHolds(entry, data.content);
     // A math expression: the span has to contain it.
     case "graphable_function_v2_learning_block_parameterized": return spanCarries(entry, data.content);
-    // A form the assistant asked the user to fill in; every question has to be in the span.
+    // A form the assistant asked the user to fill in; every question and option has to be in the span.
     case "imagegen_ask_user_input": {
-      const questions = list(data.questions).map(q => rec(q).question);
-      return questions.length > 0 && questions.every(q => spanCarries(entry, q));
+      const questions = list(data.questions).map(rec);
+      return questions.length > 0 && questions.every(q => spanCarries(entry, q.question) && list(q.options).every(option => spanCarries(entry, option)));
     }
     default: return false;
   }
@@ -123,7 +123,9 @@ function fromCitation(entry: Record<string, any>): Citation[] | null {
   return str(entry.invalid_reason) && !entry.metadata ? [] : null;
 }
 
-const citationKey = (c: Citation) => c.url ?? `${c.title}\n${c.text}`;
+// Places can share a website (branches of one chain), so a place is told apart by name and address as well.
+const citationKey = (c: Citation) => c.url && c.provider_type !== "map" && c.provider_type !== "client_defined_widget"
+  ? c.url : `${c.url ?? ""}\n${c.title}\n${c.text}`;
 
 /** Blocks for one metadata key: recognized entries become citations (deduplicated per message), the rest stay unknown. */
 export function blocksFromMetadata(key: "citations" | "content_references" | "attachments", entries: unknown,
