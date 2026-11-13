@@ -4,7 +4,7 @@ import { deleteSessionEverywhere, hasArchivedData, previewSessionDeletion, type 
 import { openIndex } from "../indexer/sqlite";
 import { monitorStatePath } from "../monitor/state";
 
-export type DeleteOutcome = "dry_run" | "deleted" | "already_deleted" | "aborted";
+export type DeleteOutcome = "dry_run" | "deleted" | "cleanup_pending" | "already_deleted" | "aborted";
 
 /** Irreversible: without dryRun it needs yes or an interactive confirm. */
 export async function runDeleteCmd(opts: { cfg: ChatHistoryConfig; id: string; dryRun?: boolean; yes?: boolean; json?: boolean;
@@ -31,9 +31,11 @@ export async function runDeleteCmd(opts: { cfg: ChatHistoryConfig; id: string; d
   try {
     result = deleteSessionEverywhere({ canonicalDir: opts.cfg.canonicalDir, monitorStatePath: monitorStatePath(opts.cfg.indexPath, opts.cfg.monitorStatePath) }, db, source, sourceId);
   } finally { db.close(); }
-  if (opts.json) opts.write(JSON.stringify({ id: opts.id, outcome: "deleted", ...result }, null, 2));
-  else opts.write(`Deleted ${opts.id}: ${result.canonical.sessionDeleted ? "canonical file, " : ""}${preview.raw_versions} raw version(s), ${result.canonical.blobsDeleted} private blob(s)${result.index.deleted ? " and its index rows" : ""}. A tombstone keeps it from being captured again.`);
-  return "deleted";
+  const outcome = result.canonical.blobCleanupPending ? "cleanup_pending" : "deleted";
+  if (opts.json) { opts.write(JSON.stringify({ id: opts.id, outcome, ...result }, null, 2)); return outcome; }
+  opts.write(`Deleted ${opts.id}: ${result.canonical.sessionDeleted ? "canonical file, " : ""}${preview.raw_versions} raw version(s), ${result.canonical.blobsDeleted} private blob(s)${result.index.deleted ? " and its index rows" : ""}. A tombstone keeps it from being captured again.`);
+  if (outcome === "cleanup_pending") opts.write(`Blob cleanup did not finish (see asset_cleanup_deferred above), so private blobs may remain. Run the same delete again to finish it.`);
+  return outcome;
 }
 
 function describe(preview: SessionDeletionPreview): string[] {
@@ -42,7 +44,7 @@ function describe(preview: SessionDeletionPreview): string[] {
     `Would delete ${preview.id}${preview.tombstoned ? " (already tombstoned; finishing an interrupted deletion)" : ""}:`,
     `  canonical file: ${preview.canonical_file ?? "(none)"}`,
     `  raw versions:   ${preview.raw_versions}`,
-    `  private blobs:  ${preview.private_blobs ?? "unknown until asset ownership records are built"}${preview.private_blobs === null ? "" : " (blobs shared with other sessions are kept)"}`,
+    `  private blobs:  ${preview.private_blobs ?? "unknown until asset ownership records are built"}${preview.private_blobs === null ? "" : " (blobs shared with other sessions are kept)"}${preview.pending_blob_cleanup ? "; an earlier deletion left blob cleanup to finish" : ""}`,
     `  index:          ${index.session ? 1 : 0} session row, ${index.messages} message(s), ${index.vectors} vector(s)`,
     `It also writes a tombstone so the session is not captured again.`,
   ];

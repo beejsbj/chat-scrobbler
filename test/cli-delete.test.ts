@@ -120,3 +120,40 @@ test("CLI delete without --yes refuses when stdin is not a terminal", () => {
     expect(cli("delete", "chatgpt:missing", "--yes").exitCode).toBe(1);
   } finally { rmSync(s.root, { recursive: true, force: true }); }
 }, 30000);
+
+test("a deletion whose blob collection is deferred reports it and finishes on the next run", async () => {
+  const s = setup();
+  const out: string[] = [];
+  const errors = (await import("bun:test")).spyOn(console, "error").mockImplementation(() => {});
+  try {
+    // An unreadable raw version defers blob collection.
+    const [ref] = listRawCaptures(s.rawDir, "chatgpt", "gone");
+    writeFileSync(join(s.rawDir, ref), "not gzip");
+    expect(await runDeleteCmd({ cfg: s.cfg, id: "chatgpt:gone", yes: true, write: line => out.push(line) })).toBe("cleanup_pending");
+    expect(out.join("\n")).toContain("Run the same delete again");
+    expect(existsSync(assetBlobPath(s.canonicalDir, s.privateBlob.sha256))).toBe(true);
+    // The rerun finds the recorded candidates even though every reference is gone.
+    expect(await runDeleteCmd({ cfg: s.cfg, id: "chatgpt:gone", yes: true, write: line => out.push(line) })).toBe("deleted");
+    expect(existsSync(assetBlobPath(s.canonicalDir, s.privateBlob.sha256))).toBe(false);
+    expect(existsSync(assetBlobPath(s.canonicalDir, s.shared.sha256))).toBe(true);
+    expect(await runDeleteCmd({ cfg: s.cfg, id: "chatgpt:gone", yes: true, write: () => {} })).toBe("already_deleted");
+  } finally { errors.mockRestore(); rmSync(s.root, { recursive: true, force: true }); }
+});
+
+test("a deletion interrupted before blob collection is finished by the next run", async () => {
+  if (process.getuid?.() === 0) return;
+  const { chmodSync } = await import("node:fs");
+  const { dirname } = await import("node:path");
+  const s = setup();
+  const blobDir = dirname(assetBlobPath(s.canonicalDir, s.privateBlob.sha256));
+  try {
+    chmodSync(blobDir, 0o500);
+    await expect(runDeleteCmd({ cfg: s.cfg, id: "chatgpt:gone", yes: true, write: () => {} })).rejects.toThrow();
+    chmodSync(blobDir, 0o700);
+    const out: string[] = [];
+    expect(await runDeleteCmd({ cfg: s.cfg, id: "chatgpt:gone", dryRun: true, write: line => out.push(line) })).toBe("dry_run");
+    expect(out.join("\n")).toContain("private blobs:  1");
+    expect(await runDeleteCmd({ cfg: s.cfg, id: "chatgpt:gone", yes: true, write: () => {} })).toBe("deleted");
+    expect(existsSync(assetBlobPath(s.canonicalDir, s.privateBlob.sha256))).toBe(false);
+  } finally { chmodSync(blobDir, 0o700); rmSync(s.root, { recursive: true, force: true }); }
+});

@@ -292,8 +292,9 @@ async function main(argv: string[]): Promise<void> {
           process.exit(1);
         }
         const { runDeleteCmd } = await import("./delete");
-        await runDeleteCmd({ cfg, id: positionals[0], dryRun: values["dry-run"], yes: values.yes, json: values.json, write,
+        const outcome = await runDeleteCmd({ cfg, id: positionals[0], dryRun: values["dry-run"], yes: values.yes, json: values.json, write,
           confirm: process.stdin.isTTY ? askYesNo : undefined });
+        if (outcome === "cleanup_pending") process.exitCode = 1;
         break;
       }
 

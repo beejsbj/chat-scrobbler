@@ -83,7 +83,9 @@ chat-scrobbler backup
 To erase a chat you regret capturing, preview it, then delete it. Deletion is
 irreversible: it removes the canonical file, raw history, blobs no other chat
 uses, and the index rows, and leaves a tombstone so the chat is not captured
-again. Only a backup taken before the deletion brings it back.
+again. Only a backup taken before the deletion, restored into an empty data
+directory, brings it back: a forced restore over the live store keeps the
+tombstone and skips the chat.
 
 ```bash
 chat-scrobbler delete chatgpt:<id> --dry-run

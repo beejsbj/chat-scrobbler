@@ -7,7 +7,7 @@ import { deleteIndexedSession } from "../indexer/sqlite";
 import { clearSessionAssetOutcomes } from "../monitor/state";
 import { monitorWrite } from "../monitor/state-fault";
 import { assetsDirForSession } from "../store/assets";
-import { deleteSessionArchive, privateBlobCount } from "../store/delete";
+import { deleteSessionArchive, hasPendingBlobCleanup, privateBlobCount } from "../store/delete";
 import { listRawCaptures, rawDirForCanonicalDir } from "../store/raw";
 import { sessionFilePath } from "../store/sessions";
 import { isSessionDeleted } from "../store/tombstones";
@@ -30,6 +30,8 @@ export interface SessionDeletionPreview {
   /** Null when it cannot be known without building ownership records. */
   private_blobs: number | null;
   session_assets: boolean;
+  /** An earlier deletion stopped before collecting its blobs. */
+  pending_blob_cleanup: boolean;
   index: { session: boolean; messages: number; vectors: number };
 }
 
@@ -44,12 +46,13 @@ export function previewSessionDeletion(paths: { canonicalDir: string; rawDir?: s
     raw_versions: listRawCaptures(rawDir, source, sourceId).length,
     private_blobs: privateBlobCount(paths.canonicalDir, source, sourceId, rawDir),
     session_assets: existsSync(assetsDirForSession(paths.canonicalDir, source, sourceId)),
+    pending_blob_cleanup: hasPendingBlobCleanup(paths.canonicalDir, source, sourceId),
     index: indexedRows(paths.indexPath, `${source}:${sourceId}`),
   };
 }
 
 export function hasArchivedData(preview: SessionDeletionPreview): boolean {
-  return !!preview.canonical_file || preview.raw_versions > 0 || preview.session_assets || preview.index.session;
+  return !!preview.canonical_file || preview.raw_versions > 0 || preview.session_assets || preview.pending_blob_cleanup || preview.index.session;
 }
 
 function indexedRows(indexPath: string, id: string): SessionDeletionPreview["index"] {

@@ -182,7 +182,11 @@ backfill from recreating the session, and restores erase it again. Only a backup
 taken before the deletion, restored into a store without that tombstone, brings it
 back. The extension's delete control (`DELETE /captures`) and `chat-scrobbler
 delete` share `deleteSessionEverywhere` (`src/core/delete-session.ts`), which also
-drops the session's index rows, vectors and monitor asset outcomes.
+drops the session's index rows, vectors and monitor asset outcomes. Before erasing
+anything, deletion records the session's blob candidates under
+`<canonicalDir>/.pending-blob-cleanup/`; the record is removed only after blob collection
+finishes, so a deletion that crashes or defers cleanup is finished by the next
+delete of that id or the next restore.
 
 Asset capture is best-effort and local-only. The browser extension fetches provider
 asset URLs in the authenticated page context, then uploads bytes to the local ingest
