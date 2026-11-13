@@ -16,7 +16,7 @@ class ModelTests(unittest.TestCase):
         self.assertNotIn('/spikes/', dockerfile)
         self.assertIn('pip install', dockerfile)
         self.assertIn('services.embedder.fetch_model', dockerfile)
-        self.assertIn('USER 1001:1001', dockerfile)
+        self.assertIn('USER ${DATA_UID}:${DATA_GID}', dockerfile)
 
     def test_pinned_download_is_verified_and_valid_cache_is_reused(self):
         from services.embedder.fetch_model import fetch_model, MODEL_URL

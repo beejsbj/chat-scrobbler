@@ -53,6 +53,8 @@ export function startEmbeddingBackfillScheduler(opts: SchedulerOptions): Backfil
     interval_ms:interval,batch_size:batch,next_run_at:null,consecutive_failures:0,progress:null,lease:null,last_run:null,maintenance:{state:"idle",migration:null}};
   let timer: ReturnType<typeof setTimeout> | undefined, active: Promise<BackfillReport|null> | undefined;
   let stopped=false, controller: AbortController | undefined, delay=interval;
+  // Rejections are usually cured by fixing the provider's environment, so each process start retries them once.
+  let requeueRejected=true;
   const connectionSequence={count:0,lastItem:null as string|null},maintenanceController=new AbortController();
   const maintenance=opts.startupMaintenance ? Promise.resolve().then(async()=> {
     status.maintenance.state="running";
@@ -103,11 +105,12 @@ export function startEmbeddingBackfillScheduler(opts: SchedulerOptions): Backfil
       status.lease=lock.status();
       controller=new AbortController();
       db=openIndex(cfg.indexPath);
-      report=await embedBackfill(db,{provider:provider!,canonicalDir:cfg.canonicalDir,limit:batch,retrySkippedMs:cfg.embeddingSkippedRetryMs,
+      report=await embedBackfill(db,{provider:provider!,canonicalDir:cfg.canonicalDir,limit:batch,retrySkippedMs:cfg.embeddingSkippedRetryMs,requeueRejected,
         background:{cursor:0,scanLimit:opts.scanLimit ?? 1000},signal:AbortSignal.any([controller.signal,lock.signal]),
         assertLease:()=>lock!.assertOwned(db!),leaseStatus:()=>lock!.status(),connectionSequence,
         yieldToQueries:opts.yieldToQueries,progress:report=>{status.progress=report;status.lease=report.lease ?? status.lease;}});
 
+      requeueRejected=false;
       if(report.provider_outage) {outcome="provider_unavailable";backoff();}
       else {
         outcome="complete";status.state="scheduled";status.consecutive_failures=0;

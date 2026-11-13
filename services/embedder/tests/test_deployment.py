@@ -27,7 +27,9 @@ class DeploymentTests(unittest.TestCase):
         self.assertNotIn('ollama', plan['services'])
         self.assertNotIn('OLLAMA_BASE_URL', json.dumps(plan))
         service = plan['services']['embedder']
-        self.assertEqual(service['user'], '1001:1001')
+        self.assertEqual(service['user'], '999:999')
+        self.assertEqual(service['build']['args'], {'DATA_UID': '999', 'DATA_GID': '999'})
+        self.assertEqual(plan['services']['scrobbler']['build']['args'], {'DATA_UID': '999', 'DATA_GID': '999'})
         self.assertNotIn('profiles', service)
         self.assertFalse(service.get('ports'))
         self.assertEqual(service['networks'], {'embeddings': None})
@@ -45,6 +47,12 @@ class DeploymentTests(unittest.TestCase):
         self.assertEqual(env['CHAT_SCROBBLER_EMBED_MODEL'], 'litert-community/embeddinggemma-2-740m-litert-lm')
         self.assertEqual(env['CHAT_SCROBBLER_EMBED_BASE_URL'], 'http://embedder:4320')
 
+    def test_data_owner_can_be_set_once_for_both_images(self):
+        plan = compose(overrides={'DATA_UID': '2000', 'DATA_GID': '2001'})
+        self.assertEqual(plan['services']['embedder']['user'], '2000:2001')
+        for name in ('embedder', 'scrobbler'):
+            self.assertEqual(plan['services'][name]['build']['args'], {'DATA_UID': '2000', 'DATA_GID': '2001'})
+
     def test_coolify_can_still_override_provider_and_model(self):
         plan = compose(overrides={
             'CHAT_SCROBBLER_EMBED_PROVIDER': 'hash',
@@ -52,6 +60,30 @@ class DeploymentTests(unittest.TestCase):
         env = plan['services']['scrobbler']['environment']
         self.assertEqual(env['CHAT_SCROBBLER_EMBED_PROVIDER'], 'hash')
         self.assertEqual(env['CHAT_SCROBBLER_EMBED_MODEL'], 'test-model')
+
+
+class DeploymentFileTests(unittest.TestCase):
+    """Text checks that run without Docker: both images and compose agree on the data owner."""
+
+    def test_images_and_compose_default_to_the_same_owner(self):
+        for path in ('Dockerfile', 'services/embedder/Dockerfile'):
+            text = (ROOT / path).read_text()
+            self.assertIn('ARG DATA_UID=999', text, path)
+            self.assertIn('ARG DATA_GID=999', text, path)
+        self.assertIn('--uid "${DATA_UID}"', (ROOT / 'Dockerfile').read_text())
+        embedder = (ROOT / 'services/embedder/Dockerfile').read_text()
+        self.assertIn('chown "${DATA_UID}:${DATA_GID}" /var/cache/embedder', embedder)
+        self.assertNotIn('1001', embedder)
+        text = (ROOT / 'docker-compose.bjslab.yml').read_text()
+        self.assertIn('user: "${DATA_UID:-999}:${DATA_GID:-999}"', text)
+        self.assertEqual(text.count('DATA_UID: ${DATA_UID:-999}'), 2)
+        self.assertNotIn('1001', text)
+
+    def test_embedder_keeps_its_hardening_and_gets_a_fresh_cache_volume(self):
+        text = (ROOT / 'docker-compose.bjslab.yml').read_text()
+        for line in ('read_only: true', '- ALL', 'no-new-privileges:true', 'embedder-cache-v2:/var/cache/embedder'):
+            self.assertIn(line, text)
+        self.assertNotIn('embedder-cache:', text)
 
 
 if __name__ == '__main__':

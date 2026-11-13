@@ -1,4 +1,5 @@
-export type EmbeddingFailureKind='timeout'|'connection'|'item';
+/** `rejected` is a permanent 4xx: the provider will not accept this input as sent. */
+export type EmbeddingFailureKind='timeout'|'connection'|'item'|'rejected';
 export interface EmbeddingFailure {kind:EmbeddingFailureKind;reason:string;}
 export class EmbeddingRequestError extends Error {
   constructor(readonly failure:EmbeddingFailure) {super(failure.reason);}
@@ -13,7 +14,17 @@ export function classifyEmbeddingFailure(error:unknown):EmbeddingFailure {
   }
   return {kind:'item',reason:'item_error'};
 }
+/** 4xx answers reject the input, except 408 and 429 which describe the moment. The reason carries the
+ * status and the provider's error code (a short identifier, never its message or any input). */
+export async function httpFailure(response:Response):Promise<EmbeddingFailure> {
+  const status=response.status;
+  if(status<400 || status>=500 || status===408 || status===429) {await response.body?.cancel();return {kind:'item',reason:`http_${status}`};}
+  let code:unknown;
+  try {code=((await response.json()) as {error?:{code?:unknown}}|null)?.error?.code;} catch {}
+  return {kind:'rejected',reason:typeof code==='string' && /^[a-z][a-z0-9_]{0,39}$/.test(code) ? `rejected_${status}_${code}` : `rejected_${status}`};
+}
 export function failureRetry(kind:EmbeddingFailureKind,attempts:number,now:number,reason=kind==='timeout' ? 'request_timeout' : kind==='connection' ? 'connection_unavailable' : 'item_error') {
+  if(kind==='rejected')return {state:'skipped' as const,retry_at:0,reason};
   if(kind!=='connection' && !/^http_(5\d\d|429)$/.test(reason) && attempts>=3) return {state:'skipped' as const,retry_at:0,reason:`retry_exhausted_${reason}`};
   return {state:'deferred' as const,retry_at:now+Math.min(3_600_000,120_000*2**Math.min(5,attempts-1)),reason};
 }

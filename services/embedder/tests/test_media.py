@@ -1,5 +1,6 @@
 import base64
 import json
+import os
 import shutil
 import subprocess
 import tempfile
@@ -41,6 +42,21 @@ class MediaTests(unittest.TestCase):
         copy = self.decoder.snapshot({'type': 'image', 'path': str(self.allowed / 'alias')}, self.work)
         self.assertEqual(copy.read_bytes(), b'ok')
         self.assertNotEqual(copy, inside)
+
+    def test_unreadable_path_has_its_own_error_code(self):
+        locked = self.allowed / 'locked'
+        locked.write_bytes(b'private')
+        locked.chmod(0)
+        outside = self.root / 'outside'
+        outside.write_bytes(b'private')
+        cases = {locked: ('media_unreadable', 400), self.allowed / 'missing': ('media_unreadable', 400),
+                 outside: ('invalid_request', 400)}
+        if os.geteuid() == 0:
+            del cases[locked]  # root ignores file modes
+        for path, (code, status) in cases.items():
+            with self.subTest(path=path.name), self.assertRaises(RequestError) as caught:
+                self.decoder.snapshot({'type': 'image', 'path': str(path)}, self.work)
+            self.assertEqual((caught.exception.code, caught.exception.status), (code, status))
 
     def test_replaced_allowed_root_is_not_trusted(self):
         secret = self.root / 'secret'

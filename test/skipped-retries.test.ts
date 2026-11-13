@@ -2,6 +2,7 @@ import {expect,test} from 'bun:test';
 import {openIndex,indexSession,type EmbeddingProvider} from '../src/indexer/sqlite';
 import {embedBackfill} from '../src/indexer/embed-backfill';
 import {fixture} from './support/embedding-fixture';
+import {EmbeddingRequestError} from '../src/indexer/embedding-failures';
 
 const day=86_400_000;
 const provider:EmbeddingProvider={kind:'test',model:'m',dimensions:2,embed:()=>[1,0]};
@@ -89,5 +90,36 @@ test('a lost lease rolls back manual retry markers before dispatch',async()=> {
   })).rejects.toThrow('backfill lease lost');
   expect(calls).toBe(0);
   expect(pendingCoverage(db,provider)).toMatchObject({pending:0,skipped:1});
+ }finally{db.close();}
+});
+
+const rejected=(code='rejected_400_media_unreadable'):EmbeddingProvider=>({...provider,embed:()=>{throw new EmbeddingRequestError({kind:'rejected',reason:code});}});
+
+test('a rejected input is skipped on its first attempt and retried on the one-day timer',async()=> {
+ const db=openIndex(':memory:');
+ try {
+  indexSession(db,fixture());
+  expect(await pass(db,rejected(),1000)).toMatchObject({attempted:1,retry_scheduled:1,queue:{skipped:1,reasons:{rejected_400_media_unreadable:1}}});
+  expect(db.query('SELECT attempts,retry_cycles,retry_at FROM embedding_pending WHERE type=\'text\'').get()).toEqual({attempts:1,retry_cycles:1,retry_at:1000+day});
+  expect(await pass(db,provider,1000+day-1)).toMatchObject({attempted:0});
+  expect(await pass(db,provider,1000+day)).toMatchObject({embedded:1,queue:{skipped:0}});
+ }finally{db.close();}
+});
+
+test('requeueRejected retries rejected and legacy http 4xx skips now, but leaves other skips on their timer',async()=> {
+ const db=openIndex(':memory:');
+ try {
+  const s=fixture(),skips:Array<[string,string]>=[['a','rejected_400_media_unreadable'],['b','retry_exhausted_http_400'],
+   ['c','retry_exhausted_request_timeout'],['d','retry_exhausted_http_500']];
+  for(const [id] of skips)s.messages.push({...s.messages[0],id,text:`text ${id}`});
+  indexSession(db,s);
+  await pass(db,rejected(),1000,{limit:10});
+  db.run('UPDATE embedding_pending SET reason=\'retry_exhausted_item_error\',retry_at=?',[10*day]);
+  for(const [id,reason] of skips)db.run('UPDATE embedding_pending SET reason=? WHERE message_id=?',[reason,id]);
+  const seen:string[]=[];
+  const healthy={...provider,embed:(text:string)=>{seen.push(text);return [1,0];}};
+  expect(await pass(db,healthy,2000,{limit:10})).toMatchObject({attempted:0});
+  expect(await pass(db,healthy,2000,{limit:10,requeueRejected:true})).toMatchObject({embedded:2});
+  expect(seen.sort()).toEqual(['text a','text b']);
  }finally{db.close();}
 });

@@ -77,7 +77,8 @@ class Decoder:
                 raise RequestError('path must be a regular file')
             return os.fdopen(source, 'rb')
         except (OSError, RuntimeError, ValueError) as exc:
-            raise RequestError('media path cannot be read safely') from exc
+            # Distinct from invalid_request so a permission or mount fault shows in the caller's monitor.
+            raise RequestError('media path cannot be read safely', 400, 'media_unreadable') from exc
 
     def snapshot(self, item, directory):
         validate_media(item, self.config)

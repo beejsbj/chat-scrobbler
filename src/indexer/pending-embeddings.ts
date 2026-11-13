@@ -1,4 +1,4 @@
-import {skippedRetryDelay,DEFAULT_SKIPPED_RETRY_MS} from './retry-skipped-embeddings';
+import {skippedRetryDelay,DEFAULT_SKIPPED_RETRY_MS,RETRYABLE_SKIP} from './retry-skipped-embeddings';
 import {documentChunkBudget} from './document-chunks';
 import {cooperativeWrite} from './cooperative-write';
 import type {Database} from 'bun:sqlite';
@@ -34,7 +34,8 @@ export function createPendingTables(db:Database) {
  db.run(`CREATE INDEX IF NOT EXISTS embedding_pending_due_v2 ON embedding_pending(provider_kind,provider_model,priority DESC,fts_rowid DESC)
    WHERE state IN ('pending','deferred')`);
  db.run(`CREATE INDEX IF NOT EXISTS embedding_pending_retry_lane ON embedding_pending(provider_kind,provider_model,(retry_cycles>0),priority DESC,fts_rowid DESC) WHERE state IN ('pending','deferred')`);
- db.run(`CREATE INDEX IF NOT EXISTS embedding_skipped_due ON embedding_pending(provider_kind,provider_model,retry_at) WHERE state='skipped' AND reason LIKE 'retry_exhausted_%'`);
+ db.run('DROP INDEX IF EXISTS embedding_skipped_due');
+ db.run(`CREATE INDEX IF NOT EXISTS embedding_skipped_due_v2 ON embedding_pending(provider_kind,provider_model,retry_at) WHERE state='skipped' AND ${RETRYABLE_SKIP}`);
  db.run('CREATE INDEX IF NOT EXISTS embedding_pending_coverage_v2 ON embedding_pending(provider_kind,provider_model,type,state,reason)');
  if(!(db.query('PRAGMA table_info(embedding_models)').all() as Array<{name:string}>).some(row=>row.name==='pending_revision'))
   db.run('ALTER TABLE embedding_models ADD COLUMN pending_revision INTEGER NOT NULL DEFAULT 0');
