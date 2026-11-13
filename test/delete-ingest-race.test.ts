@@ -190,3 +190,27 @@ test("the recheck covers the session id a capture's payload names, not only its 
   expect(existsSync(join(opts.canonicalDir, "chatgpt", "gone.json"))).toBe(false);
   expect(indexed(opts)).not.toContain("chatgpt:gone");
 }, 30000);
+
+test("a capture holding several conversations rechecks each one written, and skips only a deleted one", async () => {
+  const opts = setup();
+  const claude = (await import("./fixtures/claude-api-sample.json")).default as any;
+  const conversation = (uuid: string) => ({ ...structuredClone(claude.payload), uuid });
+  const { markSessionDeleted } = await import("../src/store/tombstones");
+  markSessionDeleted(opts.canonicalDir, { source: "claude", source_id: "y2", deleted_at: "2026-10-13T00:00:00Z" });
+  let deleted = false;
+  hook = (p, root, id) => {
+    if (deleted || p !== "references" || root !== opts.canonicalDir || id !== "y1") return;
+    deleted = true;
+    const db = openIndex(opts.indexPath);
+    try { deleteSessionEverywhere({ canonicalDir: opts.canonicalDir, rawDir: opts.rawDir, monitorStatePath: join(opts.root, "monitor.json") }, db, "claude", "y1"); }
+    finally { db.close(); }
+  };
+  const response = await post(opts, { ...claude, source_id: "batch", payload: [conversation("y1"), conversation("y2"), conversation("y3")] });
+  hook = null;
+  expect(deleted).toBe(true);
+  expect(response.status).toBe(200);
+  const body = await response.json() as any;
+  expect(body.spine.map((entry: any) => entry.source_id)).toEqual(["y3"]);
+  for (const id of ["y1", "y2"]) expect(existsSync(join(opts.canonicalDir, "claude", `${id}.json`))).toBe(false);
+  expect(existsSync(join(opts.canonicalDir, "claude", "y3.json"))).toBe(true);
+}, 30000);

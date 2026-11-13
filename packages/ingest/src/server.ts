@@ -118,7 +118,7 @@ function deletionPaths(fat: { canonicalDir: string; indexPath: string }, opts: I
 
 /** Erase each session this request wrote (raw under the capture's id, canonical under
  *  the id its payload names) whose tombstone appeared meanwhile. */
-function eraseDeletedMeanwhile(opts: IngestServerOptions & { canonicalDir: string }, fat: ReturnType<typeof fatMode>, captures: RawCapture[], spine: SpineResult[]): Set<string> {
+function eraseDeletedMeanwhile(opts: IngestServerOptions & { canonicalDir: string }, fat: ReturnType<typeof fatMode>, captures: RawCapture[], sessions: Array<{ source: string; source_id: string }>): Set<string> {
   const written = new Map<string, { source: string; source_id: string; hashes: Set<string> }>();
   const add = (source: string, source_id: string, hashes: Set<string>) => {
     const key = `${source}:${source_id}`;
@@ -127,7 +127,7 @@ function eraseDeletedMeanwhile(opts: IngestServerOptions & { canonicalDir: strin
     written.set(key, entry);
   };
   for (const capture of captures) add(capture.source, capture.source_id, assetHashes(capture));
-  for (const entry of spine) add(entry.source, entry.source_id, new Set());
+  for (const entry of sessions) add(entry.source, entry.source_id, new Set());
   const deleted = new Set<string>();
   for (const [key, { source, source_id, hashes }] of written) {
     try {
@@ -319,6 +319,8 @@ export async function handleIngestRequest(req: Request, opts: IngestServerOption
     const rawDir = opts.rawDir ?? (opts.canonicalDir ? rawDirForCanonicalDir(opts.canonicalDir) : null);
     if (!rawDir) return json({ ok: false, error: "raw store is not configured" }, 503);
     const spine: SpineResult[] = [];
+    // Sessions the fold wrote, under the ids their payloads name.
+    const folded: Array<{ source: string; source_id: string }> = [];
     let count = 0;
     // A deletion that landed after the check above is caught by this one after the writes.
     let deletedMeanwhile = new Set<string>();
@@ -348,6 +350,7 @@ export async function handleIngestRequest(req: Request, opts: IngestServerOption
             spine.push(...foldCaptureIntoSpine(capture, {
               canonicalDir: fat.canonicalDir,
               rawRef: rawRefs[i],
+              onWrite: (source, source_id) => folded.push({ source, source_id }),
               onParse: success => {
                 parsed = success;
                 const path = monitorStatePath(fat.indexPath, opts.monitorStatePath);
@@ -357,14 +360,14 @@ export async function handleIngestRequest(req: Request, opts: IngestServerOption
             }));
           } catch (error) {
             if (!parsed) logCaptureParseFailure(capture, error);
-            // Deleted meanwhile (under its capture id or its payload's): erased below and reported as skipped.
-            if (error instanceof SessionDeletedError || isSessionDeleted(fat.canonicalDir, capture.source, capture.source_id)) continue;
+            // Deleted meanwhile: erased below and reported as skipped.
+            if (isSessionDeleted(fat.canonicalDir, capture.source, capture.source_id)) continue;
             throw error;
           }
         }
       }
     } finally {
-      if (opts.canonicalDir) deletedMeanwhile = eraseDeletedMeanwhile({ ...opts, canonicalDir: opts.canonicalDir }, fat, accepted.map(entry => entry.capture), spine);
+      if (opts.canonicalDir) deletedMeanwhile = eraseDeletedMeanwhile({ ...opts, canonicalDir: opts.canonicalDir }, fat, accepted.map(entry => entry.capture), folded);
     }
     for (const { capture } of accepted) {
       if (!deletedMeanwhile.has(`${capture.source}:${capture.source_id}`)) continue;
