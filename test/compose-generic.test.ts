@@ -40,8 +40,19 @@ test("the compose keeps the embedder sandboxed and reachable only from the scrob
   expect(plan.services.scrobbler.ports).toBeUndefined();
 });
 
-test("the generic compose runs on defaults: local data dir, derived asset mount, owner 999", () => {
-  const plan = parse(interpolate(read("docker-compose.yml"), tokens));
+test("volume sources use only the forms a platform validator accepts: ${VAR}, ${VAR}/path or ${VAR:-default}", () => {
+  const plan = parse(read("docker-compose.yml"));
+  const sources = [
+    ...plan.services.scrobbler.volumes.map((v: string) => v.slice(0, v.lastIndexOf(":"))),
+    ...plan.services.embedder.volumes.filter((v: any) => typeof v === "object" && v.type === "bind").map((v: any) => v.source),
+  ];
+  expect(sources.length).toBe(2);
+  for (const source of sources) expect(source).toMatch(/^\$\{[A-Z_]+\}(\/[\w.-]+)*$|^\$\{[A-Z_]+:-[\w.\/-]*\}$/);
+});
+
+test("the generic compose runs on the .env.example values: local data dir, derived asset mount, owner 999", () => {
+  expect(read(".env.example")).toMatch(/^DATA_DIR=\.\/data$/m);
+  const plan = parse(interpolate(read("docker-compose.yml"), { ...tokens, DATA_DIR: "./data" }));
   expect(plan.services.scrobbler.volumes).toEqual(["./data:/data"]);
   expect(plan.services.embedder.volumes[1].source).toBe("./data/canonical/assets");
   expect(plan.services.embedder.user).toBe("999:999");
@@ -66,7 +77,7 @@ test("tokens come from .env and the compose refuses to start without them", () =
 test(".env.example documents every setting the compose reads and holds no secrets", () => {
   const example = read(".env.example");
   const compose = read("docker-compose.yml") + read("docker-compose.ports.yml");
-  for (const name of ["MCP_AUTH_TOKEN", "INGEST_TOKEN", "DATA_DIR", "ASSETS_DIR", "DATA_UID", "DATA_GID", "BIND_ADDRESS", "INGEST_PORT", "MCP_PORT", "COMPOSE_FILE", "CHAT_SCROBBLER_OWNER_NAME"]) {
+  for (const name of ["MCP_AUTH_TOKEN", "INGEST_TOKEN", "DATA_DIR", "DATA_UID", "DATA_GID", "BIND_ADDRESS", "INGEST_PORT", "MCP_PORT", "COMPOSE_FILE", "CHAT_SCROBBLER_OWNER_NAME"]) {
     expect(example).toContain(name);
   }
   for (const [, name] of compose.matchAll(/\$\{([A-Z_]+)/g)) {

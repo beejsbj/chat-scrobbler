@@ -239,8 +239,8 @@ docker compose up -d
 ```
 
 Everything site specific is an environment value, documented in
-[.env.example](.env.example): the data directory (`DATA_DIR`, default `./data`),
-the asset directory mounted into the embedder (`ASSETS_DIR`), and the data owner
+[.env.example](.env.example): the data directory (`DATA_DIR`, `./data` in the example; the embedder reads
+`canonical/assets` under it), and the data owner
 (`DATA_UID`/`DATA_GID`, default `999:999`; the images and the embedder's `user:` all
 take it from there). The ingest and MCP ports are published on `127.0.0.1` by
 [docker-compose.ports.yml](docker-compose.ports.yml), which `.env.example` enables

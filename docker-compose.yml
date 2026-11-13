@@ -3,8 +3,9 @@
 #
 # Everything site specific is an environment value, so the same file works
 # locally and behind a proxy (see .env.example):
-#   DATA_DIR            data directory on the host (default ./data)
-#   ASSETS_DIR          asset blobs mounted into the embedder (default $DATA_DIR/canonical/assets)
+#   DATA_DIR            data directory on the host (.env.example sets ./data). Required: both
+#                       mounts derive from it, written plainly so hosting platforms that
+#                       validate volume sources accept the file.
 #   DATA_UID/DATA_GID   owner of the data directory (default 999:999). Both images and the
 #                       embedder's `user:` take it from here so they cannot drift.
 #
@@ -44,7 +45,7 @@ services:
       CHAT_SCROBBLER_MONITOR_STALE_DAYS_GEMINI: "${CHAT_SCROBBLER_MONITOR_STALE_DAYS_GEMINI:-21}"
       BIND_HOST: 0.0.0.0
     volumes:
-      - ${DATA_DIR:-./data}:/data
+      - ${DATA_DIR}:/data
     networks:
       - default
       - embeddings
@@ -87,7 +88,7 @@ services:
     volumes:
       - embedder-cache-v2:/var/cache/embedder
       - type: bind
-        source: ${ASSETS_DIR:-${DATA_DIR:-./data}/canonical/assets}
+        source: ${DATA_DIR}/canonical/assets
         target: /data/canonical/assets
         read_only: true
         bind:
