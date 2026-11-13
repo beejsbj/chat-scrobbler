@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runUnify } from "../src/cli/unify";
 import { writeSession } from "../src/store/sessions";
+import { markSessionDeleted } from "../src/store/tombstones";
 import { openIndex, searchMessages } from "../src/indexer/sqlite";
 import { makeSessionId, type Session } from "../src/schema/types";
 
@@ -274,12 +275,17 @@ test("unify keeps index rows for an unreadable provider directory, even when for
   try {
     for (let i = 0; i < 10; i++) writeSession(opts.canonicalDir, { ...sessionA, id: `chatgpt:kept-${i}`, source_id: `kept-${i}` });
     indexSession(db, { ...sessionA, id: "claude:offline", source: "claude", source_id: "offline" });
-    // A provider directory on an unmounted volume: readdir fails and its files look absent.
+    indexSession(db, { ...sessionA, id: "chatgpt:erased", source_id: "erased" });
+    markSessionDeleted(opts.canonicalDir, { source: "chatgpt", source_id: "erased", deleted_at: "2026-11-12T00:00:00Z" });
+    // A provider directory behind a dangling link: readdir fails and its files look absent.
     symlinkSync(join(dir, "unmounted", "claude"), join(opts.canonicalDir, "claude"));
     await runUnify(opts);
     await runUnify({ ...opts, force: true });
-    expect(listSessions(db).map(row => row.id)).toContain("claude:offline");
-    expect(JSON.stringify(logs.mock.calls)).toContain("incomplete_canonical_scan");
+    const ids = listSessions(db).map(row => row.id);
+    expect(ids).toContain("claude:offline");
+    // A tombstone is positive evidence of deletion, so its row goes even after a partial scan.
+    expect(ids).not.toContain("chatgpt:erased");
+    expect(JSON.stringify(logs.mock.calls)).toContain('{\\"event\\":\\"unify_prune_refused\\",\\"reason\\":\\"incomplete_canonical_scan\\",\\"unreadable_dirs\\":1,\\"unreadable_files\\":0}');
 
     // A stray file beside the provider directories is not an incomplete scan.
     rmSync(join(opts.canonicalDir, "claude"));

@@ -41,8 +41,10 @@ export function deleteSession(baseDir: string, source: string, sourceId: string)
 
 export interface SessionFileScan { files: string[]; unreadableDirs: string[] }
 
-/** List canonical session files and every directory that could not be read.
- *  Stray files beside the provider directories are skipped, not unreadable. */
+const PROVIDER_DIRS = ["chatgpt", "claude", "gemini"];
+
+/** List canonical session files and every provider directory that could not be read.
+ *  Other entries (stray files, lost+found) cannot hold sessions, so they are skipped. */
 export function scanSessionFiles(baseDir: string): SessionFileScan {
   const scan: SessionFileScan = { files: [], unreadableDirs: [] };
   if (!existsSync(baseDir)) return scan;
@@ -51,7 +53,7 @@ export function scanSessionFiles(baseDir: string): SessionFileScan {
     let entries: string[];
     try { entries = readdirSync(dir); }
     catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOTDIR") scan.unreadableDirs.push(dir);
+      if (PROVIDER_DIRS.includes(source) && (error as NodeJS.ErrnoException).code !== "ENOTDIR") scan.unreadableDirs.push(dir);
       continue;
     }
     for (const f of entries) if (f.endsWith(".json") && !isSessionDeleted(baseDir, source, f.slice(0, -5))) scan.files.push(join(dir, f));

@@ -99,6 +99,8 @@ test("listSessionFiles refuses a partial listing but ignores stray files beside 
   try {
     writeSession(root, session);
     writeFileSync(join(root, "notes.txt"), "not a provider");
+    // Only provider directories can hold sessions, so an unreadable lost+found is not a gap.
+    symlinkSync(join(root, "unmounted"), join(root, "lost+found"));
     expect(listSessionFiles(root)).toEqual([join(root, "claude", "cl-1.json")]);
     symlinkSync(join(root, "unmounted"), join(root, "gemini"));
     expect(() => listSessionFiles(root)).toThrow("canonical scan incomplete");
