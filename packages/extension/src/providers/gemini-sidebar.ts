@@ -19,10 +19,14 @@ export interface ListingDiagnostic {
   readyState: string | null;
   waitedMs: number;
   timedOut: boolean;
+  /** Which listing produced the ids; absent when neither did. */
+  source?: "dom" | "rpc";
+  /** Why the conversation-list RPC gave nothing (`http_<status>`, `parse_error`, `network`, `no_token`, `zero_ids`); absent when it was not tried or worked. */
+  rpc?: string;
 }
 
 /** Timers in a background tab are throttled to about 1s, so nothing here depends on fine timing. */
-export const geminiListingTimings = { timeoutMs: 20_000, pollMs: 500, settleMs: 1_500 };
+export const geminiListingTimings = { timeoutMs: 20_000, pollMs: 500, settleMs: 1_500, hiddenTimeoutMs: 3_000 };
 
 const CONTAINERS = 'nav, aside, [role="navigation"], [class*="sidenav" i], [class*="sidebar" i], [class*="side-nav" i]';
 
@@ -53,11 +57,15 @@ export function readSidebarIds(): string[] {
   return [...ids];
 }
 
+function isHidden(): boolean {
+  return typeof document !== "undefined" && (document.hidden === true || document.visibilityState === "hidden");
+}
+
 function diagnose(ids: number, started: number, timedOut: boolean): ListingDiagnostic {
   const count = (selector: string) => typeof document === "undefined" ? 0 : document.querySelectorAll(selector).length;
   return {
     ids, appAnchors: count('a[href*="/app/"]'), anchors: count("a[href]"), containers: count(CONTAINERS),
-    hidden: typeof document !== "undefined" && (document.hidden === true || document.visibilityState === "hidden"),
+    hidden: isHidden(),
     readyState: typeof document === "undefined" ? null : document.readyState ?? null,
     waitedMs: Date.now() - started, timedOut,
   };
@@ -65,12 +73,17 @@ function diagnose(ids: number, started: number, timedOut: boolean): ListingDiagn
 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
-/** Poll until the sidebar lists conversations or the bound passes; after the first sighting, allow a short settle so a partial render is not taken as the whole list. */
+/**
+ * Poll until the sidebar lists conversations or the bound passes; after the first sighting, allow a short settle so a
+ * partial render is not taken as the whole list. A hidden tab never renders the sidebar (seen live: nothing after 55 s),
+ * so it gets the short `hiddenTimeoutMs` bound and sync moves on to the list RPC.
+ */
 export async function waitForSidebarIds(): Promise<{ ids: string[]; diagnostic: ListingDiagnostic }> {
   const { timeoutMs, pollMs, settleMs } = geminiListingTimings;
   const started = Date.now();
   let ids = readSidebarIds();
-  while (ids.length === 0 && Date.now() - started < timeoutMs) { await sleep(pollMs); ids = readSidebarIds(); }
+  const bound = () => isHidden() ? Math.min(timeoutMs, geminiListingTimings.hiddenTimeoutMs) : timeoutMs;
+  while (ids.length === 0 && Date.now() - started < bound()) { await sleep(pollMs); ids = readSidebarIds(); }
   if (ids.length > 0 && settleMs > 0) { await sleep(settleMs); ids = readSidebarIds(); }
   return { ids, diagnostic: diagnose(ids.length, started, ids.length === 0) };
 }

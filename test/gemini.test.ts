@@ -474,7 +474,11 @@ test("Gemini captureOne routes visible image byte fetches through background ass
 });
 
 test("Gemini adapter returns empty result when sidebar has no conversations", async () => {
-  const fetcher: FetchLike = async () => { throw new Error("should not be called"); };
+  // Only the conversation-list RPC may be asked, and it answers with no chats.
+  const fetcher: FetchLike = async (url) => {
+    if (!url.includes("rpcids=MaZiqc")) throw new Error("should not be called");
+    return new Response(")]}'\n\n" + JSON.stringify([["wrb.fr", "MaZiqc", "[[]]", null, null, null, "generic"]]));
+  };
   const pageCtx = makeFakePageCtx([]);
 
   const result = await createGeminiAdapter(fetcher, pageCtx).sync({

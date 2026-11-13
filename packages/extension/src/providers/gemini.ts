@@ -1,18 +1,23 @@
 import { DetailFailureStreak } from "./detail-failure-streak";
 import { ProviderDetailError, DeterministicCaptureError, ProviderListingEmptyError, TransientSyncError } from "./sync-errors";
 import { readSidebarIds, waitForSidebarIds, type ListingDiagnostic } from "./gemini-sidebar";
+import { collectConversationIds } from "./gemini-list-ids";
 import { logSyncFailure, SyncFailureTracker } from "./sync-failures";
 /**
  * Gemini scrobbler provider.
  *
  * Capture strategy (as of 2026-06-06, VERIFIED against live data):
  *
- * 1. CONVERSATION ID ENUMERATION — DOM sidebar (reliable).
- *    Gemini's conversation-list RPC (MaZiqc) is also available but the sidebar
- *    anchors at `/app/{16-hex-id}` are more stable. We read IDs from
- *    `document.querySelectorAll`.
+ * 1. CONVERSATION ID ENUMERATION: DOM sidebar first (reliable in a visible tab).
+ *    The sidebar anchors at `/app/{16-hex-id}` are more stable than an RPC. We read
+ *    IDs from `document.querySelectorAll`.
  *    Limitation: we only see conversations currently visible in the sidebar. The
  *    user must scroll to load more before a full-reconcile sync picks them up.
+ *    FALLBACK, conversation-list RPC `MaZiqc`: a hidden tab (the periodic sync) never
+ *    renders the sidebar, so when the DOM gives no ids the list comes from MaZiqc.
+ *    UNVERIFIED against live traffic: the request payloads are `[13, null, [0, null, 1]]`
+ *    (recent) and `[1, null, 1]` (pinned) as documented by the gemini-webapi client, and
+ *    the response is read by content (`c_<16 hex>` strings), not by position.
  *
  * 2. CONTENT CAPTURE — batchexecute RPC `hNvQHb` (VERIFIED working, 2026-06-06).
  *    CONFIRMED inner payload format: ["c_<16-hex-id>"] (the c_ prefix is required).
@@ -57,6 +62,11 @@ import {
 // The per-conversation load RPC ID, observed live 2026-06-05.
 // SPECULATIVE: may rotate with server-side deploys.
 const CONVERSATION_RPC_ID = "hNvQHb";
+
+// The conversation-list RPC ID. UNVERIFIED against live traffic; see the header comment.
+const LIST_RPC_ID = "MaZiqc";
+const LIST_RPC_RECENT = [13, null, [0, null, 1]];
+const LIST_RPC_PINNED = [1, null, 1];
 
 // Gemini batchexecute endpoint (same-origin from content script).
 const BATCHEXECUTE_PATH = "/_/BardChatUi/data/batchexecute";
@@ -294,12 +304,14 @@ async function syncGemini(
   let failed = 0;
   let maxConversationUpdatedAt: string | null = null;
 
-  const listing = pageCtx.awaitConversationIds ? await pageCtx.awaitConversationIds() : { ids: pageCtx.listConversationIds(), diagnostic: undefined };
+  const listing = await listConversationIds(fetcher, pageCtx);
   const ids = listing.ids;
   // An empty list is only a clean sync when nothing was ever captured here (a brand-new account has no
-  // chats); otherwise it means the sidebar could not be read and must not look like "nothing new".
+  // chats); otherwise it means the list could not be read and must not look like "nothing new". A list the
+  // RPC failed to read is never a clean sync: only a well-formed answer with no chats (`zero_ids`) is.
   const hadCapturesBefore = !!options.lastSync || (options.captureFailures?.length ?? 0) > 0 || (options.detailFailureStreak?.length ?? 0) > 0;
-  if (ids.length === 0 && hadCapturesBefore) throw new ProviderListingEmptyError(listing.diagnostic);
+  const rpcFailed = listing.diagnostic?.rpc !== undefined && listing.diagnostic.rpc !== "zero_ids";
+  if (ids.length === 0 && (hadCapturesBefore || rpcFailed)) throw new ProviderListingEmptyError(listing.diagnostic);
 
   try {
   for (const id of ids) {
@@ -324,8 +336,8 @@ async function syncGemini(
     // uses the fetch timestamp so the next sync's lastSync will be recent, but
     // since we don't know per-item timestamps we cannot skip individual items.
     //
-    // A future improvement: capture the list RPC (MaZiqc etc.) which likely
-    // contains timestamps, replacing the DOM enumeration path.
+    // The list RPC (MaZiqc) fallback also lists ids only; its per-chat timestamps are not
+    // read because their position in the payload is unverified.
     if (failures.isQuarantined(id, null)) { skipped++; continue; }
     if (!shouldCapture(null, options.lastSync)) {
       skipped += 1;
@@ -362,6 +374,71 @@ async function syncGemini(
 }
 
 /**
+ * Lists conversation ids: the DOM sidebar first, then the list RPC when the DOM gives none (a hidden tab).
+ * Only a rate limit escapes; every other RPC failure is recorded in the diagnostic as a short reason.
+ */
+async function listConversationIds(fetcher: FetchLike, pageCtx: GeminiPageContext): Promise<{ ids: string[]; diagnostic: ListingDiagnostic | undefined }> {
+  const dom = pageCtx.awaitConversationIds ? await pageCtx.awaitConversationIds() : { ids: pageCtx.listConversationIds(), diagnostic: undefined };
+  if (dom.ids.length > 0) return { ids: dom.ids, diagnostic: dom.diagnostic && { ...dom.diagnostic, source: "dom" } };
+  const base: ListingDiagnostic = dom.diagnostic ?? { ids: 0, appAnchors: 0, anchors: 0, containers: 0, hidden: false, readyState: null, waitedMs: 0, timedOut: false };
+  const wiz = pageCtx.readWizData();
+  if (!wiz) return { ids: [], diagnostic: { ...base, rpc: "no_token" } };
+  const rpc = await listConversationsRpc(fetcher, wiz);
+  if (rpc.ids.length > 0) return { ids: rpc.ids, diagnostic: { ...base, ids: rpc.ids.length, source: "rpc" } };
+  return { ids: [], diagnostic: { ...base, rpc: rpc.reason } };
+}
+
+type RpcListing = { ids: string[]; reason?: undefined } | { ids: []; reason: string };
+
+/**
+ * Recent chats, then pinned ones. The recent list decides the outcome and its failure reason is the one reported;
+ * a pinned list that fails only costs the pinned ids, which the next sync tries again.
+ */
+async function listConversationsRpc(fetcher: FetchLike, wiz: WizData): Promise<RpcListing> {
+  const recent = await readListRpc(fetcher, wiz, LIST_RPC_RECENT);
+  if (recent.reason !== undefined) return recent;
+  const pinned = await readListRpc(fetcher, wiz, LIST_RPC_PINNED, false);
+  return { ids: [...new Set([...recent.ids, ...pinned.ids])] };
+}
+
+async function readListRpc(fetcher: FetchLike, wiz: WizData, inner: unknown, rateLimits = true): Promise<RpcListing> {
+  const [url, init] = batchExecuteRequest(LIST_RPC_ID, JSON.stringify(inner), "/app", wiz);
+  let res: Response;
+  try { res = await fetcher(url, init); } catch { return { ids: [], reason: "network" }; }
+  if (rateLimits && (res.status === 429 || res.status === 503)) throw new RateLimitError(BATCHEXECUTE_PATH, res.status, parseRetryAfterMs(res.headers.get("retry-after")));
+  if (!res.ok) return { ids: [], reason: `http_${res.status}` };
+  let text: string;
+  try { text = await res.text(); } catch { return { ids: [], reason: "network" }; }
+  let payload: unknown;
+  try { payload = parseBatchExecuteResponse(text, LIST_RPC_ID); } catch { return { ids: [], reason: "parse_error" }; }
+  if (typeof payload === "string") return { ids: [], reason: "parse_error" }; // inner JSON was malformed
+  const ids = collectConversationIds(payload);
+  return ids.length > 0 ? { ids } : { ids: [], reason: "zero_ids" };
+}
+
+/** The url and init for one batchexecute call; shared by the conversation load and the conversation list. */
+function batchExecuteRequest(rpcId: string, innerPayload: string, sourcePath: string, wiz: WizData): [string, RequestInit] {
+  const fReq = JSON.stringify([[[rpcId, innerPayload, null, "generic"]]]);
+  const reqid = Math.floor(Math.random() * 900000) + 100000;
+  const params = new URLSearchParams({
+    rpcids: rpcId,
+    "source-path": sourcePath,
+    bl: wiz.bl,
+    "f.sid": wiz.fSid,
+    hl: "en",
+    _reqid: String(reqid),
+    rt: "c",
+  });
+  const body = new URLSearchParams({ "f.req": fReq, at: wiz.at });
+  return [`${BATCHEXECUTE_PATH}?${params.toString()}`, {
+    method: "POST",
+    credentials: "include",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: body.toString(),
+  }];
+}
+
+/**
  * Calls the batchexecute hNvQHb RPC to load a single conversation.
  * Returns the parsed inner payload (hNvQHb inner array — see src/parsers/gemini.ts
  * for the verified structure).
@@ -378,28 +455,10 @@ async function fetchConversationRpc(
   // The inner payload for hNvQHb: ["c_<id>"] — the c_ prefix is REQUIRED.
   // Verified against live Gemini data on 2026-06-06.
   const innerPayload = JSON.stringify(["c_" + conversationId]);
-  const fReq = JSON.stringify([[[CONVERSATION_RPC_ID, innerPayload, null, "generic"]]]);
-
-  const reqid = Math.floor(Math.random() * 900000) + 100000;
-  const params = new URLSearchParams({
-    rpcids: CONVERSATION_RPC_ID,
-    "source-path": `/app/${conversationId}`,
-    bl: wiz.bl,
-    "f.sid": wiz.fSid,
-    hl: "en",
-    _reqid: String(reqid),
-    rt: "c",
-  });
-
-  const body = new URLSearchParams({ "f.req": fReq, at: wiz.at });
+  const [url, init] = batchExecuteRequest(CONVERSATION_RPC_ID, innerPayload, `/app/${conversationId}`, wiz);
 
   let res: Response;
-  try { res = await fetcher(`${BATCHEXECUTE_PATH}?${params.toString()}`, {
-    method: "POST",
-    credentials: "include",
-    headers: { "content-type": "application/x-www-form-urlencoded" },
-    body: body.toString(),
-  }); } catch { throw new TransientSyncError("Provider network unavailable"); }
+  try { res = await fetcher(url, init); } catch { throw new TransientSyncError("Provider network unavailable"); }
 
   if (res.status === 429 || res.status === 503) throw new RateLimitError(BATCHEXECUTE_PATH, res.status, parseRetryAfterMs(res.headers.get("retry-after")));
   if (res.status >= 500) throw new ProviderDetailError(res.status);
