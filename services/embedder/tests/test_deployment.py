@@ -9,7 +9,7 @@ import unittest
 ROOT = Path(__file__).resolve().parents[3]
 
 
-def compose(*options, overrides=None, files=('docker-compose.bjslab.yml',)):
+def compose(*options, overrides=None, files=('docker-compose.yml',)):
     env = {**os.environ, 'MCP_AUTH_TOKEN': 'test-only', 'INGEST_TOKEN': 'test-only',
            'COMPOSE_PROFILES': '', 'CHAT_SCROBBLER_EMBED_PROVIDER': '',
            'CHAT_SCROBBLER_EMBED_MODEL': '', 'CHAT_SCROBBLER_EMBED_BASE_URL': '',
@@ -48,7 +48,7 @@ class DeploymentTests(unittest.TestCase):
         self.assertEqual(env['CHAT_SCROBBLER_EMBED_BASE_URL'], 'http://embedder:4320')
 
     def test_overlay_leaves_the_embedder_out_and_turns_semantic_search_off(self):
-        plan = compose(files=('docker-compose.bjslab.yml', 'docker-compose.no-embedder.yml'))
+        plan = compose(files=('docker-compose.yml', 'docker-compose.no-embedder.yml'))
         self.assertNotIn('embedder', plan['services'])
         scrobbler = plan['services']['scrobbler']
         self.assertEqual(scrobbler['environment']['CHAT_SCROBBLER_EMBED_PROVIDER'], 'none')
@@ -81,13 +81,13 @@ class DeploymentFileTests(unittest.TestCase):
         embedder = (ROOT / 'services/embedder/Dockerfile').read_text()
         self.assertIn('chown "${DATA_UID}:${DATA_GID}" /var/cache/embedder', embedder)
         self.assertNotIn('1001', embedder)
-        text = (ROOT / 'docker-compose.bjslab.yml').read_text()
+        text = (ROOT / 'docker-compose.yml').read_text()
         self.assertIn('user: "${DATA_UID:-999}:${DATA_GID:-999}"', text)
         self.assertEqual(text.count('DATA_UID: ${DATA_UID:-999}'), 2)
         self.assertNotIn('1001', text)
 
     def test_embedder_is_optional_without_editing_the_main_file(self):
-        main = (ROOT / 'docker-compose.bjslab.yml').read_text()
+        main = (ROOT / 'docker-compose.yml').read_text()
         self.assertIn('required: false', main)
         self.assertIn('CHAT_SCROBBLER_EMBED_PROVIDER: ${CHAT_SCROBBLER_EMBED_PROVIDER:-embeddinggemma}', main)
         self.assertNotIn('profiles', main)  # the default deployment keeps the sidecar on
@@ -96,7 +96,7 @@ class DeploymentFileTests(unittest.TestCase):
         self.assertIn('CHAT_SCROBBLER_EMBED_PROVIDER: none', overlay)
 
     def test_embedder_keeps_its_hardening_and_gets_a_fresh_cache_volume(self):
-        text = (ROOT / 'docker-compose.bjslab.yml').read_text()
+        text = (ROOT / 'docker-compose.yml').read_text()
         for line in ('read_only: true', '- ALL', 'no-new-privileges:true', 'embedder-cache-v2:/var/cache/embedder'):
             self.assertIn(line, text)
         self.assertNotIn('embedder-cache:', text)

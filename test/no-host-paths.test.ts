@@ -11,10 +11,6 @@ const HOST_PATH = new RegExp([
   "/Users" + "/[A-Za-z0-9._-]+",
 ].join("|"));
 
-// docker-compose.bjslab.yml is the live deployment file. A second change deletes it once the
-// deployment moves to docker-compose.yml, and this entry goes with it.
-const ALLOWED = new Set(["docker-compose.bjslab.yml"]);
-
 const BINARY = /\.(png|jpe?g|gif|ico|webp|zip|gz|woff2?|ttf|pdf|lockb)$/i;
 
 test("tracked files carry no host paths", () => {
@@ -22,7 +18,7 @@ test("tracked files carry no host paths", () => {
   expect(files.length).toBeGreaterThan(100);
   const hits: string[] = [];
   for (const file of files) {
-    if (ALLOWED.has(file) || BINARY.test(file)) continue;
+    if (BINARY.test(file)) continue;
     let text: string;
     try { text = readFileSync(join(root, file), "utf8"); } catch { continue; } // deleted in the working tree
     text.split("\n").forEach((line, index) => { if (HOST_PATH.test(line)) hits.push(`${file}:${index + 1}`); });

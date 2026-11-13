@@ -63,7 +63,7 @@ seconds, configurable up to 300. Idle close exceptions set
 Filesystem readiness is not proof of successful inference.
 
 Chosen deployment: `services/embedder/Dockerfile` and the always-on `embedder` service
-in the Compose files (`docker-compose.yml`, and `docker-compose.bjslab.yml` for the reference deployment). No overlay is
+in `docker-compose.yml`. No overlay is
 required. `services/embedder/compose.embedder.yml` is now an empty compatibility
 overlay; all service definitions live in the main compose. This choice preserves one deployment plan
 when Coolify recreates services.

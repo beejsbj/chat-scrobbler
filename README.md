@@ -245,9 +245,7 @@ the asset directory mounted into the embedder (`ASSETS_DIR`), and the data owner
 take it from there). The ingest and MCP ports are published on `127.0.0.1` by
 [docker-compose.ports.yml](docker-compose.ports.yml), which `.env.example` enables
 through `COMPOSE_FILE`. Behind a reverse proxy, drop that overlay and route to
-container ports 4318 (ingest) and 4321 (MCP). `docker-compose.bjslab.yml` is the
-reference deployment's file for Coolify; it is being retired in favor of
-`docker-compose.yml`.
+container ports 4318 (ingest) and 4321 (MCP).
 
 The compose file runs the EmbeddingGemma 2 sidecar (`embedder`) by default:
 `CHAT_SCROBBLER_EMBED_PROVIDER=embeddinggemma`,

@@ -17,30 +17,24 @@ function interpolate(text: string, env: Record<string, string>): string {
   return expand(text);
 }
 
-// Values an operator whose data lives elsewhere sets in .env, taken from the existing deployment file.
-const legacy = parse(read("docker-compose.bjslab.yml"));
-const dataDir = (legacy.services.scrobbler.volumes[0] as string).split(":")[0];
-const assetsDir = legacy.services.embedder.volumes[1].source as string;
 const tokens = { MCP_AUTH_TOKEN: "m", INGEST_TOKEN: "i" };
 
-test("the generic compose can express the existing deployment through env values alone", () => {
-  const generic = parse(interpolate(read("docker-compose.yml"), { ...tokens, DATA_DIR: dataDir, ASSETS_DIR: assetsDir }));
-  const existing = parse(interpolate(read("docker-compose.bjslab.yml"), tokens));
-  expect(generic.services.embedder).toEqual(existing.services.embedder);
-  expect(generic.services.scrobbler.volumes).toEqual(existing.services.scrobbler.volumes);
-  expect(generic.services.scrobbler.build).toEqual(existing.services.scrobbler.build);
-  expect(generic.services.scrobbler.depends_on).toEqual(existing.services.scrobbler.depends_on);
-  expect(generic.services.scrobbler.networks).toEqual(existing.services.scrobbler.networks);
-  expect(generic.services.scrobbler.restart).toBe(existing.services.scrobbler.restart);
-  expect(generic.networks).toEqual(existing.networks);
-  expect(Object.keys(generic.volumes)).toEqual(Object.keys(existing.volumes));
-  for (const [key, value] of Object.entries(existing.services.scrobbler.environment)) {
-    expect([key, generic.services.scrobbler.environment[key]]).toEqual([key, value]);
-  }
-  // Only the owner name is new, and it is empty (generic) unless set.
-  expect(generic.services.scrobbler.environment.CHAT_SCROBBLER_OWNER_NAME).toBe("");
-  // Neither file publishes ports; the ports overlay is separate.
-  expect(generic.services.scrobbler.ports).toBeUndefined();
+test("the compose keeps the embedder sandboxed and reachable only from the scrobbler", () => {
+  const plan = parse(interpolate(read("docker-compose.yml"), tokens));
+  const embedder = plan.services.embedder;
+  expect(embedder.cap_drop).toEqual(["ALL"]);
+  expect(embedder.security_opt).toEqual(["no-new-privileges:true"]);
+  expect([embedder.cpus, embedder.mem_limit, embedder.memswap_limit, embedder.pids_limit]).toEqual([2, "2g", "2g", 64]);
+  expect(embedder.ports).toBeUndefined();
+  expect(embedder.networks).toEqual(["embeddings"]);
+  expect(plan.networks.embeddings.internal).toBe(true);
+  expect(embedder.volumes[1]).toMatchObject({ target: "/data/canonical/assets", read_only: true });
+  expect(plan.services.scrobbler.networks).toEqual(["default", "embeddings"]);
+  expect(plan.services.scrobbler.depends_on.embedder).toEqual({ condition: "service_started", required: false });
+  expect(plan.services.scrobbler.environment.CHAT_SCROBBLER_EMBED_BASE_URL).toBe("http://embedder:4320");
+  expect(Object.keys(plan.volumes)).toEqual(["embedder-cache-v2"]);
+  // No ports are published here; the ports overlay is separate.
+  expect(plan.services.scrobbler.ports).toBeUndefined();
 });
 
 test("the generic compose runs on defaults: local data dir, derived asset mount, owner 999", () => {
