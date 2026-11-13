@@ -71,7 +71,9 @@ export function newestRawVersion(dir: string, files: string[]): string | undefin
   const tied = files.filter((_, index) => times[index] === latest);
   if (tied.length < 2) return tied[0];
   const enrichment = new Map(tied.map(file => {
-    const capture = readVersion(dir, file);
+    let capture: RawCapture;
+    // An unreadable version cannot be the enriched one; it must not block ingest either.
+    try { capture = readVersion(dir, file); } catch { return [file, ["", -1]] as const; }
     const count = (list: unknown) => Array.isArray(list) ? list.length : 0;
     return [file, [String(capture.asset_backfilled_at ?? ""), count(capture.assets) + count(capture.asset_references)] as const];
   }));
@@ -82,11 +84,14 @@ export function newestRawVersion(dir: string, files: string[]): string | undefin
   return tied.reduce((newest, file) => compare(file, newest) > 0 ? file : newest);
 }
 
-/** Restore a backed-up marker, unless ingest has written one meanwhile. */
-export function restoreLatestRaw(dir: string, file: string): void {
+/** Restore a backed-up marker over `replacing` (the local marker's text, null when
+ *  there was none), unless ingest has written a different one meanwhile. */
+export function restoreLatestRaw(dir: string, file: string, replacing: string | null): void {
   const latest = { file, content_hash: rawContentHash(readVersion(dir, file)), hash_version: 3 };
-  if (existsSync(join(dir, "latest.json"))) writeLatestRaw(dir, latest);
-  else writeImmutableFile(join(dir, "latest.json"), JSON.stringify(latest));
+  if (replacing === null) { writeImmutableFile(join(dir, "latest.json"), JSON.stringify(latest)); return; }
+  let current: string;
+  try { current = readFileSync(join(dir, "latest.json"), "utf8"); } catch { return; }
+  if (current === replacing) writeLatestRaw(dir, latest);
 }
 export function writeLatestRaw(dir: string, latest: Latest): void {
   writeAtomicFile(join(dir, "latest.json"), JSON.stringify({ ...latest, hash_version: 3 }));
