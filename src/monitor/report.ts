@@ -3,6 +3,7 @@ import { parseFailureLines } from "./parse-state";
 import { MonitorStateError, monitorDataDir } from "./state-owner";
 import { monitorWriteFailed } from "./state-fault";
 import { acknowledgeTypes, monitorStatePath, readMonitorState } from "./state";
+import { ignoredAssetKeys } from "./asset-ignores";
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { monitorHealth } from "./health";
@@ -53,7 +54,9 @@ export async function monitorReport(opts: IngestServerOptions, ack = false) {
   const canonicalDir = opts.canonicalDir ?? "";
   const rawDir = opts.rawDir ?? (canonicalDir ? rawDirForCanonicalDir(canonicalDir) : "");
   let canonical: ReturnType<typeof canonicalObservations> = { missingAssets: 0, unreadable: 0, latest: {} };
-  try { if (canonicalDir) canonical = canonicalObservations(canonicalDir, since); }
+  // Best effort: unreadable ignores mean counting more, never less.
+  const ignoredKeys = statePath && state ? (source: typeof SOURCES[number]) => { try { return ignoredAssetKeys(statePath, source); } catch { return new Set<string>(); } } : undefined;
+  try { if (canonicalDir) canonical = canonicalObservations(canonicalDir, since, ignoredKeys); }
   catch { fail("canonical", "scan_failed"); }
   let raw = { lastCapture: { chatgpt: null, claude: null, gemini: null } as Record<typeof SOURCES[number], string | null>, parseFailures: 0, unprojected: 0, unreadable: 0 };
   try { if (canonicalDir && rawDir) raw = rawObservations(rawDir, canonicalDir); }
