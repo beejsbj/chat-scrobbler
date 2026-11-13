@@ -10,10 +10,12 @@
 // --build-only fills dist/release, native runners smoke-test each binary, then
 // --publish-only uploads the already-built assets. Tags with a pre-release
 // suffix (v0.5.0-rc1) publish as GitHub pre-releases, which the installer's
-// releases/latest URL ignores.
+// releases/latest URL ignores. The built extension's manifest takes `version` from the tag
+// (a pre-release keeps its full tag in `version_name`); the tracked manifest is not bumped by hand.
 
 import { rmSync, mkdirSync, existsSync } from "node:fs";
 import { join } from "node:path";
+import { manifestVersionFromTag } from "../packages/extension/scripts/manifest-version";
 
 const root = join(import.meta.dir, "..");
 const outDir = join(root, "dist", "release");
@@ -40,6 +42,10 @@ if (!tag || !/^v\d/.test(tag) || (mode && mode !== "--build-only" && mode !== "-
   process.exit(2);
 }
 
+// The extension manifest takes its version from the tag; fail before building if it cannot.
+try { manifestVersionFromTag(tag); }
+catch (error) { console.error(`release: ${error instanceof Error ? error.message : error}`); process.exit(2); }
+
 const assets = [
   ...Object.keys(TARGETS).map((s) => join(outDir, `chat-scrobbler-${s}`)),
   join(outDir, "extension.zip"),
@@ -63,8 +69,8 @@ function build(): void {
     );
   }
 
-  // 2. Build the extension and zip it as a release asset.
-  run([process.execPath, "run", "packages/extension/scripts/build.ts"], "extension build");
+  // 2. Build the extension (its manifest version comes from the tag) and zip it as a release asset.
+  run([process.execPath, "run", "packages/extension/scripts/build.ts", "--tag", tag], "extension build");
   const extBuild = join(root, "packages", "extension", "build");
   if (!existsSync(extBuild)) {
     console.error(`release: extension build output missing at ${extBuild}`);
