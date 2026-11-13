@@ -147,7 +147,7 @@ snapshot and compilation cache from a spike workspace; point `EMBEDDER_SPIKE_DIR
 Run from the repo root:
 
 ```sh
-"$EMBEDDER_SPIKE_DIR"/venv-a/bin/python -B -m unittest discover -s services/embedder/tests -v
+"${EMBEDDER_SPIKE_DIR:-spike}"/venv-a/bin/python -B -m unittest discover -s services/embedder/tests -v
 python3 -B -m services.embedder.verify_api
 ```
 

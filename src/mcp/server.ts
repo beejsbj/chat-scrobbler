@@ -21,7 +21,7 @@ type ToolResult = { structuredContent?: Record<string, unknown>; content: { type
 
 /** One short line: the name comes from operator config but lands in a client's prompt. */
 function ownerPossessive(ownerName: string | null | undefined): string {
-  const name = (ownerName ?? "").replace(/\s+/g, " ").trim().slice(0, 60).trim();
+  const name = (typeof ownerName === "string" ? ownerName : "").replace(/\s+/g, " ").trim().slice(0, 60).trim();
   return name ? `${name}'s` : "the owner's";
 }
 

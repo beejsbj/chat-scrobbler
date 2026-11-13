@@ -90,3 +90,11 @@ test("the embedder overlay works with the generic compose too", () => {
   expect(overlay.services.embedder.profiles).toEqual(["embedder-disabled"]);
   expect(overlay.services.scrobbler.environment.CHAT_SCROBBLER_EMBED_PROVIDER).toBe("none");
 });
+
+test(".dockerignore keeps secrets and the default data directory out of the image build", () => {
+  const ignored = read(".dockerignore").split("\n").map(line => line.trim());
+  for (const entry of [".env", "data/", "raw/", "canonical/", "index/", "node_modules/", ".git"]) expect(ignored).toContain(entry);
+  expect(ignored).not.toContain("src/");
+  expect(ignored).not.toContain("packages/");
+  expect(ignored).not.toContain("package.json");
+});

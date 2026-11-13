@@ -27,9 +27,6 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(Config().max_frames, 4)
 
 
-if __name__ == '__main__':
-    unittest.main()
-
 
 class SpikeLocationTests(unittest.TestCase):
     def spike(self, **env):
@@ -45,3 +42,7 @@ class SpikeLocationTests(unittest.TestCase):
     def test_spike_workspace_is_env_driven_with_a_host_neutral_default(self):
         self.assertEqual(self.spike(EMBEDDER_SPIKE_DIR='/work/spike'), '/work/spike')
         self.assertEqual(self.spike(), 'spike')
+
+
+if __name__ == '__main__':
+    unittest.main()

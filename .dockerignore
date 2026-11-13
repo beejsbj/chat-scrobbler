@@ -1,0 +1,18 @@
+# Keep private data, secrets and build noise out of the image build context.
+# The Dockerfile's `COPY . .` would otherwise bake them into a cached layer.
+.git
+.env
+.env.*
+!.env.example
+data/
+raw/
+canonical/
+index/
+backups/
+notes/
+dist/
+node_modules/
+**/node_modules/
+packages/extension/build/
+*.log
+.DS_Store

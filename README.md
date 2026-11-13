@@ -261,8 +261,10 @@ out. With Docker Compose, add the overlay instead of editing the file (or append
 `:docker-compose.no-embedder.yml` to `COMPOSE_FILE` in `.env`):
 
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.no-embedder.yml up -d
+docker compose -f docker-compose.yml -f docker-compose.ports.yml -f docker-compose.no-embedder.yml up -d
 ```
+
+(`-f` replaces `COMPOSE_FILE`, so list the ports overlay too, or use the `.env` form.)
 
 With `none` there is no background backfill, and `monitor` and `doctor` raise no
 embedding warnings. **Search is literal-only**: chat-scrobbler's own `search`
