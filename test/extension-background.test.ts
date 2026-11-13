@@ -681,6 +681,14 @@ test("Gemini backfill fails the page without moving the cursor when the owning t
   expect(((storageData["scrobbler.status"] as any).providers.gemini.lastBackfill.next_after)).toBe("old");
 });
 
+test("Gemini backfill names the unresponsive tab so the right one gets reloaded", async () => {
+  const { response } = await runBackfill([
+    { id: 1, url: "https://gemini.google.com/app/aaa" },
+    { id: 2, url: "https://gemini.google.com/app/bbb" },
+  ], geminiPage("aaa", "bbb"), (id, request) => id === 2 ? undefined : backfillResult(request));
+  expect(response).toMatchObject({ ok: false, error: "Reload the gemini tab showing /app/bbb before backfill" });
+});
+
 test("Gemini backfill skips a discarded tab that owns a chat and still reaches a live tab", async () => {
   const { sent } = await runBackfill([
     { id: 1, url: "https://gemini.google.com/app/aaa", discarded: true },

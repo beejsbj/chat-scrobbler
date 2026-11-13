@@ -626,6 +626,11 @@ async function commitBackfill(value: import("../../shared/src").AssetBackfillCom
   return res.json();
 }
 
+/** Names the tab in an error so the user reloads the right one among several. */
+function tabPath(rawUrl?: string): string {
+  try { return `showing ${new URL(rawUrl ?? "").pathname}`; } catch { return ""; }
+}
+
 async function backfillOpenTabs(): Promise<unknown> {
   const tabs = await queryTabs({});
   const byProvider = new Map<ProviderSource, any[]>();
@@ -653,7 +658,7 @@ async function backfillOpenTabs(): Promise<unknown> {
     const total = { sessions: 0, attempted: 0, captured: 0, unavailable: 0 };
     for (const route of routeBackfillPage(provider, page, providerTabs)) {
       const response = await sendTabMessage(route.tab.id!, { type: "SCROBBLER_BACKFILL_ASSETS", provider, page: route.page }) as any;
-      if (!response?.ok) throw new Error(response?.error ?? "Reload the provider tab before backfill");
+      if (!response?.ok) throw new Error(response?.error ?? `Reload the ${provider} tab ${tabPath(route.tab.url)} before backfill`);
       for (const key of Object.keys(total) as Array<keyof typeof total>) total[key] += response.result[key];
     }
     const result = { ...total, next_after: page.next_after };
