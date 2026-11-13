@@ -189,6 +189,13 @@ finishes, so a deletion that crashes or defers cleanup is finished by the next
 delete of that id or the next restore. Backups carry these records (as
 `pending-blob-cleanup/` beside `deleted/`), and `monitor` reports
 `pending_blob_cleanup=N` while any remain.
+`chat-scrobbler delete` runs in another process than serve and takes no lock, so
+every ingest write for one session (`POST /captures`, `POST /assets`, asset
+references, `POST /assets/backfill`) checks the tombstone again after writing.
+Deletion writes the tombstone before it erases anything: if the second check finds
+none, a later deletion erases this write; if it finds one, ingest runs the same
+erasure itself and reports the session as deleted (`skipped_deleted`, or 410).
+Erasure tolerates running twice at once.
 
 Asset capture is best-effort and local-only. The browser extension fetches provider
 asset URLs in the authenticated page context, then uploads bytes to the local ingest

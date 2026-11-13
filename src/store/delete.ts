@@ -93,14 +93,15 @@ export function deleteSessionArchives(canonicalDir: string, identities: SessionI
   let blobsDeleted = 0;
   if (unreferenced) for (const hash of unreferenced) {
     const blob = assetBlobPath(canonicalDir, hash);
-    if (existsSync(blob)) { rmSync(blob); blobsDeleted++; }
-    if (existsSync(`${blob}.json`)) rmSync(`${blob}.json`);
+    // force: ingest may erase the same session at the same moment (eraseIfDeletedMeanwhile).
+    if (existsSync(blob)) { rmSync(blob, { force: true }); blobsDeleted++; }
+    if (existsSync(`${blob}.json`)) rmSync(`${blob}.json`, { force: true });
     if (existsSync(dirname(blob))) syncDirectory(dirname(blob));
   }
   const blobCleanupPending = collectionFailed || !!options.deferBlobCleanup || (candidates.size > 0 && !unreferenced);
   if (!blobCleanupPending) for (const { source, source_id } of identities) {
     const file = pendingCleanupPath(canonicalDir, source, source_id);
-    if (existsSync(file)) { rmSync(file); syncDirectory(dirname(file)); }
+    if (existsSync(file)) { rmSync(file, { force: true }); syncDirectory(dirname(file)); }
   }
   return { sessions, blobsDeleted, blobCleanupPending };
 }

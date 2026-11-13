@@ -22,6 +22,33 @@ export function deleteSessionEverywhere(paths: SessionDeletionPaths, db: Databas
   return { canonical, index };
 }
 
+export class SessionDeletedError extends Error { constructor() { super("session was deleted"); } }
+
+/** Ingest checks the tombstone before it writes, but `chat-scrobbler delete` runs in
+ *  another process and can write it in between. Deletion writes the tombstone before it
+ *  erases anything, so a second check after the write closes that gap: absent now, any
+ *  later deletion starts after this write and erases it; present, erase again here.
+ *  Erasure is idempotent, so it may run beside the CLI's. Never touches another session. */
+export function eraseIfDeletedMeanwhile(paths: { canonicalDir: string; rawDir?: string; monitorStatePath?: string }, db: Database | null, source: string, sourceId: string): boolean {
+  if (!isSessionDeleted(paths.canonicalDir, source, sourceId)) return false;
+  if (db && paths.monitorStatePath) deleteSessionEverywhere({ ...paths, monitorStatePath: paths.monitorStatePath }, db, source, sourceId);
+  else deleteSessionArchive(paths.canonicalDir, source, sourceId, paths.rawDir);
+  return true;
+}
+
+/** Run one session-scoped write; if the session was deleted meanwhile, erase what it
+ *  wrote and throw SessionDeletedError instead of returning or rethrowing. */
+export function writeUnlessDeleted<T>(paths: { canonicalDir: string; rawDir?: string; monitorStatePath?: string }, db: Database | null, source: string, sourceId: string, write: () => T): T {
+  let result: T;
+  try { result = write(); }
+  catch (error) {
+    if (eraseIfDeletedMeanwhile(paths, db, source, sourceId)) throw new SessionDeletedError();
+    throw error;
+  }
+  if (eraseIfDeletedMeanwhile(paths, db, source, sourceId)) throw new SessionDeletedError();
+  return result;
+}
+
 export interface SessionDeletionPreview {
   id: string;
   tombstoned: boolean;
