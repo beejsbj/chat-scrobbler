@@ -78,7 +78,7 @@ beforeEach(() => {
   installChrome();
   for (const key of Object.keys(storageData)) delete storageData[key];
   tabs = []; calls = []; alive = new Set(); sendLog = []; nextId = 100;
-  keeperTimings.pollMs = 0; keeperTimings.loadTimeoutMs = 50; keeperTimings.callTimeoutMs = 50;
+  keeperTimings.pollMs = 0; keeperTimings.reviveWaitMs = 0; keeperTimings.loadTimeoutMs = 50; keeperTimings.callTimeoutMs = 50;
   globalThis.fetch = (async () => Response.json({ ok: true })) as unknown as typeof fetch;
 });
 
@@ -244,4 +244,100 @@ test("one failing provider does not starve the others, and the error still surfa
   storageData["scrobbler.settings"] = settingsOff;
   await expect(syncAll("manual")).rejects.toThrow("Content script not active");
   expect(sendLog).toEqual([1, 2]);
+});
+
+// Issue #77: the alarm period equals the reload cooldown, and a reload is stamped a few seconds
+// after the alarm fires, so the next period lands just inside the window and was refused.
+test("a user tab Chrome discards between every period is revived every period, not every other one", async () => {
+  tabs = [{ id: 1, url: "https://chatgpt.com/c/a" }];
+  alive = new Set([1]);
+  const period = 30 * 60 * 1000;
+  const realNow = Date.now;
+  let skew = 0;
+  Date.now = () => realNow() + skew;
+  try {
+    for (let cycle = 0; cycle < 4; cycle++) {
+      // Chrome discards the background tab between cycles and its content script goes away.
+      tabs[0].discarded = true; alive.delete(1);
+      calls = [];
+      const out: any = await syncAll("periodic");
+      expect(out.results[0].result.ok).toBe(true);
+      expect(reloads()).toEqual([1]);
+      // The reload is stamped a few seconds after the alarm fired; the next alarm is one period after the alarm.
+      skew += period - 3_000;
+    }
+  } finally { Date.now = realNow; }
+});
+
+test("a reload that does not revive the tab keeps the full cooldown, so a broken provider cannot loop", async () => {
+  tabs = [{ id: 1, url: "https://gemini.google.com/app", discarded: true }];
+  const period = 30 * 60 * 1000;
+  const realNow = Date.now;
+  let skew = 0;
+  Date.now = () => realNow() + skew;
+  const reload = tabsApi.reload;
+  // The reload leaves the tab unanswering (e.g. redirected to a sign-in page the content script does not run on).
+  tabsApi.reload = (id: number, cb: () => void) => { calls.push(["reload", id]); cb(); };
+  try {
+    await expect(syncAll("periodic")).rejects.toThrow("Content script not active");
+    expect(reloads()).toEqual([1]);
+    // The next period lands just inside the window: a reload that did not help is still throttled.
+    skew += period - 3_000;
+    calls = [];
+    await expect(syncAll("periodic")).rejects.toThrow("Content script not active");
+    expect(reloads()).toEqual([]);
+    // Once the full window has passed it may try again.
+    skew += 5_000;
+    await expect(syncAll("periodic")).rejects.toThrow("Content script not active");
+    expect(reloads()).toEqual([1]);
+  } finally { Date.now = realNow; tabsApi.reload = reload; }
+});
+
+test("a revived tab is not reloaded again within the short floor", async () => {
+  tabs = [{ id: 1, url: "https://chatgpt.com/c/a", discarded: true }];
+  await syncAll("manual");
+  expect(reloads()).toEqual([1]);
+  tabs[0].discarded = true; alive.delete(1); calls = [];
+  await expect(syncAll("manual")).rejects.toThrow("Content script not active");
+  expect(reloads()).toEqual([]);
+});
+
+test("a content script that answers a moment after the reload is waited for, not reported dead", async () => {
+  tabs = [{ id: 1, url: "https://claude.ai/chat/a", discarded: true }];
+  const reload = tabsApi.reload;
+  let late = 0;
+  tabsApi.reload = (id: number, cb: () => void) => { calls.push(["reload", id]); tabs[0].discarded = false; late = 2; cb(); };
+  const send = tabsApi.sendMessage;
+  tabsApi.sendMessage = (id: number, request: any, cb: (r: unknown) => void) => {
+    if (late > 0) { late--; if (late === 0) alive.add(id); }
+    send(id, request, cb);
+  };
+  try {
+    const out: any = await syncAll("manual");
+    expect(out.results[0].result.ok).toBe(true);
+  } finally { tabsApi.reload = reload; }
+});
+
+test("provider tabs the browser could discard are pinned down on the periodic pass", async () => {
+  tabs = [{ id: 1, url: "https://chatgpt.com/c/a", autoDiscardable: true }];
+  alive = new Set([1]);
+  await syncAll("periodic");
+  expect(tabs[0].autoDiscardable).toBe(false);
+});
+
+test("keepProviderTabs off leaves the user's tabs discardable", async () => {
+  storageData["scrobbler.settings"] = settingsOff;
+  tabs = [{ id: 1, url: "https://chatgpt.com/c/a", autoDiscardable: true }];
+  alive = new Set([1]);
+  await syncAll("periodic");
+  expect(tabs[0].autoDiscardable).toBe(true);
+});
+
+test("a keeper fallback does not confirm an earlier reload that never helped", async () => {
+  await syncAll("periodic");
+  tabs.push({ id: 7, url: "https://chatgpt.com/c/a", active: true });
+  alive.delete(7);
+  keeperState().touched.chatgpt = Date.now() - 1_000;
+  await syncAll("periodic");
+  expect(keeperState().confirmed?.chatgpt).toBeUndefined();
 });

@@ -14,9 +14,15 @@ import "./chrome-api";
  */
 
 export const KEEPER_STATE_KEY = "scrobbler.keeperTabs";
-/** At most one reload per provider in this window, so a signed-out or broken provider cannot loop. */
+/**
+ * At most one reload per provider in this window when the last reload did not bring the tab back, so a
+ * signed-out or broken provider cannot loop. It equals the default sync period, and a reload is stamped
+ * seconds after the alarm fires, so it must not gate a reload that worked (see RECOVERED_COOLDOWN_MS).
+ */
 export const RELOAD_COOLDOWN_MS = 30 * 60 * 1000;
-export const keeperTimings = { loadTimeoutMs: 30_000, pollMs: 500, callTimeoutMs: 10_000 };
+/** Floor between reloads once the last one was confirmed by a successful sync: one per period is fine, a burst is not. */
+export const RECOVERED_COOLDOWN_MS = 5 * 60 * 1000;
+export const keeperTimings = { loadTimeoutMs: 30_000, pollMs: 500, callTimeoutMs: 10_000, reviveAttempts: 8, reviveWaitMs: 1_500 };
 
 export const KEEPER_URLS: Record<ProviderSource, string> = {
   chatgpt: "https://chatgpt.com/",
@@ -28,6 +34,8 @@ interface KeeperState {
   tabs: Partial<Record<ProviderSource, number>>;
   /** Last reload or creation per provider (ms since epoch); throttles reloads. */
   touched: Partial<Record<ProviderSource, number>>;
+  /** The `touched` value whose reload was followed by a successful sync; that reload earns the short cooldown. */
+  confirmed?: Partial<Record<ProviderSource, number>>;
 }
 
 const ensuring = new Map<ProviderSource, Promise<any | null>>();
@@ -41,7 +49,7 @@ function storageSet(value: Record<string, unknown>): Promise<void> {
 
 async function readState(): Promise<KeeperState> {
   const stored = (await storageGet(KEEPER_STATE_KEY))[KEEPER_STATE_KEY] as Partial<KeeperState> | undefined;
-  return { tabs: { ...stored?.tabs }, touched: { ...stored?.touched } };
+  return { tabs: { ...stored?.tabs }, touched: { ...stored?.touched }, confirmed: { ...stored?.confirmed } };
 }
 async function writeState(state: KeeperState): Promise<void> {
   await storageSet({ [KEEPER_STATE_KEY]: state });
@@ -82,6 +90,24 @@ export async function waitForTabLoad(tabId: number): Promise<boolean> {
 
 async function pinDown(tabId: number): Promise<void> {
   await tabsCall("update", tabId, { autoDiscardable: false });
+}
+
+/**
+ * Stop the browser discarding a provider tab we depend on: a discarded tab has no content script, which is
+ * what made the periodic sync fail. Best effort, and re-asserted every pass because it may not survive a reload.
+ */
+export async function keepTabAlive(tab: any): Promise<void> {
+  if (typeof tab?.id === "number" && tab.discarded !== true && tab.autoDiscardable === true) await pinDown(tab.id);
+}
+
+/** The reload for this provider was followed by a successful sync, so the tab is healthy again. */
+export async function confirmRecovered(provider: ProviderSource): Promise<void> {
+  try {
+    const state = await readState();
+    if (state.touched[provider] === undefined || state.confirmed?.[provider] === state.touched[provider]) return;
+    state.confirmed = { ...state.confirmed, [provider]: state.touched[provider] };
+    await writeState(state);
+  } catch { /* best effort */ }
 }
 
 /** The stored keeper for a provider, if its tab still exists. Re-asserts autoDiscardable:false. */
@@ -138,7 +164,8 @@ export function ensureKeeperTab(provider: ProviderSource, knownTabs: any[] = [])
 /**
  * A tab did not answer the sync message. Returns the tab to retry on, or null
  * when there is nothing safe to do (the caller then reports the failure as before).
- *  - keeper or discarded tab: reload it (rate-limited), wait for load.
+ *  - keeper or discarded tab: reload it (rate-limited), wait for load. A reload that the next successful
+ *    sync confirms only waits RECOVERED_COOLDOWN_MS before the next one; an unconfirmed one waits the full window.
  *  - user's own live tab: never reload it (they may be typing); use the keeper instead.
  */
 export async function recoverDeadTab(provider: ProviderSource, tab: any): Promise<any | null> {
@@ -146,11 +173,14 @@ export async function recoverDeadTab(provider: ProviderSource, tab: any): Promis
     const state = await readState();
     if (state.tabs[provider] === tab.id || tab.discarded === true) {
       if (typeof chrome?.tabs?.reload !== "function") return null;
-      if (Date.now() - (state.touched[provider] ?? 0) < RELOAD_COOLDOWN_MS) return null;
+      const last = state.touched[provider] ?? 0;
+      const cooldown = state.confirmed?.[provider] === last ? RECOVERED_COOLDOWN_MS : RELOAD_COOLDOWN_MS;
+      if (Date.now() - last < cooldown) return null;
       state.touched[provider] = Date.now();
       await writeState(state);
       if (!(await tabsCall("reload", tab.id))) return null;
       await waitForTabLoad(tab.id);
+      await pinDown(tab.id);
       return tab;
     }
     const fallback = await ensureKeeperTab(provider);
