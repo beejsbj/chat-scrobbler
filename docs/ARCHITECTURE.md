@@ -173,13 +173,14 @@ a canonical-relative `local_path` such as `assets/chatgpt/<source_id>/<sha>.png`
 The session paths are hard-link aliases to shared immutable blobs, preserving
 existing extension responses. Metadata records MIME, byte size, original pointer
 and URL, and the first session/message seen. Canonical attachment blocks keep
-`pointer`, `local_path`, and an optional `sha256`; older JSON loads unchanged. Session deletion is irreversible archive erasure. It
-removes the session's raw captures, canonical file, and asset aliases, and deletes
-each blob that no other session references, so shared blobs survive. If reference
-records cannot be read, blob cleanup is deferred and logged. A minimal tombstone
-stops reparse and asset backfill from recreating the session, and restores erase
-it again. Only a backup taken before the deletion, restored into a store without
-that tombstone, brings it back.
+`pointer`, `local_path`, and an optional `sha256`; older JSON loads unchanged.
+Session deletion is irreversible archive erasure. It removes the session's raw
+captures, canonical file, and asset aliases, and deletes each blob that no other
+session references, so shared blobs survive. If reference records cannot be read,
+blob cleanup is deferred and logged. A minimal tombstone stops reparse and asset
+backfill from recreating the session, and restores erase it again. Only a backup
+taken before the deletion, restored into a store without that tombstone, brings it
+back.
 
 Asset capture is best-effort and local-only. The browser extension fetches provider
 asset URLs in the authenticated page context, then uploads bytes to the local ingest
