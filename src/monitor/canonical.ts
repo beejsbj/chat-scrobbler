@@ -7,11 +7,12 @@ import { ignoreKey, reportedPointer } from "./asset-ignores";
 
 /**
  * When a message was created. One with no timestamp (Gemini user turns) takes the next timestamped
- * message's time, since its reply follows it; with none after it, the session's creation time.
+ * message's time, since its reply follows it; with none after it, the session's last update, which
+ * that trailing message is what most likely moved.
  */
 function messageTimes(session: Session): number[] {
   const times: number[] = [];
-  let next = Date.parse(session.created_at);
+  let next = Date.parse(session.updated_at);
   for (let index = session.messages.length - 1; index >= 0; index--) {
     const created = Date.parse(session.messages[index]!.created_at ?? "");
     if (Number.isFinite(created)) next = created;
@@ -53,7 +54,9 @@ export function canonicalObservations(canonicalDir: string, since: number, ignor
         if (block.sha256 && /^[a-f0-9]{64}$/.test(block.sha256) && available) continue;
         if (ignoredKeys) {
           if (!ignoredBySource.has(session.source)) ignoredBySource.set(session.source, ignoredKeys(session.source));
-          if (ignoredBySource.get(session.source)!.has(ignoreKey(session.source_id, message.id, reportedPointer(block.pointer)))) continue;
+          const pointer = reportedPointer(block.pointer), ignored = ignoredBySource.get(session.source)!;
+          // An ignore recorded without a message id (stored as "") covers that pointer in the whole session.
+          if (ignored.has(ignoreKey(session.source_id, message.id, pointer)) || ignored.has(ignoreKey(session.source_id, null, pointer))) continue;
         }
         missingAssets++;
       } });

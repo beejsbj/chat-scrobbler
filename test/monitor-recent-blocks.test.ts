@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { canonicalObservations } from "../src/monitor/canonical";
@@ -41,13 +42,22 @@ test("a message with no timestamp takes the time of the next timestamped message
   expect(observe([session({ messages: [message("u1", null, "p-old"), message("a1", -60), message("u2", null, "p-new"), message("a2", -0.5)] })])).toBe(1);
 });
 
-test("a message with no timestamp and none after it falls back to the session's creation time", () => {
-  expect(observe([session({ messages: [message("a", -60), message("u", null, "p")] })])).toBe(0);
-  expect(observe([session({ created_at: iso(-1), messages: [message("u", null, "p")] })])).toBe(1);
+test("a message with no timestamp and none after it falls back to the session's last update", () => {
+  expect(observe([session({ updated_at: iso(-30), messages: [message("a", -60), message("u", null, "p")] })])).toBe(0);
+  // A trailing user turn the provider never answered still counts when the chat was updated in the window.
+  expect(observe([session({ updated_at: iso(-0.1), messages: [message("a", -60), message("u", null, "p")] })])).toBe(1);
 });
 
 test("an asset the owner ignored does not count, a different one still does", () => {
   const messages = [message("m1", -0.5, "p-ignored"), message("m2", -0.5, "p-open")];
   const ignored = (source: string) => new Set(source === "gemini" ? [JSON.stringify(["s1", "m1", "p-ignored"])] : []);
+  expect(observe([session({ messages })], ignored)).toBe(1);
+});
+
+test("an ignore recorded without a message id covers the pointer in that session, and an over-length pointer matches by its digest", () => {
+  const long = "data:image/png;base64," + "A".repeat(2000);
+  const digest = `sha256:${createHash("sha256").update(long).digest("hex")}`;
+  const messages = [message("m1", -0.5, "p-any"), message("m2", -0.5, long), message("m3", -0.5, "p-open")];
+  const ignored = () => new Set([JSON.stringify(["s1", "", "p-any"]), JSON.stringify(["s1", "m2", digest])]);
   expect(observe([session({ messages })], ignored)).toBe(1);
 });
