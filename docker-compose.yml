@@ -45,7 +45,10 @@ services:
       CHAT_SCROBBLER_MONITOR_STALE_DAYS_GEMINI: "${CHAT_SCROBBLER_MONITOR_STALE_DAYS_GEMINI:-21}"
       BIND_HOST: 0.0.0.0
     volumes:
-      - ${DATA_DIR}:/data
+      # Long form on purpose: an explicit bind, never a named volume.
+      - type: bind
+        source: ${DATA_DIR}
+        target: /data
     networks:
       - default
       - embeddings

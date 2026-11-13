@@ -43,9 +43,12 @@ test("the compose keeps the embedder sandboxed and reachable only from the scrob
 test("volume sources use only the forms a platform validator accepts: ${VAR}, ${VAR}/path or ${VAR:-default}", () => {
   const plan = parse(read("docker-compose.yml"));
   const sources = [
-    ...plan.services.scrobbler.volumes.map((v: string) => v.slice(0, v.lastIndexOf(":"))),
+    ...plan.services.scrobbler.volumes.map((v: any) => v.source),
     ...plan.services.embedder.volumes.filter((v: any) => typeof v === "object" && v.type === "bind").map((v: any) => v.source),
   ];
+  // The data directory is an explicit bind. In the short `source:target` form a platform that
+  // rewrites compose files can take an env-valued source for a named volume and start on an empty archive.
+  expect(plan.services.scrobbler.volumes).toEqual([{ type: "bind", source: "${DATA_DIR}", target: "/data" }]);
   expect(sources.length).toBe(2);
   for (const source of sources) expect(source).toMatch(/^\$\{[A-Z_]+\}(\/[\w.-]+)*$|^\$\{[A-Z_]+:-[\w.\/-]*\}$/);
 });
@@ -53,7 +56,7 @@ test("volume sources use only the forms a platform validator accepts: ${VAR}, ${
 test("the generic compose runs on the .env.example values: local data dir, derived asset mount, owner 999", () => {
   expect(read(".env.example")).toMatch(/^DATA_DIR=\.\/data$/m);
   const plan = parse(interpolate(read("docker-compose.yml"), { ...tokens, DATA_DIR: "./data" }));
-  expect(plan.services.scrobbler.volumes).toEqual(["./data:/data"]);
+  expect(plan.services.scrobbler.volumes).toEqual([{ type: "bind", source: "./data", target: "/data" }]);
   expect(plan.services.embedder.volumes[1].source).toBe("./data/canonical/assets");
   expect(plan.services.embedder.user).toBe("999:999");
   expect(plan.services.scrobbler.build.args).toEqual({ DATA_UID: 999, DATA_GID: 999 });
@@ -65,7 +68,7 @@ test("the data owner and data directory come from one env value each", () => {
   expect(plan.services.embedder.user).toBe("2000:2001");
   expect(plan.services.embedder.build.args).toEqual({ DATA_UID: 2000, DATA_GID: 2001 });
   expect(plan.services.scrobbler.build.args).toEqual({ DATA_UID: 2000, DATA_GID: 2001 });
-  expect(plan.services.scrobbler.volumes).toEqual(["/srv/scrobbler:/data"]);
+  expect(plan.services.scrobbler.volumes).toEqual([{ type: "bind", source: "/srv/scrobbler", target: "/data" }]);
   expect(plan.services.embedder.volumes[1].source).toBe("/srv/scrobbler/canonical/assets");
 });
 
