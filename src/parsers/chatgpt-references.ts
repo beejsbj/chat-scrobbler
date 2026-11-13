@@ -54,9 +54,9 @@ const spanHolds = (entry: Record<string, any>, content: unknown) => {
   return !!span && (typeof content !== "string" || span.length >= content.length);
 };
 
-const isWebUrl = (value: unknown): boolean => {
-  const url = str(value);
-  return !!url && /^https?:\/\//i.test(url.trim());
+const webUrl = (value: unknown): string | null => {
+  const url = str(value)?.trim();
+  return url && /^https?:\/\//i.test(url) ? url : null;
 };
 
 /** Citations for a recognized `content_references` entry, [] for a known-ignored one, null for unrecognized. */
@@ -96,7 +96,7 @@ function fromReference(entry: Record<string, any>): Citation[] | null {
     case "dil": return list(rec(rec(entry.dil).initialState).items).filter(item => str(rec(item).source_url))
       .map(item => cite(type, rec(item).source_title, rec(item).source_url, rec(item).quote));
     // A display span with no content of its own; the URLs it carries are sources with no title or snippet.
-    case "hidden": return list(entry.safe_urls).filter(isWebUrl).map(url => cite(type, null, url, null));
+    case "hidden": return list(entry.safe_urls).flatMap(value => webUrl(value) ?? []).map(url => cite(type, null, url, null));
     case "entity": {
       if (!spanCarries(entry, entry.name)) return null;
       // Business lookups carry address and links that are not in the span.
