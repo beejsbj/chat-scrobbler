@@ -60,6 +60,8 @@ interface ProviderState {
   lastResult: unknown;
   lastError: string | null;
   lastSyncError?: import("../../shared/src").SyncIssue;
+  /** Counts from the failed sync's conversation listing (Gemini); cleared by the next successful sync. */
+  lastListingDiagnostic?: import("./providers/gemini-sidebar").ListingDiagnostic;
 }
 
 interface Status {
@@ -471,7 +473,8 @@ async function syncTab(tab: any, provider: ProviderSource, reason: "manual" | "p
       next.providers[provider] = { ...previous, lastError: error,
         captureFailures: response?.captureFailures ?? previous.captureFailures,
         detailFailureStreak: response?.detailFailureStreak ?? previous.detailFailureStreak,
-        lastSyncError: response?.syncIssue ?? { reason: "sync_unavailable", occurred_at: new Date().toISOString() } };
+        lastSyncError: response?.syncIssue ?? { reason: "sync_unavailable", occurred_at: new Date().toISOString() },
+        lastListingDiagnostic: response?.listingDiagnostic };
     });
     await reportSyncFailuresBestEffort(provider, response?.captureFailures ?? status.providers[provider]?.captureFailures ?? []);
     throw new Error(error);
@@ -487,6 +490,7 @@ async function syncTab(tab: any, provider: ProviderSource, reason: "manual" | "p
       lastVisitSync: reason === "visit" ? new Date().toISOString() : next.providers[provider]?.lastVisitSync ?? null,
       lastResult: { ...response, reason, tabId: tab.id, synced_at: new Date().toISOString() },
       lastError: null,
+      lastListingDiagnostic: undefined,
     };
   });
   await reportSyncFailuresBestEffort(provider, response.captureFailures ?? []);

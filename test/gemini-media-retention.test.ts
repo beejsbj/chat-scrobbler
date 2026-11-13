@@ -46,7 +46,7 @@ for (const type of ["audio", "video"] as const) test(`Gemini DOM ${type} survive
       const response = new Response(bytes, { headers: { "content-type": `${type}/webm` } });
       Object.defineProperty(response, "url", { value: url });
       return response;
-    }, { ...createBrowserPageContext(), listConversationIds: () => [id], readWizData: () => ({ at: "csrf", bl: "build", fSid: "sid" }) });
+    }, { ...createBrowserPageContext(), listConversationIds: () => [id], awaitConversationIds: undefined, readWizData: () => ({ at: "csrf", bl: "build", fSid: "sid" }) });
     const options = {
       uploadAsset: (asset: Parameters<typeof uploadAssetToIngest>[2]) => uploadAssetToIngest(receiver, { ingestBaseUrl: "http://receiver", maxAssetBytes: 1024 }, asset),
       emitCapture: async (capture: RawCapture) => {

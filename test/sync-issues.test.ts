@@ -27,3 +27,11 @@ test("/status durably exposes environmental receiver errors per installation wit
 for (const issue of [{ reason: "secret", occurred_at: "2026-10-13" }, { reason: "receiver_unavailable", status: -1, occurred_at: "2026-10-13" }, { reason: "receiver_unavailable", occurred_at: "invalid" }]) test("/status rejects malformed sync diagnostics", async () => {
   await withReceiver(async post => expect((await post({ source: "chatgpt", conversations: [], last_sync_error: issue })).status).toBe(400));
 });
+
+test("/status stores the provider_listing_empty reason like any other sync issue", async () => {
+  await withReceiver(async post => {
+    const issue = { reason: "provider_listing_empty", occurred_at: "2026-11-13T01:10:00Z" };
+    expect((await post({ source: "gemini", install_id: "browser-a", conversations: [], last_sync_error: issue })).status).toBe(200);
+    expect(await (await post({ source: "gemini", install_id: "browser-a", conversations: [] })).json()).toMatchObject({ sync_errors: [{ install_id: "browser-a", ...issue }] });
+  });
+});

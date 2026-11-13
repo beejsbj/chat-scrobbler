@@ -596,6 +596,27 @@ test("background saves and reports deterministic attempts from a partially abort
   } finally { tabs.query = oldQuery; tabs.sendMessage = oldSend; }
 });
 
+test("an empty Gemini listing is stored and reported with its own reason and counts, and the next good sync clears the counts", async () => {
+  const tabs = chrome.tabs as any;
+  const oldQuery = tabs.query, oldSend = tabs.sendMessage;
+  const listing = { ids: 0, appAnchors: 0, anchors: 4, containers: 1, hidden: true, readyState: "complete", waitedMs: 20_000, timedOut: true };
+  const reports: any[] = [];
+  globalThis.fetch = (async (_url, init) => { reports.push(JSON.parse(String(init?.body))); return Response.json({ ok: true }); }) as typeof fetch;
+  tabs.query = (_query: any, done: any) => done([{ id: 1, url: "https://gemini.google.com/app" }]);
+  tabs.sendMessage = (_id: any, _request: any, done: any) => done({ ok: false, error: "Gemini listed no conversations",
+    syncIssue: { reason: "provider_listing_empty", occurred_at: new Date().toISOString() }, listingDiagnostic: listing });
+  try {
+    expect(await sendRuntimeMessage({ type: "SCROBBLER_SYNC_ACTIVE_TAB" })).toMatchObject({ ok: false });
+    const provider = () => (storageData["scrobbler.status"] as any).providers.gemini;
+    expect(provider().lastSyncError.reason).toBe("provider_listing_empty");
+    expect(provider().lastListingDiagnostic).toEqual(listing);
+    expect(reports.at(-1).last_sync_error.reason).toBe("provider_listing_empty");
+    tabs.sendMessage = (_id: any, request: any, done: any) => done({ ok: true, source: request.provider, captureFailures: [], scanned: 1, captured: 1, skipped: 0, account: null, maxConversationUpdatedAt: null });
+    await sendRuntimeMessage({ type: "SCROBBLER_SYNC_ACTIVE_TAB" });
+    expect(provider().lastListingDiagnostic).toBeUndefined();
+  } finally { tabs.query = oldQuery; tabs.sendMessage = oldSend; }
+});
+
 for (const action of ["SCROBBLER_RETRY_FAILED_OPEN_TABS", "SCROBBLER_SYNC_ALL_OPEN_TABS"] as const) test(`one ${action} action syncs each provider once despite multiple open tabs`, async () => {
   const tabs = chrome.tabs as any;
   const oldQuery = tabs.query, oldSend = tabs.sendMessage;

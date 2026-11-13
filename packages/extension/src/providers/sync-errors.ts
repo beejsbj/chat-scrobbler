@@ -1,4 +1,5 @@
 import type { DetailFailureIdentity } from "../../../shared/src";
+import type { ListingDiagnostic } from "./gemini-sidebar";
 /** An outage must never become a permanent conversation failure. */
 export class TransientSyncError extends Error {
   constructor(message = "Capture temporarily unavailable", readonly status?: number) { super(message); this.name = "TransientSyncError"; }
@@ -20,5 +21,12 @@ export class ProviderDetailOutageError extends TransientSyncError {
   constructor(readonly detailFailureStreak: DetailFailureIdentity[]) {
     super("Provider detail endpoints repeatedly unavailable; retry later");
     this.name = "ProviderDetailOutageError";
+  }
+}
+/** The provider page listed no conversations for an install that has synced before: could not list, not "nothing new". */
+export class ProviderListingEmptyError extends TransientSyncError {
+  constructor(readonly listing?: ListingDiagnostic) {
+    super("Gemini listed no conversations; open gemini.google.com/app, let the sidebar load and try again");
+    this.name = "ProviderListingEmptyError";
   }
 }
