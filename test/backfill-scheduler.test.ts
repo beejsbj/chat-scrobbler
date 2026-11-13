@@ -7,6 +7,7 @@ import { indexSession, openIndex } from "../src/indexer/sqlite";
 import { fixture } from "./support/embedding-fixture";
 import { startEmbeddingBackfillScheduler } from "../src/indexer/backfill-scheduler";
 import { EmbeddingRequestError } from "../src/indexer/embedding-failures";
+import { embeddingProviderFromConfig } from "../src/indexer/embedding-providers";
 
 function setup() {
   const root=mkdtempSync(join(tmpdir(),"backfill-scheduler-"));
@@ -228,4 +229,15 @@ test("one scheduler requeues rejected skips on its first run only", async () => 
     await scheduler.runNow(); expect(calls).toBe(4);
     await scheduler.runNow(); await scheduler.runNow(); expect(calls).toBe(4);
   } finally {await scheduler.stop();rmSync(root,{recursive:true,force:true});}
+});
+
+test("provider none runs no scheduler backfill and never touches the index", async () => {
+  const root=mkdtempSync(join(tmpdir(),"backfill-none-"));
+  try {
+    const cfg={...DEFAULT_CONFIG,embeddingProvider:"none" as const,embeddingBackfillEnabled:true,indexPath:join(root,"missing.db")};
+    const scheduler=startEmbeddingBackfillScheduler({cfg,provider:embeddingProviderFromConfig(cfg),startupMaintenance:true});
+    expect(scheduler.status()).toMatchObject({enabled:false,state:"disabled",next_run_at:null});
+    expect(await scheduler.runNow()).toBeNull(); await scheduler.stop();
+    expect(existsSync(join(root,"missing.db"))).toBe(false);
+  } finally {rmSync(root,{recursive:true,force:true});}
 });

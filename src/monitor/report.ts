@@ -49,7 +49,9 @@ export async function monitorReport(opts: IngestServerOptions, ack = false) {
     if (!health[store].ok) fail(`store.${store}`, health[store].reason ?? "unavailable");
   }
   if (health.embedding_responsiveness === "slow") fail("semantic", "slow");
-  if (health.semantic !== "available") fail("semantic", health.semantic === "disabled" ? "disabled" : "unavailable");
+  // A null provider means CHAT_SCROBBLER_EMBED_PROVIDER=none: literal-only search is a configured state, not a fault.
+  const embeddingsOff = !opts.embeddingProvider;
+  if (health.semantic !== "available" && !embeddingsOff) fail("semantic", "unavailable");
   const canonicalDir = opts.canonicalDir ?? "";
   const rawDir = opts.rawDir ?? (canonicalDir ? rawDirForCanonicalDir(canonicalDir) : "");
   let canonical: ReturnType<typeof canonicalObservations> = { missingAssets: 0, unreadable: 0, latest: {} };
@@ -86,7 +88,7 @@ export async function monitorReport(opts: IngestServerOptions, ack = false) {
   try {
     const skipped = skippedEmbeddingFailure(opts.indexPath, opts.embeddingProvider);
     if (skipped) failures.push(skipped);
-    if (opts.indexPath && indexExists) coverage = embeddingCoverage(opts.indexPath, opts.embeddingProvider ?? null, since, opts.embeddingProvider?.dimensions ?? ("embedding_dimension" in health ? health.embedding_dimension : undefined));
+    if (opts.indexPath && indexExists && !embeddingsOff) coverage = embeddingCoverage(opts.indexPath, opts.embeddingProvider ?? null, since, opts.embeddingProvider?.dimensions ?? ("embedding_dimension" in health ? health.embedding_dimension : undefined));
     if (coverage && coverage.recent_coverage < settings.monitorCoverageThreshold) fail("embeddings", `recent_with_vectors=${coverage.recent_with_vectors} recent_without_vectors=${coverage.recent_without_vectors} threshold=${settings.monitorCoverageThreshold}`);
   } catch { fail("index", "unreadable_or_incompatible"); }
   const noVectors = coverage && !coverage.with_vectors && coverage.without_vectors > 0;

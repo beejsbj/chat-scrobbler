@@ -233,6 +233,46 @@ The image build downloads and verifies the model, so there is no pull step. The
 compose change is merged, but the homelab deploy is still pending
 ([#41](https://github.com/beejsbj/chat-scrobbler/issues/41)).
 
+## Embeddings: use the bundled embedder, or turn it off
+
+Semantic search needs vectors. You have two choices.
+
+**Use the bundled embedder (the default in `docker-compose.bjslab.yml`).** The
+`embedder` sidecar runs EmbeddingGemma 2 and `serve` fills vectors in the
+background. It runs as the same uid:gid as the data owner (`DATA_UID` and
+`DATA_GID`, default `999:999`) so it can read asset blobs, which are written
+mode `0600`.
+
+**Turn it off.** Set `CHAT_SCROBBLER_EMBED_PROVIDER=none` and leave the sidecar
+out. With Docker Compose, add the overlay instead of editing the file:
+
+```bash
+docker compose -f docker-compose.bjslab.yml -f docker-compose.no-embedder.yml up -d
+```
+
+With `none` there is no background backfill, and `monitor` and `doctor` raise no
+embedding warnings. **Search is literal-only**: chat-scrobbler's own `search`
+(CLI and MCP) uses full text plus substring matching and returns no semantic
+hits. Vectors stored by an earlier provider stay in the index until you remove
+them with `chat-scrobbler prune-embeddings` (a dry run) and
+`chat-scrobbler prune-embeddings --apply`. Nothing prunes automatically.
+Sessions and text are never touched, so turning the embedder back on rebuilds
+vectors from them.
+
+**An outside indexer reads the disk.** If you run your own embedding or search
+system, the on-disk layout under the data directory (`~/.local/share/chat-scrobbler/`,
+or `/data` in the container) is the contract:
+
+```
+raw/<source>/<encoded-source-id>/<timestamp>-<sha256>.json.gz   append-only captures, the source of truth
+canonical/sessions/<source>/<source_id>.json   one canonical session per file (src/schema/types.ts)
+canonical/assets/sha256/<xx>/<sha256>     content-addressed blobs; <sha256>.json beside each is its metadata
+```
+
+`index/sessions.db` is derived and rebuildable; read it only if you want this
+tool's own FTS table. Asset blobs are mode `0600` owned by the user that runs
+chat-scrobbler, so an outside reader must run as that user or be given access.
+
 ## How I am using it
 
 - The whole thing lives on my homelab now: the Docker compose above runs the

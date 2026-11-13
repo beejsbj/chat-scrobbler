@@ -620,3 +620,22 @@ test("an unwritable state directory is reported even when the database is readab
     expect(live.failures).toEqual(["FAILED state unwritable"]);
   } finally { chmodSync(dir, 0o755); rmSync(root, { recursive: true, force: true }); }
 });
+
+test("provider none is a clean state: no embedding failures for recent text without vectors", async () => {
+  const { root, opts } = setup();
+  try {
+    const session = getParser("chatgpt", "api")(chatgpt as RawCapture)[0];
+    for (const message of session.messages) message.created_at = new Date().toISOString();
+    writeSession(opts.canonicalDir, session);
+    const db = openIndex(opts.indexPath);
+    db.run("DELETE FROM message_vectors");
+    indexSession(db, session);
+    db.close();
+    const off = { ...opts, embeddingProvider: null };
+    const report = await monitorReport(off);
+    expect(report.failures.filter(line => /embeddings|semantic/.test(line))).toEqual([]);
+    expect(report.embeddings.semantic).toBe("disabled");
+    const spawned = Bun.spawnSync([process.execPath, entry, "monitor"], { env: { ...process.env, CANONICAL_DIR: opts.canonicalDir, INDEX_PATH: opts.indexPath, CHAT_SCROBBLER_CONFIG: join(opts.canonicalDir, "absent.json"), CHAT_SCROBBLER_EMBED_PROVIDER: "none" } });
+    expect(spawned.stdout.toString()).not.toMatch(/embeddings|semantic/);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
