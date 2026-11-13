@@ -1,6 +1,7 @@
 import { Database } from "bun:sqlite";
 import { recordParseOutcome } from "../src/monitor/parse-state";
 import { monitorReport } from "../src/monitor/report";
+import { assetId, ignoreAsset } from "../src/monitor/asset-ignores";
 import { incrementMonitorCounter, recordAssetFailureOutcomes, recordCaptureReceipt, readMonitorState } from "../src/monitor/state";
 import { expect, spyOn, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
@@ -179,7 +180,7 @@ test("monitor keeps legacy JSON coverage without creating binary tables or migra
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
-test("recent coverage excludes old-model and stale-text vectors; missing assets are counted", async () => {
+test("recent coverage excludes old-model and stale-text vectors", async () => {
   const { root, opts } = setup();
   try {
     const session = getParser("chatgpt", "api")(chatgpt as RawCapture)[0];
@@ -194,7 +195,8 @@ test("recent coverage excludes old-model and stale-text vectors; missing assets 
     const report = await monitorReport(opts);
     expect(report.embeddings.coverage).toMatchObject({ recent_with_vectors: 0, recent_without_vectors: 2, recent_coverage: 0 });
     expect(report.failures).toContain("FAILED embeddings recent_with_vectors=0 recent_without_vectors=2 threshold=0.95");
-    expect(report.failures).toContain("FAILED assets missing_recent_blocks=1");
+    // The image is on an old message, so a chat active today does not raise the missing-media alert.
+    expect(report.assets.missing_recent_blocks).toBe(0);
     const changedModel = Object.assign(new HashEmbeddingProvider(), { model: "replacement-model" });
     const next = await monitorReport({ ...opts, embeddingProvider: changedModel });
     expect(next.embeddings.coverage).toMatchObject({ with_vectors: 0, without_vectors: 9 });
@@ -360,6 +362,8 @@ test("recent media blocks missing a local_path field still alert", async () => {
   try {
     const session = getParser("chatgpt", "api")(chatgpt as RawCapture)[0];
     session.updated_at = new Date().toISOString();
+    // Only media on a message created inside the window alerts.
+    session.messages[2].created_at = new Date().toISOString();
     for (const message of session.messages) for (const block of message.blocks) {
       if ("local_path" in block) delete (block as any).local_path;
     }
@@ -516,9 +520,28 @@ test("rewriting old canonical sessions does not make missing attachments recent"
     writeSession(opts.canonicalDir, session);
     writeSession(opts.canonicalDir, session);
     expect((await monitorReport(opts)).assets.missing_recent_blocks).toBe(0);
-    session.messages[0].created_at = new Date().toISOString();
+    session.messages[2].created_at = new Date().toISOString();
     writeSession(opts.canonicalDir, session);
     expect((await monitorReport(opts)).assets.missing_recent_blocks).toBe(1);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("a recent missing image the owner ignored stops counting as a missing recent block", async () => {
+  const { root, opts } = setup();
+  try {
+    const session = getParser("chatgpt", "api")(chatgpt as RawCapture)[0];
+    session.messages[2].created_at = new Date().toISOString();
+    for (const block of session.messages[2].blocks) if ("local_path" in block) delete (block as any).local_path;
+    writeSession(opts.canonicalDir, session);
+    expect((await monitorReport(opts)).assets.missing_recent_blocks).toBe(1);
+    const statePath = `${opts.indexPath}.monitor.sqlite`;
+    const image = session.messages[2].blocks.find(block => block.type === "image") as { pointer: string };
+    const identity = { source: "chatgpt", source_id: session.source_id, message_id: session.messages[2].id, pointer: image.pointer };
+    recordAssetFailureOutcomes(statePath, "chatgpt", [{ source_id: identity.source_id, message_id: identity.message_id, reason: "asset_expired", pointer: identity.pointer }]);
+    ignoreAsset(statePath, assetId(identity));
+    const report = await monitorReport(opts);
+    expect(report.assets.missing_recent_blocks).toBe(0);
+    expect(report.failures.some(line => line.includes("missing_recent_blocks"))).toBe(false);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
