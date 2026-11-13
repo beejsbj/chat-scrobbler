@@ -1,7 +1,7 @@
 import { fetchAuthenticatedDetail } from "./authenticated-detail";
 import { DetailFailureStreak } from "./detail-failure-streak";
 import { DetailPacer, receiverSyncedIds } from "./sync-pacing";
-import { abortTransientCapture } from "./sync-errors";
+import { abortTransientCapture, DeterministicCaptureError, TransientSyncError } from "./sync-errors";
 import { logSyncFailure, SyncFailureTracker } from "./sync-failures";
 import { buildRawCapture } from "../../../shared/src";
 import { assetReferences, uploadProviderAssets } from "./assets";
@@ -201,7 +201,13 @@ function currentOrigin(): string | null {
 }
 
 async function getOrganization(fetcher: FetchLike): Promise<{ uuid: string }> {
-  const raw = await fetchJson(fetcher, "/api/organizations");
+  let raw: unknown;
+  try { raw = await fetchJson(fetcher, "/api/organizations"); }
+  catch (error) {
+    // The organization request needs no chat id, so a 401/403 here means the session is gone, not that one chat is bad.
+    if (error instanceof DeterministicCaptureError && [401, 403].includes(error.status ?? 0)) throw new TransientSyncError("Provider session unavailable; sign in and retry", error.status);
+    throw error;
+  }
   const orgs = asArray(asObject(raw).organizations ?? raw);
   const first = asObject(orgs[0]);
   const uuid = first.uuid ?? first.id;
