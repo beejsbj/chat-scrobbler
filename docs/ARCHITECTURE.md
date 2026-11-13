@@ -547,8 +547,9 @@ may not be restored yet; the next complete restore collects those blobs.
 
 A session's `latest.json` marker records the version ingest received last. Restore
 writes the snapshot's marker when the local store has none, or when the local marker
-is unusable, or when it names a version the snapshot also holds while the snapshot's
-marker names one the restore had to add (the snapshot has seen strictly more).
+is unusable, or when it names a version the snapshot also holds while the snapshot
+has seen strictly more: the snapshot's marker names a version the restore had to add,
+or the snapshot holds every local version (as on a rerun after an interrupted restore).
 Otherwise the local marker stays: local ingest wrote it. So reparse and asset
 backfill rebuild from the same version as before the backup. Without a marker
 (snapshots made before markers were backed up, or stores already restored from one),

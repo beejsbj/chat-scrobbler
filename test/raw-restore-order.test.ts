@@ -61,17 +61,15 @@ test("a session restored into an empty store reparses from the version that arri
 
 test("restore keeps a valid local marker and never writes one for a tombstoned session", async () => {
   const live = store("restore-marker-keep-");
-  const older = storeRawCapture(live.rawDir, version("older", "2026-06-05T10:00:00.000Z"));
+  storeRawCapture(live.rawDir, version("older", "2026-06-05T10:00:00.000Z"));
   storeRawCapture(live.rawDir, version("newer", "2026-06-05T11:00:00.000Z"));
   const target = new LocalDirTarget(makeTmp("restore-marker-keep-target-"));
   const { snapshot } = await createBackup({ canonicalDir: live.canonicalDir, target });
-  // The local store's own ingest chose another version after the snapshot.
+  // The local store's own ingest received a version after the snapshot.
+  const later = storeRawCapture(live.rawDir, version("later", "2026-06-05T09:00:00.000Z"));
   const marker = join(live.rawDir, "chatgpt", "conv-1", "latest.json");
-  const local = JSON.parse(readFileSync(marker, "utf8"));
-  local.file = basename(older);
-  await Bun.write(marker, JSON.stringify(local));
   await restoreBackup({ canonicalDir: live.canonicalDir, target, snapshot, force: true });
-  expect(JSON.parse(readFileSync(marker, "utf8")).file).toBe(basename(older));
+  expect(JSON.parse(readFileSync(marker, "utf8")).file).toBe(basename(later));
 
   const { markSessionDeleted } = await import("../src/store/tombstones");
   const restored = store("restore-marker-deleted-");
@@ -172,3 +170,23 @@ test("an unreadable version tied on fetched_at ranks lowest instead of blocking 
   expect(latestRawReference(rawDir, "chatgpt", "c1")).toBe(enriched);
   expect(() => storeRawCapture(rawDir, { ...chat, fetched_at: "2026-06-07T00:00:00.000Z", payload: { p: 2 } })).not.toThrow();
 });
+
+test("rerunning a forced restore that failed after writing the versions still replaces a stale marker", async () => {
+  const live = store("restore-rerun-live-");
+  storeRawCapture(live.rawDir, version("first", "2026-06-05T10:00:00.000Z"));
+  storeRawCapture(live.rawDir, version("second", "2026-06-05T11:00:00.000Z"));
+  const inner = new LocalDirTarget(makeTmp("restore-rerun-target-"));
+  const { snapshot: old } = await createBackup({ canonicalDir: live.canonicalDir, target: inner, snapshotName: "old" });
+  const stale = store("restore-rerun-copy-");
+  await restoreBackup({ canonicalDir: stale.canonicalDir, target: inner, snapshot: old });
+  const third = storeRawCapture(live.rawDir, version("third", "2026-06-05T09:00:00.000Z"));
+  const { snapshot } = await createBackup({ canonicalDir: live.canonicalDir, target: inner, snapshotName: "new" });
+  const failing = new OrderedTarget(inner);
+  failing.getFile = async (snap, relPath, dest) => {
+    if (relPath.endsWith("/latest.json")) throw new Error("target offline");
+    return inner.getFile(snap, relPath, dest);
+  };
+  await expect(restoreBackup({ canonicalDir: stale.canonicalDir, target: failing, snapshot, force: true })).rejects.toThrow("target offline");
+  await restoreBackup({ canonicalDir: stale.canonicalDir, target: inner, snapshot, force: true });
+  expect(latestRawReference(stale.rawDir, "chatgpt", "conv-1")).toBe(third);
+}, 30000);

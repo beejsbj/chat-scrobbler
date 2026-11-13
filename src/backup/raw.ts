@@ -1,14 +1,12 @@
 import { assetHashes } from "../store/asset-hashes";
 import { recordAssetReferences } from "../store/asset-reference-store";
 import { randomUUID } from "node:crypto";
-import { closeSync, existsSync, fsyncSync, futimesSync, linkSync, mkdtempSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, fsyncSync, futimesSync, linkSync, mkdtempSync, openSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { syncDirectory } from "../store/atomic-file";
 import { writeImmutableFile } from "../store/immutable-file";
-import { restoreLatestRaw } from "../store/raw-latest";
-
-const VERSION = /^.+-[a-f0-9]{64}\.json\.gz$/;
+import { RAW_VERSION as VERSION, restoreLatestRaw } from "../store/raw-latest";
 import type { BackupTarget } from "./target";
 
 export function rawFiles(rawDir: string): string[] {
@@ -40,6 +38,7 @@ export async function restoreRaw(rawDir: string, target: BackupTarget, snapshot:
   if (!files.length) return result;
   const temp = mkdtempSync(join(tmpdir(), "restore-raw-"));
   const restored = new Set<string>();
+  const snapshotFiles = new Set(listed);
   try {
     for (const file of files) {
       const dest = resolve(rawDir, file.slice(4));
@@ -77,7 +76,7 @@ export async function restoreRaw(rawDir: string, target: BackupTarget, snapshot:
         if ((error as NodeJS.ErrnoException).code !== "ENOENT") continue;
         local = null;
       }
-      if (local !== null && !staleMarker(local, dir, name, file, listed, restored)) continue;
+      if (local !== null && !staleMarker(local, dir, name, file, snapshotFiles, restored)) continue;
       restoreLatestRaw(dir, name, local);
     }
   } finally { rmSync(temp, { recursive: true, force: true }); }
@@ -85,13 +84,16 @@ export async function restoreRaw(rawDir: string, target: BackupTarget, snapshot:
 }
 
 /** A local marker is newer evidence than the snapshot's, since local ingest wrote it,
- *  unless it is unusable or names a version the snapshot also holds while the snapshot's
- *  marker names one this restore had to add: then the snapshot has seen strictly more. */
-function staleMarker(local: string, dir: string, snapshotName: string, snapshotMarker: string, listed: string[], restored: Set<string>): boolean {
+ *  unless it is unusable, or it names a version the snapshot also holds while the
+ *  snapshot has seen strictly more: its marker names a version this restore had to
+ *  add, or (after an interrupted restore) the snapshot holds every local version. */
+function staleMarker(local: string, dir: string, snapshotName: string, snapshotMarker: string, listed: Set<string>, restored: Set<string>): boolean {
   let file: unknown;
   try { file = JSON.parse(local).file; } catch { return true; }
   if (typeof file !== "string" || !VERSION.test(file) || /[\/\\]/.test(file) || !existsSync(join(dir, file))) return true;
-  return file !== snapshotName && restored.has(join(dir, snapshotName)) && listed.includes(`${dirname(snapshotMarker)}/${file}`);
+  const inSnapshot = (name: string) => listed.has(`${dirname(snapshotMarker)}/${name}`);
+  if (file === snapshotName || !inSnapshot(file)) return false;
+  return restored.has(join(dir, snapshotName)) || readdirSync(dir).filter(name => VERSION.test(name)).every(inSnapshot);
 }
 
 /** Raw versions are never overwritten on ingest, but a forced restore must not

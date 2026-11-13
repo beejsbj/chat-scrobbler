@@ -15,7 +15,9 @@ export function rawContentHash(capture: RawCapture): string {
 }
 interface Latest { file: string; content_hash: string; hash_version?: number; }
 
-const VERSION = /^.+-[a-f0-9]{64}\.json\.gz$/;
+/** A raw version file name, as opposed to markers and kept-aside `.mismatch-` copies. */
+export const RAW_VERSION = /^.+-[a-f0-9]{64}\.json\.gz$/;
+const VERSION = RAW_VERSION;
 const STAMP = /^(\d{4}-\d{2}-\d{2})T(\d{2})-(\d{2})-(\d{2})(?:-(\d{1,9}))?Z-[a-f0-9]{64}\.json\.gz$/;
 
 /** The marker, when it names a version that exists. */
