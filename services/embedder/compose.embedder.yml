@@ -1,3 +1,3 @@
-# Compatibility file. The main Coolify compose defines the embedder, which now
+# Compatibility file. The main compose defines the embedder, which now
 # always runs. No profile or overlay is needed.
 services: {}

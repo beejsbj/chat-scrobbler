@@ -183,8 +183,7 @@ user that owns the asset blobs); assets use an existing read-only bind at
 The asset bind must exist and its files must be readable by it. An unreadable or
 missing media path answers HTTP 400 with error code `media_unreadable`.
 
-The main Compose files (`docker-compose.yml`, and `docker-compose.bjslab.yml` for the reference
-deployment) run the sidecar by default; there is no Ollama service. To leave it out, add
+The main Compose file (`docker-compose.yml`) runs the sidecar by default; there is no Ollama service. To leave it out, add
 `docker-compose.no-embedder.yml` (see the main README). Validate the plan from the repo root:
 
 ```sh

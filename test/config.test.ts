@@ -227,8 +227,8 @@ test("monitor thresholds merge provider overrides and reject malformed values", 
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
-test("bjslab compose supplies tunable provider freshness defaults", () => {
-  const compose = readFileSync(join(import.meta.dir, "../docker-compose.bjslab.yml"), "utf8");
+test("the compose file supplies tunable provider freshness defaults", () => {
+  const compose = readFileSync(join(import.meta.dir, "../docker-compose.yml"), "utf8");
   expect(compose).toContain('${CHAT_SCROBBLER_MONITOR_STALE_DAYS_CHATGPT:-7}');
   expect(compose).toContain('${CHAT_SCROBBLER_MONITOR_STALE_DAYS_CLAUDE:-14}');
   expect(compose).toContain('${CHAT_SCROBBLER_MONITOR_STALE_DAYS_GEMINI:-21}');
