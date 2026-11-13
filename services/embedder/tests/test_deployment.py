@@ -10,7 +10,7 @@ ROOT = Path(__file__).resolve().parents[3]
 
 
 def compose(*options, overrides=None, files=('docker-compose.yml',)):
-    env = {**os.environ, 'MCP_AUTH_TOKEN': 'test-only', 'INGEST_TOKEN': 'test-only',
+    env = {**os.environ, 'MCP_AUTH_TOKEN': 'test-only', 'INGEST_TOKEN': 'test-only', 'DATA_DIR': './data',
            'COMPOSE_PROFILES': '', 'CHAT_SCROBBLER_EMBED_PROVIDER': '',
            'CHAT_SCROBBLER_EMBED_MODEL': '', 'CHAT_SCROBBLER_EMBED_BASE_URL': '',
            **(overrides or {})}
