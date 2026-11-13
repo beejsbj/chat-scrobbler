@@ -4,7 +4,7 @@
 import type { Database } from "bun:sqlite";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
-import type { AssetBackfillPage, AssetBackfillReference, ProviderSource, UploadedAsset } from "../../packages/shared/src";
+import { BACKFILL_MAX_ASSETS, type AssetBackfillPage, type AssetBackfillReference, type ProviderSource, type UploadedAsset } from "../../packages/shared/src";
 import { indexSession } from "../indexer/sqlite";
 import { renderText } from "../parsers/render";
 import type { Block, Session } from "../schema/types";
@@ -17,8 +17,6 @@ import { isSessionDeleted } from "../store/tombstones";
 
 export const BACKFILL_DEFAULT_LIMIT = 25;
 export const BACKFILL_MAX_LIMIT = 100;
-export const BACKFILL_MAX_ASSETS = 1000;
-export const BACKFILL_MAX_BODY_BYTES = 1024 * 1024;
 
 /** Categorical failure: `message` is safe to return to clients. */
 export class BackfillError extends Error {
