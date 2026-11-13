@@ -33,8 +33,20 @@ const spanCarries = (entry: Record<string, any>, value: unknown) => {
   return !!span && !!needle && span.includes(needle);
 };
 
-/** Widgets whose whole payload is embedded in the matched span the message text carries. */
-const SPAN_WIDGETS = new Set(["writing_block_final_output", "app_block", "code_block"]);
+/** Widgets with a typed payload; each is ignored only when the span carries what the payload holds. */
+const widgetCarried = (entry: Record<string, any>, data: Record<string, any>): boolean => {
+  switch (data.widget_type) {
+    case "writing_block_final_output": case "app_block": case "code_block": return spanHolds(entry, data.content);
+    // A math expression: the span has to contain it.
+    case "graphable_function_v2_learning_block_parameterized": return spanCarries(entry, data.content);
+    // A form the assistant asked the user to fill in; every question has to be in the span.
+    case "imagegen_ask_user_input": {
+      const questions = list(data.questions).map(q => rec(q).question);
+      return questions.length > 0 && questions.every(q => spanCarries(entry, q));
+    }
+    default: return false;
+  }
+};
 
 /** The span must be at least as long as the content it is said to hold; a shorter one cannot carry it. */
 const spanHolds = (entry: Record<string, any>, content: unknown) => {
@@ -73,7 +85,7 @@ function fromReference(entry: Record<string, any>): Citation[] | null {
         return data.points.filter((point: unknown) => str(rec(point).name))
           .map((point: unknown) => cite(type, rec(point).name, rec(rec(point).entity).website_url, rec(point).address));
       }
-      return SPAN_WIDGETS.has(data.widget_type) && spanHolds(entry, data.content) ? [] : null;
+      return widgetCarried(entry, data) ? [] : null;
     }
     // Interface layout. Lists of quoted sources inside it are the only content.
     case "dil": return list(rec(rec(entry.dil).initialState).items).filter(item => str(rec(item).source_url))
@@ -86,8 +98,18 @@ function fromReference(entry: Record<string, any>): Citation[] | null {
       const data = rec(entry.entity_data);
       return str(data.address) || str(data.website_url) ? [cite(type, entry.name, data.website_url ?? rec(entry.metadata).map_url, data.address)] : [];
     }
-    case "followup_a": return spanCarries(entry, entry.alt) ? [] : null;
-    // alt_text and map are deliberately not handled: redacted samples do not show what they hold.
+    case "followup_a": case "alt_text": return spanCarries(entry, entry.alt) ? [] : null;
+    // A list of places: name, address and site, like the map widget's points.
+    case "map": {
+      // One unnamed place means the layout changed: alert rather than drop it.
+      const places = Array.isArray(entry.entities) ? entry.entities : [];
+      const name = (place: unknown) => rec(place).name ?? rec(rec(place).entity).name;
+      if (!places.length || !places.every((place: unknown) => str(name(place)))) return null;
+      return places.map((place: unknown) => {
+        const e = rec(rec(place).entity);
+        return cite(type, name(place), e.website_url, e.address ?? rec(rec(place).extra_params).address);
+      });
+    }
     default: return null;
   }
 }

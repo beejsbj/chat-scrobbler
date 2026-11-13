@@ -144,6 +144,51 @@ test("tether_browsing_display with no content is ignored, one with content still
   expect(unknownTypes(full)).toEqual(["tether_browsing_display"]);
 });
 
+test("alt_text is ignored only when the matched span carries the alt, map lists become citations", () => {
+  const span = "\ue200entity\ue202[\"city\",\"Bergen\",\"city in Norway\"]\ue201";
+  const message = parseWith({ content_references: [
+    ref({ type: "alt_text", matched_text: span, alt: "Bergen", prompt_text: "Bergen", render_as: null }),
+    ref({ type: "map", matched_text: "\ue200map\ue201", entities: [
+      { id: "e1", name: "Harbour Cafe", latitude: 1, longitude: 2, entity: { name: "Harbour Cafe", address: "1 Quay St", website_url: "https://cafe.example.org", provider_url: "" }, extra_params: { address: "1 Quay St" } },
+      { id: "e2", name: "Old Bakery", entity: { name: "Old Bakery", address: null, website_url: null }, extra_params: { address: "2 Quay St" } },
+      { id: "e3", name: "Harbour Cafe", entity: { website_url: "https://cafe.example.org" } }] }),
+  ] });
+  expect(unknownTypes(message)).toEqual([]);
+  expect(citations(message).map(b => [b.provider_type, b.title, b.url, b.text])).toEqual([
+    ["map", "Harbour Cafe", "https://cafe.example.org", "1 Quay St"],
+    ["map", "Old Bakery", null, "2 Quay St"],
+  ]);
+  const odd = parseWith({ content_references: [
+    ref({ type: "alt_text", matched_text: "something else", alt: "Bergen" }),
+    ref({ type: "map", entities: [] }),
+    ref({ type: "map", entities: [{ id: "e1", latitude: 1 }] }),
+    ref({ type: "map", entities: "nope" }),
+  ] });
+  expect(unknownTypes(odd)).toEqual(["alt_text", "map", "map", "map"]);
+});
+
+test("widgets whose payload sits in the span are ignored, a span that cannot hold it keeps alerting", () => {
+  const expr = "f(x) = x^2";
+  const form = { type: "client_defined_widget", category: "imagegen_ask_user_input", data: { widget_type: "imagegen_ask_user_input", questions: [
+    { type: "free_text", question: "What should it look like?", free_text_placeholder: "Describe it" },
+    { type: "single_select", question: "Which style?", options: ["Sketch", "Photo"], visual_options: [{ asset_id: "a1", label: "Sketch", image_url: "https://img.example.org/a.png" }] }] } };
+  const message = parseWith({ content_references: [
+    ref({ type: "client_defined_widget", matched_text: `{"content":"${expr}","widget":"graph"}`, alt: "graph", data: { widget_type: "graphable_function_v2_learning_block_parameterized", content: expr, encoded_content: "ZnooeCk=" } }),
+    ref({ ...form, matched_text: JSON.stringify(form.data) }),
+    ref({ type: "client_defined_widget", matched_text: "x".repeat(120), data: { widget_type: "app_block", content: "y".repeat(100), title: "App" } }),
+    ref({ type: "client_defined_widget", matched_text: "x".repeat(120), data: { widget_type: "code_block", content: "y".repeat(100), language: "js" } }),
+  ] });
+  expect(unknownTypes(message)).toEqual([]);
+  expect(message.blocks.map(b => b.type)).toEqual(["text"]);
+  const odd = parseWith({ content_references: [
+    ref({ type: "client_defined_widget", matched_text: "short", data: { widget_type: "graphable_function_v2_learning_block_parameterized", content: expr } }),
+    ref({ ...form, matched_text: "unrelated span" }),
+    ref({ type: "client_defined_widget", matched_text: JSON.stringify({ q: 1 }), data: { widget_type: "imagegen_ask_user_input", questions: "nope" } }),
+  ] });
+  expect(unknownTypes(odd)).toEqual(["client_defined_widget:graphable_function_v2_learning_block_parameterized",
+    "client_defined_widget:imagegen_ask_user_input", "client_defined_widget:imagegen_ask_user_input"]);
+});
+
 test("types nobody has seen, and shapes that do not match, still alert under a distinct label", () => {
   const message = parseWith({ content_references: [
     ref({ type: "brand_new_reference", payload: 1 }),
