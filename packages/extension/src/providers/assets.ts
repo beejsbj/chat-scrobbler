@@ -163,7 +163,7 @@ function mergeDeclarations(candidates: ProviderAssetCandidate[]): void {
   }
 }
 
-function estimatedBase64Bytes(data: string): number {
+export function estimatedBase64Bytes(data: string): number {
   const padding = data.endsWith("==") ? 2 : data.endsWith("=") ? 1 : 0;
   return Math.max(0, Math.floor(data.length * 3 / 4) - padding);
 }
