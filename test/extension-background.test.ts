@@ -635,3 +635,66 @@ test("open-tab sync selects the active Gemini page so its DOM media can be captu
     expect(selected).toEqual([2]);
   } finally { tabs.query = oldQuery; tabs.sendMessage = oldSend; }
 });
+
+function geminiPage(...ids: string[]) {
+  return { ok: true, next_after: "z", sessions: ids.map(id => ({ source_id: id, references: [{ pointer: `blob:${id}`, message_id: "m", filename: null, content_type: null }] })) };
+}
+const backfillResult = (request: any) => ({ ok: true, result: { sessions: request.page.sessions.length, attempted: request.page.sessions.length,
+  captured: request.page.sessions.length - 1, unavailable: 1, next_after: request.page.next_after } });
+
+async function runBackfill(tabList: any[], page: unknown, respond: (id: number, request: any) => unknown = (_id, request) => backfillResult(request)) {
+  const tabs = chrome.tabs as any;
+  const oldQuery = tabs.query, oldSend = tabs.sendMessage;
+  const pageFetches: string[] = [];
+  const sent: Array<{ id: number; sessions: string[] }> = [];
+  globalThis.fetch = (async (input: any) => { pageFetches.push(String(input)); return Response.json(page); }) as unknown as typeof fetch;
+  tabs.query = (_query: any, done: any) => done(tabList);
+  tabs.sendMessage = (id: number, request: any, done: any) => {
+    sent.push({ id, sessions: request.page.sessions.map((s: any) => s.source_id) });
+    done(respond(id, request));
+  };
+  try {
+    const response = await sendRuntimeMessage({ type: "SCROBBLER_BACKFILL_OPEN_TABS" });
+    return { response, pageFetches, sent };
+  } finally { tabs.query = oldQuery; tabs.sendMessage = oldSend; }
+}
+
+test("Gemini backfill routes each session to the tab that shows its chat, fetching the page once", async () => {
+  const { response, pageFetches, sent } = await runBackfill([
+    { id: 1, url: "https://gemini.google.com/app/aaa" },
+    { id: 2, url: "https://gemini.google.com/app/bbb" },
+    { id: 3, url: "https://gemini.google.com/app/ccc" },
+  ], geminiPage("bbb", "ccc", "zzz"));
+  expect(pageFetches).toHaveLength(1);
+  expect(sent).toEqual([{ id: 2, sessions: ["bbb"] }, { id: 3, sessions: ["ccc"] }, { id: 1, sessions: ["zzz"] }]);
+  expect(response).toMatchObject({ ok: true, results: [{ provider: "gemini", sessions: 3, attempted: 3, captured: 0, unavailable: 3, next_after: "z" }] });
+  expect(((storageData["scrobbler.status"] as any).providers.gemini.lastBackfill)).toMatchObject({ sessions: 3, next_after: "z" });
+});
+
+test("Gemini backfill fails the page without moving the cursor when the owning tab fails", async () => {
+  storageData["scrobbler.status"] = { lastCaptureAt: null, capturesPosted: 0, providers: { gemini: { lastSync: null, lastVisitSync: null, lastResult: null, lastError: null, lastBackfill: { next_after: "old", sessions: 0, attempted: 0, captured: 0, unavailable: 0, completed_at: "t" } } } };
+  const { response } = await runBackfill([
+    { id: 1, url: "https://gemini.google.com/app/aaa" },
+    { id: 2, url: "https://gemini.google.com/app/bbb" },
+  ], geminiPage("aaa", "bbb"), (id, request) => id === 2 ? { ok: false, error: "boom" } : backfillResult(request));
+  expect(response).toMatchObject({ ok: false, error: "boom" });
+  expect(((storageData["scrobbler.status"] as any).providers.gemini.lastBackfill.next_after)).toBe("old");
+});
+
+test("Gemini backfill skips a discarded tab that owns a chat and still reaches a live tab", async () => {
+  const { sent } = await runBackfill([
+    { id: 1, url: "https://gemini.google.com/app/aaa", discarded: true },
+    { id: 2, url: "https://gemini.google.com/app/bbb" },
+  ], geminiPage("aaa"));
+  expect(sent).toEqual([{ id: 2, sessions: ["aaa"] }]);
+});
+
+test("ChatGPT and Claude backfill still send the whole page to the first tab only", async () => {
+  const page = { ok: true, next_after: "z", sessions: [{ source_id: "a", references: [] }, { source_id: "b", references: [] }] };
+  const { sent, pageFetches } = await runBackfill([
+    { id: 1, url: "https://chatgpt.com/c/b" }, { id: 2, url: "https://chatgpt.com/c/a" },
+    { id: 3, url: "https://claude.ai/chat/a" }, { id: 4, url: "https://claude.ai/chat/b" },
+  ], page);
+  expect(pageFetches).toHaveLength(2);
+  expect(sent).toEqual([{ id: 1, sessions: ["a", "b"] }, { id: 3, sessions: ["a", "b"] }]);
+});
