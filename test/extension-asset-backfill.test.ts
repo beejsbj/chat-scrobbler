@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { backfillProviderAssets } from "../packages/extension/src/asset-backfill";
-import type { AssetBackfillPage } from "../packages/shared/src";
+import { BACKFILL_MAX_ASSETS, type AssetBackfillPage } from "../packages/shared/src";
 
 test("backfill fetches canonical pointers at a bounded pace and commits only successes", async () => {
   const pauses: number[] = [];
@@ -46,4 +46,40 @@ test("backfill fails the page when the commit acknowledgement does not match", a
     { ok: true, linked: 2, raw_ref: 7 }, { ok: false, linked: 2, raw_ref: null }]) {
     await expect(runWithReceipt(receipt)).rejects.toThrow(/acknowledgement/);
   }
+});
+
+const bigProvider = (count: number): any => ({ source: "chatgpt", backfillAssets: async (_id: string, refs: any[]) =>
+  refs.slice(0, count).map(ref => ({ pointer: ref.pointer, message_id: ref.message_id, local_path: "assets/chatgpt/c/hash", sha256: "a".repeat(64) })) });
+const bigPage = (count: number): AssetBackfillPage => ({ ok: true, next_after: "c", sessions: [{ source_id: "c",
+  references: Array.from({ length: count }, (_, i) => ({ pointer: `p${i}`, message_id: "m", filename: null, content_type: null })) }] });
+
+test("backfill commits a large session in chunks no bigger than the receiver limit", async () => {
+  const sizes: number[] = [];
+  const result = await backfillProviderAssets(bigProvider(2500), bigPage(2500), {
+    uploadAsset: async () => { throw new Error("unused"); }, pause: async () => {},
+    commit: async value => { sizes.push(value.assets.length); return { ok: true, linked: value.assets.length, raw_ref: null }; },
+  });
+  expect(BACKFILL_MAX_ASSETS).toBe(1000);
+  expect(sizes).toEqual([1000, 1000, 500]);
+  expect(result).toMatchObject({ attempted: 2500, captured: 2500, unavailable: 0, next_after: "c" });
+});
+
+test("backfill fails the page without committing later chunks when one chunk fails", async () => {
+  const sizes: number[] = [];
+  await expect(backfillProviderAssets(bigProvider(2500), bigPage(2500), {
+    uploadAsset: async () => { throw new Error("unused"); }, pause: async () => {},
+    commit: async value => {
+      sizes.push(value.assets.length);
+      if (sizes.length === 2) throw new Error("rejected");
+      return { ok: true, linked: value.assets.length, raw_ref: null };
+    },
+  })).rejects.toThrow("rejected");
+  expect(sizes).toEqual([1000, 1000]);
+});
+
+test("backfill checks the receipt of every chunk against that chunk", async () => {
+  await expect(backfillProviderAssets(bigProvider(1001), bigPage(1001), {
+    uploadAsset: async () => { throw new Error("unused"); }, pause: async () => {},
+    commit: async () => ({ ok: true, linked: 1000, raw_ref: null }),
+  })).rejects.toThrow(/acknowledgement/);
 });

@@ -1,4 +1,6 @@
 import type { ProviderSource, UploadedAsset } from "./raw-capture";
+/** Most assets one POST /assets/backfill may carry; the receiver rejects more and the extension commits in chunks of this size. */
+export const BACKFILL_MAX_ASSETS = 1000;
 export interface AssetBackfillReference {
   pointer: string;
   message_id: string | null;

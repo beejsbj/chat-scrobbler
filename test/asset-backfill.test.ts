@@ -208,3 +208,20 @@ test("POST rejects bad input and unknown targets categorically", async () => {
   const big = await post(c, JSON.stringify({ source: "chatgpt", source_id: "exists", assets: [], pad: "x".repeat(1024 * 1024 + 1) }));
   expect(big.status).toBe(413);
 }, 30_000);
+
+test("POST re-committing an already linked asset is idempotent (a retried chunk)", async () => {
+  const c = setup();
+  await ingestChatgpt(c, "conv-c");
+  const stored = blob(c, "conv-c", "chunk-bytes");
+  const rawAssets = (ref: string) => (readRawCapture(c.rawDir, ref).assets ?? []).map(a => a.pointer);
+  const first = { pointer: "file-service://file-EXP", message_id: "a1", filename: "gen.png", content_type: "image/png", sha256: stored.sha256 };
+  const one = await (await post(c, { source: "chatgpt", source_id: "conv-c", assets: [first] })).json() as any;
+  expect(one).toMatchObject({ ok: true, linked: 1 });
+  expect(rawAssets(one.raw_ref)).toEqual(["file-service://file-EXP"]);
+
+  const again = await (await post(c, { source: "chatgpt", source_id: "conv-c", assets: [first] })).json() as any;
+  expect(again).toMatchObject({ ok: true, linked: 1 });
+  expect(rawAssets(again.raw_ref)).toEqual(["file-service://file-EXP"]);
+  const blocks = readSession(c.canonicalDir, "chatgpt", "conv-c").messages.find(m => m.id === "a1")!.blocks as any[];
+  expect(blocks[0]).toMatchObject({ sha256: stored.sha256, local_path: `assets/chatgpt/conv-c/${stored.sha256}.png` });
+}, 30_000);

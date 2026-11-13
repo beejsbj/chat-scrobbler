@@ -1,4 +1,4 @@
-import type { AssetBackfillCommit, AssetBackfillPage } from "../../shared/src";
+import { BACKFILL_MAX_ASSETS, type AssetBackfillCommit, type AssetBackfillPage } from "../../shared/src";
 import type { ProviderAdapter, ProviderSyncOptions } from "./providers/types";
 
 interface BackfillOptions {
@@ -32,7 +32,12 @@ export async function backfillProviderAssets(provider: ProviderAdapter, page: As
     const assets = await provider.backfillAssets(session.source_id, session.references, {
       uploadAsset: options.uploadAsset, beforeFetch: () => pause(1000),
     });
-    if (assets.length) assertBackfillReceipt(await options.commit({ source: provider.source, source_id: session.source_id, assets }), assets.length);
+    // Chunks commit in order and a failed one throws, so the page never advances past an unsaved chunk.
+    // Re-linking an already-linked asset is idempotent on the receiver, so a retried session is safe.
+    for (let i = 0; i < assets.length; i += BACKFILL_MAX_ASSETS) {
+      const chunk = assets.slice(i, i + BACKFILL_MAX_ASSETS);
+      assertBackfillReceipt(await options.commit({ source: provider.source, source_id: session.source_id, assets: chunk }), chunk.length);
+    }
     attempted += session.references.length;
     captured += assets.length;
     unavailable += session.references.length - assets.length;
