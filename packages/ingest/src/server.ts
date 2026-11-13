@@ -295,7 +295,7 @@ export async function handleIngestRequest(req: Request, opts: IngestServerOption
       const source = readSource(body.source);
       const capture_failures = captureFailureReports(fat.indexPath, source, body.capture_failures, body.install_id);
       const sync_errors = syncIssueReports(fat.indexPath, source, body.last_sync_error, body.install_id);
-      const { count, ignored } = recordAssetFailures(fat.indexPath, source, body.asset_failures, opts.monitorStatePath);
+      const { count, ignored } = recordAssetFailures(fat.indexPath, source, body.asset_failures, opts.monitorStatePath, fat.canonicalDir);
       const statuses = conversationStatuses(indexFor(fat.indexPath), source, body.conversations);
       return json({ ok: true, statuses, capture_failures, sync_errors, ...(body.asset_failures === undefined ? {} : { asset_failures: count, ignored_assets: ignored }) });
     } catch (error) {
