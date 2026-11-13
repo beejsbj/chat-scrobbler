@@ -6,6 +6,7 @@ import { handleIngestRequest } from "../packages/ingest/src/server";
 import { liveMonitorReport } from "../src/monitor/live-report";
 import { monitorReport } from "../src/monitor/report";
 import { readMonitorState, recordAssetFailureOutcomes } from "../src/monitor/state";
+import { assetId, ignoreAsset } from "../src/monitor/asset-ignores";
 import { openIndex } from "../src/indexer/sqlite";
 import { reportablePointer } from "../packages/extension/src/providers/asset-outcomes";
 
@@ -131,4 +132,43 @@ test("deleting a session erases its asset outcome records", async () => {
       expect(db.query("SELECT source_id FROM asset_outcomes ORDER BY source_id").all()).toEqual([{ source_id: "c2" }]);
     } finally { db.close(); }
   } finally { logs.mockRestore(); rmSync(root, { recursive: true, force: true }); }
+});
+
+test("failure records not seen for 30 days are pruned when a later report writes, and ignores are kept", () => {
+  const { root, statePath } = setup();
+  try {
+    const dayMs = 24 * 3_600_000;
+    const t0 = Date.now() - 60 * dayMs;
+    const fail = (source_id: string, now: number, source = "gemini") =>
+      recordAssetFailureOutcomes(statePath, source, [{ source_id, message_id: "r1", reason: "asset_upload_failed", pointer: "p" }], now);
+    fail("stale", t0); fail("refreshed", t0); fail("ignored", t0);
+    ignoreAsset(statePath, assetId({ source: "gemini", source_id: "ignored", message_id: "r1", pointer: "p" }), t0);
+    fail("recent", t0 + 40 * dayMs);
+    const db = new Database(statePath, { readonly: true });
+    const ids = () => (db.query("SELECT source_id FROM asset_outcomes ORDER BY source_id").all() as Array<{ source_id: string }>).map(row => row.source_id);
+    try {
+      // The write that records "recent" pruned what was last seen more than 30 days earlier.
+      expect(ids()).toEqual(["recent"]);
+      // A still-failing asset that is reported again keeps its attempts across the prune.
+      fail("recent", t0 + 75 * dayMs);
+      fail("recent", t0 + 76 * dayMs);
+      expect(db.query("SELECT attempts FROM asset_outcomes WHERE source_id = 'recent'").get()).toEqual({ attempts: 3 });
+      expect(db.query("SELECT source_id FROM asset_ignores").all()).toEqual([{ source_id: "ignored" }]);
+    } finally { db.close(); }
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("a report that is entirely ignored assets still prunes stale failure records", () => {
+  const { root, statePath } = setup();
+  try {
+    const dayMs = 24 * 3_600_000;
+    const t0 = Date.now() - 60 * dayMs;
+    recordAssetFailureOutcomes(statePath, "gemini", [{ source_id: "stale", message_id: "r1", reason: "asset_upload_failed", pointer: "p" }], t0);
+    recordAssetFailureOutcomes(statePath, "gemini", [{ source_id: "gone", message_id: "r1", reason: "asset_upload_failed", pointer: "p" }], t0);
+    ignoreAsset(statePath, assetId({ source: "gemini", source_id: "gone", message_id: "r1", pointer: "p" }), t0);
+    const ignoredReport = recordAssetFailureOutcomes(statePath, "gemini", [{ source_id: "gone", message_id: "r1", reason: "asset_upload_failed", pointer: "p" }], t0 + 40 * dayMs);
+    expect(ignoredReport).toEqual(["p"]);
+    const db = new Database(statePath, { readonly: true });
+    try { expect(db.query("SELECT count(*) AS n FROM asset_outcomes").get()).toEqual({ n: 0 }); } finally { db.close(); }
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });

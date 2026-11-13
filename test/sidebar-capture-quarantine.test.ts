@@ -3,7 +3,7 @@
 // reconcile loop and the active-chat fast pass stop re-capturing a chat that keeps failing.
 import { afterEach, expect, test } from "bun:test";
 import { runSidebarBadges, type SidebarDeps } from "../packages/extension/src/sidebar/index";
-import { CAPTURE_FAILURE_BACKOFF_MS, FULL_RECONCILE_MIN_INTERVAL_MS } from "../packages/extension/src/sidebar/reconcile";
+import { CAPTURE_FAILURE_BACKOFF_MS, FAST_PATH_DEBOUNCE_MS, FULL_RECONCILE_MIN_INTERVAL_MS } from "../packages/extension/src/sidebar/reconcile";
 import type { ProviderAdapter } from "../packages/extension/src/providers";
 
 const CHAT_ID = "abc123def4567890";
@@ -21,6 +21,7 @@ class FakeElement {
   private readonly attrs = new Map<string, string>();
   constructor(readonly tagName: string) {}
   appendChild(child: FakeElement): FakeElement { this.children.push(child); return child; }
+  cloneNode(): FakeElement { const copy = new FakeElement(this.tagName); copy.textContent = this.textContent; return copy; }
   setAttribute(name: string, value: string): void { this.attrs.set(name, value); }
   getAttribute(name: string): string | null { return this.attrs.get(name) ?? null; }
   querySelector(selector: string): FakeElement | null {
@@ -170,4 +171,27 @@ test("new activity in a quarantined chat lifts the quarantine immediately", asyn
   fakes.mutate();
   await fakes.advance(FULL_RECONCILE_MIN_INTERVAL_MS + 1_000);
   expect(calls()).toBeGreaterThan(2);
+});
+
+test("the active-chat fast pass labels a first capture new and a later one update", async () => {
+  const fakes = installFakes();
+  const updatedAt = { value: "2026-10-17T00:00:00Z" };
+  const provider = {
+    source: "gemini",
+    listConversations: async () => [{ id: CHAT_ID, updatedAt: updatedAt.value }],
+    captureOne: async () => {},
+  } as unknown as ProviderAdapter;
+  const kinds: string[] = [];
+
+  // Auto-sync off keeps the full reconcile from capturing, so only the fast pass runs.
+  runSidebarBadges(provider, { ...deps, getAutoSync: async () => false, onCaptured: (_id, _title, kind) => { kinds.push(kind); } });
+  await fakes.advance(1_000);
+  fakes.mutate();
+  await fakes.advance(FAST_PATH_DEBOUNCE_MS + 1_000);
+  expect(kinds).toEqual(["new"]);
+
+  updatedAt.value = "2026-10-17T00:05:00Z";
+  fakes.mutate();
+  await fakes.advance(FAST_PATH_DEBOUNCE_MS + 1_000);
+  expect(kinds).toEqual(["new", "update"]);
 });

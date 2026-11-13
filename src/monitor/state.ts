@@ -8,6 +8,9 @@ import { createHash } from "node:crypto";
 import type { Source } from "../schema/types";
 import { isTerminalAssetFailure, MAX_ASSET_FAILURE_POINTER_CHARS } from "../../packages/shared/src/asset-failure";
 
+/** A failure record nobody has reported for this long is not being retried; a later report recreates it. A monitor window longer than this under-counts. */
+export const ASSET_OUTCOME_RETENTION_MS = 30 * 24 * 3_600_000;
+
 export interface AssetFailureRecord { source_id: string; message_id: string | null; reason: string; pointer?: string | null; }
 export interface AssetOutcomeIdentity { source: string; source_id: string; message_id: string | null; pointer: string; }
 /** `ignored` counts assets the owner stopped retries for; they are in neither transient nor terminal. */
@@ -34,6 +37,7 @@ export function incrementMonitorCounter(path: string, key: "asset_failures" | "e
 /**
  * Counts every report (attempt history) and upserts one row per asset identity. Assets the owner
  * ignored are not counted or recorded; their pointers come back so the extension can stop retrying.
+ * Every report also prunes records last seen over ASSET_OUTCOME_RETENTION_MS ago (never asset_ignores).
  */
 export function recordAssetFailureOutcomes(path: string, source: string, failures: AssetFailureRecord[], now = Date.now()): string[] {
   if (!failures.length) return [];
@@ -43,7 +47,9 @@ export function recordAssetFailureOutcomes(path: string, source: string, failure
     const isIgnored = (failure: AssetFailureRecord) => !!failure.pointer && ignored.has(ignoreKey(failure.source_id, failure.message_id, failure.pointer));
     const ignoredPointers = failures.filter(isIgnored).map(failure => failure.pointer!);
     failures = failures.filter(failure => !isIgnored(failure));
-    if (!failures.length) return ignoredPointers;
+    // After the upserts, so a record being re-reported now keeps its attempts.
+    const prune = () => db.run("DELETE FROM asset_outcomes WHERE last_seen < ?", [now - ASSET_OUTCOME_RETENTION_MS]);
+    if (!failures.length) { prune(); return ignoredPointers; }
     db.run("INSERT INTO counters VALUES ('asset_failures', ?) ON CONFLICT(key) DO UPDATE SET value = value + excluded.value", [failures.length]);
     db.run("INSERT INTO asset_buckets VALUES (?, ?) ON CONFLICT(hour) DO UPDATE SET count = count + excluded.count", [Math.floor(now / 3_600_000), failures.length]);
     for (const failure of failures) {
@@ -51,6 +57,7 @@ export function recordAssetFailureOutcomes(path: string, source: string, failure
         ON CONFLICT(source, source_id, message_id, pointer) DO UPDATE SET reason = excluded.reason, terminal = excluded.terminal, attempts = attempts + 1, last_seen = excluded.last_seen`,
         [source, failure.source_id, failure.message_id ?? "", failure.pointer ?? "", failure.reason, isTerminalAssetFailure(failure.reason) ? 1 : 0, now, now]);
     }
+    prune();
     return ignoredPointers;
   })());
 }

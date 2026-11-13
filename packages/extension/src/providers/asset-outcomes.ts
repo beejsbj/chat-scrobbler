@@ -1,15 +1,16 @@
-import { MAX_ASSET_FAILURE_POINTER_CHARS, type AssetFailureReason } from "../../../shared/src";
+import { DEFAULT_SYNC_PERIOD_MINUTES, MAX_ASSET_FAILURE_POINTER_CHARS, type AssetFailureReason } from "../../../shared/src";
 
 /**
  * Per-asset memory of capture outcomes. Every capture of a conversation re-walks all of
  * its media pointers; without this, a pointer the provider no longer serves is re-fetched
  * and re-reported on every pass. A failed asset is never given up on: every reason backs off
- * exponentially from one sync period (30 minutes) to a daily cap, and keeps retrying at that
+ * exponentially from just under one sync period (25 minutes) to a daily cap, and keeps retrying at that
  * cap until the owner marks the asset ignored at the receiver. A changed download input (a
  * fresh URL for the same pointer) is a new attempt and ignores the backoff. Successful
  * uploads clear the entry.
  */
-export const TRANSIENT_RETRY_BASE_MS = 30 * 60 * 1000;
+// A little under the sync period, so the first retry is due at the very next pass instead of the one after.
+export const TRANSIENT_RETRY_BASE_MS = (DEFAULT_SYNC_PERIOD_MINUTES - 5) * 60 * 1000;
 export const TRANSIENT_RETRY_MAX_MS = 24 * 60 * 60 * 1000;
 export const MAX_REMEMBERED_OUTCOMES = 5000;
 /** One storage key per asset, named by a digest of its identity: pointers can be whole data: URLs. */
@@ -70,6 +71,8 @@ export function nextAssetOutcome(previous: RememberedAssetOutcome | null, reason
 /** True while this asset should not be attempted. `input` digests the current candidate's download input. */
 export function skipRememberedAttempt(entry: RememberedAssetOutcome, now: number, maxBytes: number, input: string | null): boolean {
   if (entry.ignored) return true;
+  // A stamp in the future means the clock jumped forward and was corrected: it would hold the asset back for days.
+  if (entry.last_attempt_at > now) return false;
   if ((entry.input ?? null) !== input) return false;
   if (entry.reason === "asset_too_large" && entry.max_bytes !== null && maxBytes > entry.max_bytes) return false;
   return now < entry.last_attempt_at + transientRetryDelayMs(entry.attempts);

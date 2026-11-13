@@ -1,4 +1,5 @@
 import { expect, spyOn, test } from "bun:test";
+import { DEFAULT_SYNC_PERIOD_MINUTES } from "../packages/shared/src";
 import { uploadProviderAssets, type ProviderAssetCandidate } from "../packages/extension/src/providers/assets";
 import {
   assetOutcomeKey, createAssetOutcomeMemory, nextAssetOutcome, reportablePointer, skipRememberedAttempt,
@@ -120,10 +121,10 @@ test("outcome transitions: every reason backs off exponentially to a daily cap a
   const hour = 3_600_000;
   for (const reason of ["asset_expired", "asset_url_unavailable", "asset_upload_failed", "asset_download_failed"] as const) {
     let outcome = nextAssetOutcome(null, reason, 100, now);
-    expect(outcome).toMatchObject({ reason, attempts: 1, retry_after: now + 30 * 60_000 });
+    expect(outcome).toMatchObject({ reason, attempts: 1, retry_after: now + 25 * 60_000 });
     const delays: number[] = [];
     for (let i = 0; i < 9; i++) { delays.push(outcome.retry_after! - now); outcome = nextAssetOutcome(outcome, reason, 100, now); }
-    expect(delays.map(ms => ms / 60_000)).toEqual([30, 60, 120, 240, 480, 960, 1440, 1440, 1440]);
+    expect(delays.map(ms => ms / 60_000)).toEqual([25, 50, 100, 200, 400, 800, 1440, 1440, 1440]);
     expect(skipRememberedAttempt(outcome, now + 24 * hour - 1, 100, null)).toBe(true);
     expect(skipRememberedAttempt(outcome, now + 24 * hour, 100, null)).toBe(false);
     // Years later the asset is still retried: failure alone never ends retries.
@@ -139,8 +140,8 @@ test("outcome transitions: every reason backs off exponentially to a daily cap a
 test("an entry written by the 30 day rest build wakes on the backoff schedule, not at its stored retry time", () => {
   const now = 1_000_000;
   const legacy = { reason: "asset_expired" as const, attempts: 2, last_attempt_at: now, retry_after: now + 30 * 24 * 3_600_000, max_bytes: null };
-  expect(skipRememberedAttempt(legacy, now + 3_600_000 - 1, 100, null)).toBe(true);
-  expect(skipRememberedAttempt(legacy, now + 3_600_000, 100, null)).toBe(false);
+  expect(skipRememberedAttempt(legacy, now + 50 * 60_000 - 1, 100, null)).toBe(true);
+  expect(skipRememberedAttempt(legacy, now + 50 * 60_000, 100, null)).toBe(false);
   const legacyTooLarge = { reason: "asset_too_large" as const, attempts: 1, last_attempt_at: now, retry_after: null, max_bytes: 100 };
   expect(skipRememberedAttempt(legacyTooLarge, now + 30 * 60_000, 100, null)).toBe(false);
 });
@@ -328,4 +329,20 @@ test("an outcome memory that cannot read or write never stops the rest of the ba
     expect(result.failures).toMatchObject([{ reason: "asset_expired", pointer: "file-a" }]);
     expect(result.uploaded).toHaveLength(1);
   } finally { log.mockRestore(); }
+});
+
+test("the first transient retry lands on the next sync pass after one period, not the one after", () => {
+  const syncPeriodMs = DEFAULT_SYNC_PERIOD_MINUTES * 60 * 1000;
+  expect(transientRetryDelayMs(1)).toBeLessThan(syncPeriodMs);
+  expect(transientRetryDelayMs(1)).toBeGreaterThanOrEqual(syncPeriodMs - 10 * 60 * 1000);
+  expect(transientRetryDelayMs(2)).toBe(2 * transientRetryDelayMs(1));
+});
+
+test("an outcome stamped in the future (clock jumped forward, then corrected) no longer holds the asset back", () => {
+  const now = 1_000_000_000_000;
+  const entry = { ...nextAssetOutcome(null, "asset_download_failed", 1000, now + 5 * 24 * 3_600_000), retry_after: null };
+  expect(skipRememberedAttempt(entry, now, 1000, null)).toBe(false);
+  expect(skipRememberedAttempt({ ...entry, last_attempt_at: now }, now + 1000, 1000, null)).toBe(true);
+  // The owner's ignore is a decision, not a schedule: a future stamp does not undo it.
+  expect(skipRememberedAttempt({ ...entry, ignored: true }, now, 1000, null)).toBe(true);
 });
