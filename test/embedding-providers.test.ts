@@ -592,3 +592,9 @@ test("408, 429 and 5xx from the embedder stay transient", async () => {
     expect((await provider.embed("notes").catch(e => e)).failure).toEqual({ kind: "item", reason: `http_${status}` });
   }
 });
+
+test("a decode timeout from the embedder is load-dependent, so it is not a permanent rejection", async () => {
+  const provider = new EmbeddingGemmaProvider({ baseUrl: "http://embed.example:4320", model: "gemma-test" });
+  mockEmbeddingGemmaFetch({ error: { code: "decode_timeout" } }, 422);
+  expect((await provider.embedAsset({ type: "video", path: "/archive/clip.mp4" }).catch(e => e)).failure).toEqual({ kind: "item", reason: "http_422" });
+});

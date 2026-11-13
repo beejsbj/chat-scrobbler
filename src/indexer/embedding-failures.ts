@@ -21,6 +21,8 @@ export async function httpFailure(response:Response):Promise<EmbeddingFailure> {
   if(status<400 || status>=500 || status===408 || status===429) {await response.body?.cancel();return {kind:'item',reason:`http_${status}`};}
   let code:unknown;
   try {code=((await response.json()) as {error?:{code?:unknown}}|null)?.error?.code;} catch {}
+  // A decode that ran out of time depends on load, not on the input: keep it on the transient path.
+  if(code==='decode_timeout')return {kind:'item',reason:`http_${status}`};
   return {kind:'rejected',reason:typeof code==='string' && /^[a-z][a-z0-9_]{0,39}$/.test(code) ? `rejected_${status}_${code}` : `rejected_${status}`};
 }
 export function failureRetry(kind:EmbeddingFailureKind,attempts:number,now:number,reason=kind==='timeout' ? 'request_timeout' : kind==='connection' ? 'connection_unavailable' : 'item_error') {

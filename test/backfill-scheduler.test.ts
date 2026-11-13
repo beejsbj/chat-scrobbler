@@ -219,3 +219,13 @@ test("rejected skips are retried once per process start, then wait for their tim
     } finally {await second.stop();}
   } finally {await first.stop();rmSync(root,{recursive:true,force:true});}
 });
+
+test("one scheduler requeues rejected skips on its first run only", async () => {
+  const {root,cfg}=setup();
+  let calls=0;
+  const scheduler=startEmbeddingBackfillScheduler({cfg,provider:{...p,embed:async()=>{calls++;throw new EmbeddingRequestError({kind:"rejected",reason:"rejected_400_media_unreadable"});}}});
+  try {
+    await scheduler.runNow(); expect(calls).toBe(4);
+    await scheduler.runNow(); await scheduler.runNow(); expect(calls).toBe(4);
+  } finally {await scheduler.stop();rmSync(root,{recursive:true,force:true});}
+});
