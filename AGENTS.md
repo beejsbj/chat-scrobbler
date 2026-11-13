@@ -58,7 +58,8 @@ bun run mcp:http             # read-only MCP over HTTP at /mcp (env MCP_HTTP_POR
 ```
 
 The release build writes the tag's version into the built extension manifest (`dist`
-only), so do not bump `packages/extension/static/manifest.json` per release. A tag must
+only), so do not bump `packages/extension/static/manifest.json` per release; its version
+is a development placeholder. A tag must
 look like `vX.Y.Z` or `vX.Y.Z-rc1`: a pre-release builds as `version` `X.Y.Z` with the
 full tag in `version_name`, and any other tag is rejected. `bun run build:dist` ships the
 source manifest unchanged.
