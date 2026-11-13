@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { HashEmbeddingProvider } from "../src/indexer/embedding-providers";
@@ -63,6 +63,16 @@ test("with an active provider only other providers and models are removed", asyn
   } finally { db.close(); }
 });
 
+test("a lost lease rolls an apply back", async () => {
+  const { db } = await seeded();
+  try {
+    const before = count(db, "message_vectors");
+    expect(() => pruneEmbeddings(db, null, { apply: true, assertLease: () => { throw new Error("lease lost"); } })).toThrow("lease lost");
+    expect(count(db, "message_vectors")).toBe(before);
+    expect(count(db, "asset_vectors")).toBe(2);
+  } finally { db.close(); }
+});
+
 function cli(root: string, ...args: string[]) {
   const config = join(root, "config.json");
   writeFileSync(config, "{}");
@@ -70,6 +80,16 @@ function cli(root: string, ...args: string[]) {
     env: { ...process.env, CHAT_SCROBBLER_CONFIG: config, CANONICAL_DIR: join(root, "canonical", "sessions"), INDEX_PATH: join(root, "index.db"), CHAT_SCROBBLER_EMBED_PROVIDER: "none" },
   });
 }
+
+test("CLI refuses a missing index instead of creating an empty one", () => {
+  const root = mkdtempSync(join(tmpdir(), "prune-embeddings-missing-"));
+  try {
+    const result = cli(root);
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr.toString()).toContain("index not found");
+    expect(existsSync(join(root, "index.db"))).toBe(false);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
 
 test("CLI is a dry run unless --apply is given, and refuses while a backfill holds the lease", async () => {
   const root = mkdtempSync(join(tmpdir(), "prune-embeddings-"));

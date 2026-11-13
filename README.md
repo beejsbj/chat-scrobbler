@@ -257,7 +257,9 @@ hits. Vectors stored by an earlier provider stay in the index until you remove
 them with `chat-scrobbler prune-embeddings` (a dry run) and
 `chat-scrobbler prune-embeddings --apply`. Nothing prunes automatically.
 Sessions and text are never touched, so turning the embedder back on rebuilds
-vectors from them.
+vectors from them. Until you prune, each new session still adds small, inert
+queue rows for the earlier provider. Prune in one transaction, so run it while
+`serve` is idle (it takes the same lease as the backfill and rolls back if it loses it).
 
 **An outside indexer reads the disk.** If you run your own embedding or search
 system, the on-disk layout under the data directory (`~/.local/share/chat-scrobbler/`,
@@ -267,7 +269,12 @@ or `/data` in the container) is the contract:
 raw/<source>/<encoded-source-id>/<timestamp>-<sha256>.json.gz   append-only captures, the source of truth
 canonical/sessions/<source>/<source_id>.json   one canonical session per file (src/schema/types.ts)
 canonical/assets/sha256/<xx>/<sha256>     content-addressed blobs; <sha256>.json beside each is its metadata
+canonical/assets/<source>/<source_id>/<sha256><ext>   per-session hard-link aliases of those blobs
 ```
+
+A session's attachment blocks point at an asset through `local_path` (relative to
+`canonical/`, e.g. `assets/chatgpt/<source_id>/<sha256>.png`) and usually carry a
+`sha256` too. Resolve `local_path` first: older sessions may have no `sha256`.
 
 `index/sessions.db` is derived and rebuildable; read it only if you want this
 tool's own FTS table. Asset blobs are mode `0600` owned by the user that runs

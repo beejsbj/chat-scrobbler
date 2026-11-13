@@ -21,7 +21,7 @@ const TABLES = [
 /** Remove stored vectors (and their backfill queue state) that the active provider does not own.
  * Sessions, text and the full text index are untouched; a later provider rebuilds vectors from them.
  * Dry runs count only. The caller holds the backfill lease so no writer races the deletes. */
-export function pruneEmbeddings(db: Database, keep: PruneScope | null, opts: { apply: boolean }): PruneReport {
+export function pruneEmbeddings(db: Database, keep: PruneScope | null, opts: { apply: boolean; assertLease?: () => void }): PruneReport {
   const report: PruneReport = { applied: opts.apply, keep, removed: {} as PruneReport["removed"] };
   const run = () => {
     for (const { table, kind, model } of TABLES) {
@@ -31,6 +31,7 @@ export function pruneEmbeddings(db: Database, keep: PruneScope | null, opts: { a
         ? db.run(`DELETE FROM ${table} ${where}`, params).changes
         : (db.query(`SELECT COUNT(*) AS n FROM ${table} ${where}`).get(...params) as { n: number }).n;
     }
+    opts.assertLease?.(); // A lost lease rolls the whole prune back.
   };
   if (opts.apply) db.transaction(run).immediate(); else run();
   return report;
