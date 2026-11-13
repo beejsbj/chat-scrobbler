@@ -36,6 +36,12 @@ const spanCarries = (entry: Record<string, any>, value: unknown) => {
 /** Widgets whose whole payload is embedded in the matched span the message text carries. */
 const SPAN_WIDGETS = new Set(["writing_block_final_output", "app_block", "code_block"]);
 
+/** The span must be at least as long as the content it is said to hold; a shorter one cannot carry it. */
+const spanHolds = (entry: Record<string, any>, content: unknown) => {
+  const span = str(entry.matched_text);
+  return !!span && (typeof content !== "string" || span.length >= content.length);
+};
+
 /** Citations for a recognized `content_references` entry, [] for a known-ignored one, null for unrecognized. */
 function fromReference(entry: Record<string, any>): Citation[] | null {
   const type = entry.type;
@@ -67,14 +73,19 @@ function fromReference(entry: Record<string, any>): Citation[] | null {
         return data.points.filter((point: unknown) => str(rec(point).name))
           .map((point: unknown) => cite(type, rec(point).name, rec(rec(point).entity).website_url, rec(point).address));
       }
-      return SPAN_WIDGETS.has(data.widget_type) ? [] : null;
+      return SPAN_WIDGETS.has(data.widget_type) && spanHolds(entry, data.content) ? [] : null;
     }
     // Interface layout. Lists of quoted sources inside it are the only content.
     case "dil": return list(rec(rec(entry.dil).initialState).items).filter(item => str(rec(item).source_url))
       .map(item => cite(type, rec(item).source_title, rec(item).source_url, rec(item).quote));
     // Pure display spans: nothing a reader sees that the message text does not already carry.
     case "hidden": return [];
-    case "entity": return spanCarries(entry, entry.name) ? [] : null;
+    case "entity": {
+      if (!spanCarries(entry, entry.name)) return null;
+      // Business lookups carry address and links that are not in the span.
+      const data = rec(entry.entity_data);
+      return str(data.address) || str(data.website_url) ? [cite(type, entry.name, data.website_url ?? rec(entry.metadata).map_url, data.address)] : [];
+    }
     case "followup_a": return spanCarries(entry, entry.alt) ? [] : null;
     // alt_text and map are deliberately not handled: redacted samples do not show what they hold.
     default: return null;

@@ -120,6 +120,16 @@ test("pure display metadata is known and ignored, with the payload still in the 
   expect(message.blocks.map(b => b.type)).toEqual(["text"]);
 });
 
+test("entity lookups with address or website keep them, and a span too short for its widget payload alerts", () => {
+  const span = "\ue200entity\ue202[\"place\",\"Cafe One\",\"x\"]\ue201";
+  const message = parseWith({ content_references: [
+    ref({ type: "entity", matched_text: span, name: "Cafe One", entity_data: { name: "Cafe One", address: "1 Main St", website_url: "https://cafe.example.org" } }),
+    ref({ type: "client_defined_widget", matched_text: "short", data: { widget_type: "code_block", content: "a much longer payload than the span" } }),
+  ] });
+  expect(citations(message)).toEqual([{ type: "citation", provider_type: "entity", url: "https://cafe.example.org", title: "Cafe One", text: "1 Main St" }]);
+  expect(unknownTypes(message)).toEqual(["client_defined_widget:code_block"]);
+});
+
 test("dil widgets that list quoted sources keep them as citations", () => {
   const message = parseWith({ content_references: [ref({ type: "dil", dil: { type: "Basic", initialState: { items: [
     { refid: "r1", quote: "A quote", subreddit: "r/x", source_title: "Thread", source_url: "https://forum.example.org/t/1", metadata_label: "x" }] } } })] });

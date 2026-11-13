@@ -84,8 +84,15 @@ export function blocksFromClaude(m: RawClaudeMsg, allAssets: AssetLookup = asset
     for (const [i, file] of (m[key] ?? []).entries()) {
       const pointer = file?.file_uuid ?? file?.uuid ?? file?.id ?? file?.attachment_uuid ?? file?.path;
       if (typeof pointer !== "string" || !pointer) { blocks.push(unknownBlock(file, childLocation(loc, key, i), key)); continue; }
-      // An image content block already links this upload.
-      if (linked.has(pointer)) continue;
+      // An image content block already links this upload; keep the name and type only the file entry carries.
+      if (linked.has(pointer)) {
+        const existing = blocks.find(block => block.type === "image" && block.pointer === pointer);
+        if (existing && "filename" in existing) {
+          existing.filename ??= file.file_name ?? file.filename ?? file.name ?? null;
+          existing.mime_type ??= file.content_type ?? file.mime_type ?? null;
+        }
+        continue;
+      }
       linked.add(pointer);
       const mime = file.content_type ?? file.mime_type ?? assets.byPointer(pointer)?.content_type;
       const type = typeof mime === "string" && mime.startsWith("image/") ? "image"

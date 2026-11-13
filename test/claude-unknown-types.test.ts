@@ -45,6 +45,15 @@ test("image content with a file uuid becomes an image block and is not duplicate
   expect(images[0]).toMatchObject({ pointer: "file-1", local_path: "assets/claude/cl-1/shot.png", mime_type: "image/png" });
 });
 
+test("an image block keeps the filename and type from files_v2 when no asset was captured", () => {
+  const message = parseWith(m => {
+    m.content.push({ type: "image", file_uuid: "file-2" });
+    m.files_v2 = [{ file_uuid: "file-2", file_name: "shot.png", mime_type: "image/png" }];
+  });
+  expect(message.blocks.filter(b => b.type === "image")).toEqual([expect.objectContaining({ pointer: "file-2", filename: "shot.png", mime_type: "image/png" })]);
+  expect(message.text).toContain("[image: shot.png]");
+});
+
 test("image content without a pointer stays unknown", () => {
   const message = parseWith(m => { m.content.push({ type: "image", source: { type: "base64", media_type: "image/png", data: "AAAA" } }); });
   expect(unknownTypes(message)).toEqual(["image"]);
