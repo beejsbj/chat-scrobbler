@@ -1,5 +1,6 @@
 import { DetailFailureStreak } from "./detail-failure-streak";
-import { ProviderDetailError, DeterministicCaptureError, TransientSyncError } from "./sync-errors";
+import { ProviderDetailError, DeterministicCaptureError, ProviderListingEmptyError, TransientSyncError } from "./sync-errors";
+import { readSidebarIds, waitForSidebarIds, type ListingDiagnostic } from "./gemini-sidebar";
 import { logSyncFailure, SyncFailureTracker } from "./sync-failures";
 /**
  * Gemini scrobbler provider.
@@ -68,6 +69,11 @@ export interface GeminiPageContext {
   /** Returns conversation IDs extracted from the sidebar anchors. */
   listConversationIds(): string[];
   /**
+   * Waits (bounded) for the sidebar to render, then lists. Gemini fills the sidebar after load and a
+   * background tab may be slow, so sync uses this when present instead of the immediate read.
+   */
+  awaitConversationIds?(): Promise<{ ids: string[]; diagnostic: ListingDiagnostic }>;
+  /**
    * Returns the WIZ_global_data fields needed to build the batchexecute request.
    * Returns null if not available (e.g., page not yet initialised).
    */
@@ -111,17 +117,8 @@ function matchWizField(text: string, key: string): string | null {
 /** Live browser implementation — reads from real DOM/window. */
 export function createBrowserPageContext(): GeminiPageContext {
   return {
-    listConversationIds() {
-      if (typeof document === "undefined") return [];
-      // Gemini sidebar: anchors whose href matches /app/<16-hex-id>
-      const anchors = Array.from(document.querySelectorAll<HTMLAnchorElement>('a[href^="/app/"]'));
-      const ids = new Set<string>();
-      for (const a of anchors) {
-        const match = a.getAttribute("href")?.match(/^\/app\/([0-9a-f]{16})(?:\/|$)/i);
-        if (match) ids.add(match[1]);
-      }
-      return [...ids];
-    },
+    listConversationIds: readSidebarIds,
+    awaitConversationIds: waitForSidebarIds,
     readWizData() {
       // Content scripts run in an ISOLATED world and cannot read the page's
       // window.WIZ_global_data JS global (it lives on the page's main-world
@@ -297,7 +294,12 @@ async function syncGemini(
   let failed = 0;
   let maxConversationUpdatedAt: string | null = null;
 
-  const ids = pageCtx.listConversationIds();
+  const listing = pageCtx.awaitConversationIds ? await pageCtx.awaitConversationIds() : { ids: pageCtx.listConversationIds(), diagnostic: undefined };
+  const ids = listing.ids;
+  // An empty list is only a clean sync when nothing was ever captured here (a brand-new account has no
+  // chats); otherwise it means the sidebar could not be read and must not look like "nothing new".
+  const hadCapturesBefore = !!options.lastSync || (options.captureFailures?.length ?? 0) > 0 || (options.detailFailureStreak?.length ?? 0) > 0;
+  if (ids.length === 0 && hadCapturesBefore) throw new ProviderListingEmptyError(listing.diagnostic);
 
   try {
   for (const id of ids) {
@@ -355,7 +357,7 @@ async function syncGemini(
 
   detailFailures.finish();
   failures.finishListing(false); // Sidebar absence cannot confirm deletion.
-  return { source: "gemini", scanned, captured, skipped, failed, captureFailures: failures.list(), detailFailureStreak: detailFailures.snapshot(), maxConversationUpdatedAt: failures.pendingListed ? options.lastSync ?? null : maxConversationUpdatedAt, account: null };
+  return { source: "gemini", scanned, captured, skipped, failed, captureFailures: failures.list(), detailFailureStreak: detailFailures.snapshot(), maxConversationUpdatedAt: failures.pendingListed ? options.lastSync ?? null : maxConversationUpdatedAt, account: null, ...(listing.diagnostic ? { listing: listing.diagnostic } : {}) };
   } catch (error) { return failures.abort(error); }
 }
 

@@ -1,6 +1,7 @@
 import type { ProviderSource, RawCapture, UploadedAsset, ConversationCaptureFailure, DetailFailureIdentity, AssetBackfillReference } from "../../../shared/src";
 import type { AssetUploadRequest } from "../messages";
 import { DeterministicCaptureError, ProviderDetailError, TransientSyncError } from "./sync-errors";
+import type { ListingDiagnostic } from "./gemini-sidebar";
 
 export interface ProviderSyncOptions {
   lastSync?: string | null;
@@ -31,6 +32,8 @@ export interface ProviderSyncResult {
   detailFailureStreak?: DetailFailureIdentity[];
   maxConversationUpdatedAt: string | null;
   account: string | null;
+  /** How the conversation list was read (Gemini sidebar); counts only. */
+  listing?: ListingDiagnostic;
 }
 
 export interface ProviderAdapter {

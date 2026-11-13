@@ -4,7 +4,7 @@ import type { SyncIssue } from "../../shared/src";
 
 function issue(value: unknown): SyncIssue {
   const v = value as SyncIssue;
-  if (!v || !["receiver_unavailable", "provider_detail_outage", "sync_unavailable"].includes(v.reason)
+  if (!v || !["receiver_unavailable", "provider_detail_outage", "provider_listing_empty", "sync_unavailable"].includes(v.reason)
     || typeof v.occurred_at !== "string" || !Number.isFinite(Date.parse(v.occurred_at))
     || v.status !== undefined && (!Number.isInteger(v.status) || v.status < 100 || v.status > 599)) throw new Error("invalid sync issue");
   return { reason: v.reason, occurred_at: v.occurred_at, ...(v.status === undefined ? {} : { status: v.status }) };

@@ -181,6 +181,8 @@ export interface ErrorResponse {
   ok: false;
   error: string;
   syncIssue?: SyncIssue;
+  /** Present with a `provider_listing_empty` issue: counts that tell why the list was empty. */
+  listingDiagnostic?: import("./providers/gemini-sidebar").ListingDiagnostic;
   detailFailureStreak?: DetailFailureIdentity[];
   captureFailures?: ConversationCaptureFailure[];
 }
