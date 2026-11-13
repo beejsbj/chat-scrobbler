@@ -306,3 +306,15 @@ test('skipped embedding retry timer defaults to a day and honors file and env co
     expect(loadConfig({env:{},configPath:path}).embeddingSkippedRetryMs).toBe(86_400_000);
   }finally{rmSync(root,{recursive:true,force:true});}
 });
+
+test("ownerName defaults to null and follows defaults < file < env", () => {
+  expect(loadConfig({ env: {}, configPath: null }).ownerName).toBeNull();
+  const dir = mkdtempSync(join(tmpdir(), "chat-scrobbler-owner-"));
+  try {
+    const file = join(dir, "config.json");
+    writeFileSync(file, JSON.stringify({ ownerName: "From File" }));
+    expect(loadConfig({ env: {}, configPath: file }).ownerName).toBe("From File");
+    expect(loadConfig({ env: { CHAT_SCROBBLER_OWNER_NAME: "From Env" }, configPath: file }).ownerName).toBe("From Env");
+    expect(loadConfig({ env: { CHAT_SCROBBLER_OWNER_NAME: "" }, configPath: file }).ownerName).toBeNull();
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});

@@ -40,7 +40,7 @@ class MeasurementTests(unittest.TestCase):
                        '--property=CPUQuota=200%', '--property=Nice=19',
                        '--property=RuntimeMaxSec=300']:
             self.assertIn(option, command)
-        self.assertTrue(any('bjs-544/venv-a/bin/python' in x for x in command))
+        self.assertTrue(any(x.endswith('venv-a/bin/python') for x in command))
         self.assertIn('--child', command)
 
 

@@ -3,7 +3,9 @@ from pathlib import Path
 import os
 
 MODEL_ID = 'litert-community/embeddinggemma-2-740m-litert-lm'
-SPIKE = Path('/mnt/server-ssd/spikes/bjs-544')
+# Developer-only workspace for the native verification scripts (venv, model snapshot,
+# fixtures). The service itself never reads it. Point it at your own checkout of that workspace.
+SPIKE = Path(os.environ.get('EMBEDDER_SPIKE_DIR', 'spike'))
 MODEL_REVISION = '24d962e906c7d332c6428e71c9676855024569e2'
 MODEL_FILENAME = 'embeddinggemma-2-740m.litertlm'
 MODEL = Path('/opt/models') / MODEL_FILENAME

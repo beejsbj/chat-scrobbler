@@ -11,13 +11,24 @@ import { handleGetAsset } from "./get-asset";
 
 export interface ServerOptions {
   indexPath: string; canonicalDir: string; embeddingProvider?: EmbeddingProvider | null;
+  /** Named in the server instructions; omitted or blank keeps them generic. */
+  ownerName?: string | null;
   /** HTTP transports share the service-owned connection and its active matrix. */
   database?: Database;
 }
 
 type ToolResult = { structuredContent?: Record<string, unknown>; content: { type: "text"; text: string }[]; isError?: boolean };
 
-const SERVER_INSTRUCTIONS = "Read-only archive of Burooj's AI chat history (ChatGPT, Claude, Gemini), captured continuously by the chat-scrobbler browser extension. Use it to recall past conversations: what was discussed, decided, or drafted in earlier chats across all providers. `search` blends full-text, semantic, and literal substring recall (set regex=true for regular expressions); `list_sessions` browses recent conversations; `get_session` fetches a full transcript by `source:source_id` id; `get_asset` returns an image or file from that transcript. Message hits carry provenance back to their exact session. The archive is append-only from this connector: nothing here can modify or delete history.";
+/** One short line: the name comes from operator config but lands in a client's prompt. */
+function ownerPossessive(ownerName: string | null | undefined): string {
+  const name = (ownerName ?? "").replace(/\s+/g, " ").trim().slice(0, 60).trim();
+  return name ? `${name}'s` : "the owner's";
+}
+
+function serverInstructions(ownerName: string | null | undefined): string {
+  const possessive = ownerPossessive(ownerName);
+  return `Read-only archive of ${possessive} AI chat history (ChatGPT, Claude, Gemini), captured continuously by the chat-scrobbler browser extension. Use it to recall past conversations: what was discussed, decided, or drafted in earlier chats across all providers. \`search\` blends full-text, semantic, and literal substring recall (set regex=true for regular expressions); \`list_sessions\` browses recent conversations; \`get_session\` fetches a full transcript by \`source:source_id\` id; \`get_asset\` returns an image or file from that transcript. Message hits carry provenance back to their exact session. The archive is append-only from this connector: nothing here can modify or delete history.`;
+}
 
 export async function handleSearch(db: Database, args: { query: string; source?: string; limit?: number; regex?: boolean }, embeddingProvider: EmbeddingProvider | null = null): Promise<ToolResult> {
   const report = args.regex
@@ -47,7 +58,7 @@ export function buildServer(opts: ServerOptions): McpServer {
   const db = opts.database ?? openIndex(opts.indexPath);
   const server = new McpServer(
     { name: "chat-scrobbler", version: "0.3.0" },
-    { instructions: SERVER_INSTRUCTIONS }
+    { instructions: serverInstructions(opts.ownerName) }
   );
 
   server.registerTool("search", {
@@ -79,6 +90,7 @@ if (import.meta.main) {
     indexPath: cfg.indexPath,
     canonicalDir: cfg.canonicalDir,
     embeddingProvider: embeddingProviderFromConfig(cfg),
+    ownerName: cfg.ownerName,
   });
   await server.connect(new StdioServerTransport());
 }

@@ -327,6 +327,7 @@ async function main(argv: string[]): Promise<void> {
           indexPath: cfg.indexPath,
           canonicalDir: cfg.canonicalDir,
           embeddingProvider: embeddingProviderFromConfig(cfg),
+          ownerName: cfg.ownerName,
         });
         await server.connect(new StdioServerTransport());
         // connect() keeps the process alive on stdio.

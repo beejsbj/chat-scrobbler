@@ -29,3 +29,19 @@ class ConfigTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class SpikeLocationTests(unittest.TestCase):
+    def spike(self, **env):
+        import subprocess
+        import sys
+        root = Path(__file__).resolve().parents[3]
+        clean = {k: v for k, v in os.environ.items() if k != 'EMBEDDER_SPIKE_DIR'}
+        result = subprocess.run([sys.executable, '-B', '-c',
+                                 'from services.embedder.config import SPIKE; print(SPIKE)'],
+                                cwd=root, env={**clean, **env}, capture_output=True, text=True, check=True)
+        return result.stdout.strip()
+
+    def test_spike_workspace_is_env_driven_with_a_host_neutral_default(self):
+        self.assertEqual(self.spike(EMBEDDER_SPIKE_DIR='/work/spike'), '/work/spike')
+        self.assertEqual(self.spike(), 'spike')
