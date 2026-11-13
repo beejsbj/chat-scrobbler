@@ -1,7 +1,8 @@
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { basename, dirname, join } from "node:path";
 import type { Source } from "../schema/types";
 import { listRawCaptures } from "./raw";
+import { newestRawVersion } from "./raw-latest";
 import { encodedSegment } from "./tombstones";
 
 export const SOURCES: Source[] = ["chatgpt", "claude", "gemini"];
@@ -27,6 +28,6 @@ export function latestRawReference(rawDir: string, source: string, sourceId: str
     const latest = JSON.parse(readFileSync(join(rawDir, encodedSegment(source), encodedSegment(sourceId), "latest.json"), "utf8"));
     const ref = join(dirname(refs[0]), latest.file);
     if (refs.includes(ref)) return ref;
-  } catch { /* Archives without a valid marker use arrival mtime. */ }
-  return refs.reduce((newest, ref) => statSync(join(rawDir, ref)).mtimeMs >= statSync(join(rawDir, newest)).mtimeMs ? ref : newest);
+  } catch { /* Archives without a valid marker use the same order as ingest's latestRaw. */ }
+  return join(dirname(refs[0]), newestRawVersion(join(rawDir, dirname(refs[0])), refs.map(ref => basename(ref)))!);
 }

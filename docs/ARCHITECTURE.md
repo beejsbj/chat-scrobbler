@@ -532,6 +532,7 @@ same name. `backups` and `restore` use the first entry as the primary target.
     gemini/<id>.json
   raw/
     <source>/<encoded-source-id>/<timestamp>-<sha256>.json.gz
+    <source>/<encoded-source-id>/latest.json   # which version arrived last
   config/
     <config-filename>.json  # optional, included when a config file is active
 ```
@@ -550,6 +551,19 @@ already-present raw counts and the kept-aside paths. If a restore fails partway,
 it still tries to erase restored files that belong to tombstoned sessions, but
 defers blob collection (logging `asset_cleanup_deferred`) because live references
 may not be restored yet; the next complete restore collects those blobs.
+
+A session's `latest.json` marker records the version ingest received last. Restore
+writes the snapshot's marker when the local store has none, or when the local marker
+is unusable, or when it names a version the snapshot also holds while the snapshot
+has seen strictly more: the snapshot's marker names a version the restore had to add,
+or the snapshot holds every local version (as on a rerun after an interrupted restore).
+Otherwise the local marker stays: local ingest wrote it. So reparse and asset
+backfill rebuild from the same version as before the backup. Without a marker
+(snapshots made before markers were backed up, or stores already restored from one),
+the newest version is the one with the latest `fetched_at` in its file name, not the
+newest mtime, which a restore rewrites. Versions that share a `fetched_at` were
+derived from one capture (asset backfill, Gemini media retention); the most enriched
+one wins, then mtime.
 
 **Restore guard**: `restoreBackup` refuses to write into a non-empty `canonicalDir`
 unless `force: true` is passed, to prevent accidental overwrites.
