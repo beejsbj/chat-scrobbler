@@ -36,8 +36,8 @@ import { logSyncFailure, SyncFailureTracker } from "./sync-failures";
  */
 
 import { buildRawCapture } from "../../../shared/src";
-import { assetReferences, uploadProviderAssets, type ProviderAssetCandidate } from "./assets";
-import { geminiApiAssetCandidates } from "./gemini-assets";
+import { assetReferences, configuredAssetLimit, uploadProviderAssets, type ProviderAssetCandidate } from "./assets";
+import { inlineDataCandidates, isDataUrl, scanGeminiApiAssets, type InlineDataMedia } from "./gemini-assets";
 import { captureHash } from "./capture-hash";
 import { isGeminiPageBlob } from "./gemini-page-blob";
 import {
@@ -169,14 +169,17 @@ export function createGeminiAdapter(
 ): ProviderAdapter {
   return {
     source: "gemini",
-    backfillAssets: (id, references, options) => {
-      const liveBlobs = new Set(geminiAssetCandidates(pageCtx, id)
+    backfillAssets: async (id, references, options) => {
+      const page = pageAssets(pageCtx, id);
+      const liveBlobs = new Set(page.candidates
         .filter(asset => asset.providerPageBlob && asset.url && isGeminiPageBlob(asset.url, id)).map(asset => asset.url));
+      // An inline image is only recoverable while the page still shows it.
+      const inline = new Map((await inlineDataCandidates(page.inline, id, await configuredAssetLimit())).map(asset => [asset.pointer, asset.inlineBase64]));
       return uploadProviderAssets(fetcher, options.uploadAsset, references.map(ref => ({
       source: "gemini", sourceId: id, pointer: ref.pointer, messageId: ref.message_id,
-      url: /^(https?:|data:|blob:|\/)/.test(ref.pointer) ? ref.pointer : null,
+      url: /^(https?:|blob:|\/)/.test(ref.pointer) ? ref.pointer : null,
       filename: ref.filename, contentType: ref.content_type,
-      providerPageBlob: liveBlobs.has(ref.pointer),
+      providerPageBlob: liveBlobs.has(ref.pointer), inlineBase64: inline.get(ref.pointer),
       fetchViaBackground: /^https?:/.test(ref.pointer) && !ref.pointer.startsWith("https://gemini.google.com/"),
       })), { beforeFetch: options.beforeFetch, retryRemembered: true });
     },
@@ -217,15 +220,20 @@ async function captureGeminiOne(
   if (wizData) {
     const payload = await fetchConversationRpc(fetcher, id, wizData);
     if (payload !== undefined) {
-      const apiCandidates = geminiApiAssetCandidates(payload, id);
+      const api = scanGeminiApiAssets(payload, id);
+      const page = pageAssets(pageCtx, id);
+      const maxBytes = await configuredAssetLimit();
+      const apiCandidates = [...api.candidates, ...await inlineDataCandidates(api.inline, id, maxBytes)];
       const apiPointers = new Set(apiCandidates.map(candidate => candidate.pointer));
-      const candidates = [...apiCandidates, ...geminiAssetCandidates(pageCtx, id).filter(candidate => !apiPointers.has(candidate.pointer))];
+      const candidates = [...apiCandidates, ...[...page.candidates, ...await inlineDataCandidates(page.inline, id, maxBytes)]
+        .filter(candidate => !apiPointers.has(candidate.pointer))];
       const hash = await captureHash("gemini", id, { payload, pointers: candidates.map(c => c.pointer) });
       if (skipUnchanged && hash.unchanged) return false;
       const assets = await uploadProviderAssets(
         fetcher,
         options.uploadAsset,
         candidates,
+        { maxBytes },
       );
       const emitted = await options.emitCapture(buildRawCapture({
         source: "gemini",
@@ -247,8 +255,18 @@ async function captureGeminiOne(
   throw new SyntaxError("Gemini conversation RPC returned no payload");
 }
 
-function geminiAssetCandidates(pageCtx: GeminiPageContext, sourceId: string): ProviderAssetCandidate[] {
-  return (pageCtx.readConversationAssets?.(sourceId) ?? []).map((asset) => ({
+/** Rendered page media: links as candidates, data: URLs apart so they are decoded and never become pointers. */
+function pageAssets(pageCtx: GeminiPageContext, sourceId: string): { candidates: ProviderAssetCandidate[]; inline: InlineDataMedia[] } {
+  const all = pageCtx.readConversationAssets?.(sourceId) ?? [];
+  return {
+    candidates: geminiAssetCandidates(pageCtx, sourceId, all),
+    inline: all.filter(asset => isDataUrl(asset.url) || isDataUrl(asset.pointer))
+      .map(asset => ({ dataUrl: isDataUrl(asset.url) ? asset.url : asset.pointer, messageId: null, mime: asset.contentType ?? null, filename: asset.filename ?? null })),
+  };
+}
+
+function geminiAssetCandidates(pageCtx: GeminiPageContext, sourceId: string, assets = pageCtx.readConversationAssets?.(sourceId) ?? []): ProviderAssetCandidate[] {
+  return assets.filter(asset => !isDataUrl(asset.url) && !isDataUrl(asset.pointer)).map((asset) => ({
     source: "gemini",
     sourceId,
     pointer: asset.pointer,
