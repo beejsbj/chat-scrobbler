@@ -196,6 +196,9 @@ Deletion writes the tombstone before it erases anything: if the second check fin
 none, a later deletion erases this write; if it finds one, ingest runs the same
 erasure itself and reports the session as deleted (`skipped_deleted`, or 410).
 Erasure tolerates running twice at once.
+`POST /status` asset failures follow the same rule: a report for a tombstoned session is not
+recorded or counted, and its pointers are answered in `ignored_assets` so the extension stops
+retrying; rows written just before a tombstone appears are cleared by the second check.
 
 Asset capture is best-effort and local-only. The browser extension fetches provider
 asset URLs in the authenticated page context, then uploads bytes to the local ingest
