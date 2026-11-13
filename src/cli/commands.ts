@@ -679,13 +679,16 @@ export interface RestoreCmdOpts {
 
 export async function runRestore(opts: RestoreCmdOpts): Promise<void> {
   const target = resolveTarget(opts.targetSpec ?? opts.cfg.backupTargets[0]);
-  const { restored_count } = await restoreBackup({
+  const { restored_count, restored_raw_count = 0, repaired_raw_count = 0, already_present_raw_count = 0, mismatch_raw_paths = [] } = await restoreBackup({
     target,
     snapshot: opts.snapshot,
     canonicalDir: opts.cfg.canonicalDir,
     force: opts.force,
   });
   opts.write(`Restored ${restored_count} session files into ${opts.cfg.canonicalDir}`);
+  opts.write(`Raw captures: ${restored_raw_count} restored, ${repaired_raw_count} repaired, ${already_present_raw_count} already present`);
+  if (repaired_raw_count) opts.write(`Repaired raw captures differed from the backup; their local copies were kept at:`);
+  for (const path of mismatch_raw_paths) opts.write(`  ${path}`);
   opts.write(`Run "chat-scrobbler unify" to rebuild the index.`);
 }
 

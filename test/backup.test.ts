@@ -297,7 +297,7 @@ test("backup and restore retain raw capture versions alongside canonical and ass
   const refs = listRawCaptures(restoredRaw, "chatgpt", "raw-session");
   expect(refs).toHaveLength(1);
   expect(readRawCapture(restoredRaw, refs[0])).toEqual(capture);
-  expect((await restoreBackup({ canonicalDir: restoredDir, target, snapshot, force: true })).restored_raw_count).toBe(1);
+  expect(await restoreBackup({ canonicalDir: restoredDir, target, snapshot, force: true })).toMatchObject({ restored_raw_count: 0, repaired_raw_count: 0, already_present_raw_count: 1 });
   expect(listRawCaptures(restoredRaw, "chatgpt", "raw-session")).toHaveLength(1);
 });
 
@@ -318,4 +318,68 @@ test("backup and the restore guard refuse an incomplete canonical scan", async (
   const { snapshot } = await createBackup({ canonicalDir: source, target, rawDir: makeTmp("raw-source-") });
   symlinkSync(join(backupDir, "unmounted"), join(emptyCanonical, "claude"));
   await expect(restoreBackup({ target, snapshot, canonicalDir: emptyCanonical, rawDir: makeTmp("raw-restore-") })).rejects.toThrow("canonical scan incomplete");
+});
+
+test("forced restore repairs a corrupt raw version, keeps the bad bytes aside, and leaves identical files alone", async () => {
+  const { readFileSync, statSync, utimesSync } = await import("node:fs");
+  const { storeRawCapture, listRawCaptures, readRawCapture, rawDirForCanonicalDir } = await import("../src/store/raw");
+  const { latestRawReference } = await import("../src/store/raw-catalog");
+  const { rawFiles } = await import("../src/backup/raw");
+  const { filesUnder } = await import("../src/store/asset-hashes");
+  const { rawObservations } = await import("../src/monitor/raw");
+  const { buildRawCapture } = await import("../packages/shared/src");
+  const root = makeTmp("backup-raw-repair-");
+  const canonicalDir = join(root, "canonical", "sessions");
+  const rawDir = rawDirForCanonicalDir(canonicalDir);
+  const intact = buildRawCapture({ source: "chatgpt", sourceId: "intact", endpoint: "/detail", payload: { a: 1 } });
+  const damaged = buildRawCapture({ source: "chatgpt", sourceId: "damaged", endpoint: "/detail", payload: { b: 2 } });
+  storeRawCapture(rawDir, intact);
+  const ref = storeRawCapture(rawDir, damaged);
+  const path = join(rawDir, ref);
+  const good = readFileSync(path);
+  const target = new LocalDirTarget(makeTmp("backup-raw-repair-target-"));
+  const { snapshot } = await createBackup({ canonicalDir, target });
+
+  const truncated = good.subarray(0, 10);
+  writeFileSync(path, truncated);
+  utimesSync(path, new Date("2026-01-01T00:00:00Z"), new Date("2026-01-01T00:00:00Z"));
+  const arrival = statSync(path).mtimeMs;
+  const result = await restoreBackup({ canonicalDir, target, snapshot, force: true });
+  expect(result).toMatchObject({ restored_raw_count: 0, repaired_raw_count: 1, already_present_raw_count: 1 });
+  expect(readFileSync(path)).toEqual(good);
+  expect(readRawCapture(rawDir, ref)).toEqual(damaged);
+  // Marker-less archives pick their latest version by mtime, so arrival order is kept.
+  expect(statSync(path).mtimeMs).toBe(arrival);
+  const aside = readdirSync(join(path, "..")).filter(name => name.includes(".mismatch-"));
+  expect(aside).toHaveLength(1);
+  expect(result.mismatch_raw_paths).toEqual([join(path, "..", aside[0])]);
+  expect(aside[0]).toMatch(/^.+-[a-f0-9]{64}\.json\.gz\.mismatch-[0-9TZ-]+$/);
+  expect(readFileSync(join(path, "..", aside[0]))).toEqual(truncated);
+
+  // The moved-aside file is not a capture version to any scan.
+  expect(listRawCaptures(rawDir, "chatgpt", "damaged")).toEqual([ref]);
+  expect(latestRawReference(rawDir, "chatgpt", "damaged")).toBe(ref);
+  expect(rawFiles(rawDir)).toHaveLength(2);
+  expect(filesUnder(rawDir, "**/*.json.gz")).toHaveLength(2);
+  expect(rawObservations(rawDir, canonicalDir).unreadable).toBe(0);
+  const again = await createBackup({ canonicalDir, target, snapshotName: "snapshot-after-repair" });
+  expect(again.manifest.raw_file_count).toBe(2);
+  expect(target.listFiles("snapshot-after-repair").some(file => file.includes(".mismatch-"))).toBe(false);
+
+  // A second forced restore finds nothing left to repair.
+  expect(await restoreBackup({ canonicalDir, target, snapshot, force: true })).toMatchObject({ restored_raw_count: 0, repaired_raw_count: 0, already_present_raw_count: 2 });
+
+  // A local copy that cannot be read at all is repaired too, not a reason to abort.
+  if (process.getuid?.() !== 0) {
+    const { chmodSync } = await import("node:fs");
+    writeFileSync(path, truncated);
+    chmodSync(path, 0o000);
+    expect(await restoreBackup({ canonicalDir, target, snapshot, force: true })).toMatchObject({ repaired_raw_count: 1, already_present_raw_count: 1 });
+    expect(readFileSync(path)).toEqual(good);
+  }
+
+  // Deleting the session erases the kept-aside bytes with the rest of its raw history.
+  const { deleteSessionArchive } = await import("../src/store/delete");
+  deleteSessionArchive(canonicalDir, "chatgpt", "damaged", rawDir);
+  expect(readdirSync(join(rawDir, "chatgpt")).includes("damaged")).toBe(false);
 });

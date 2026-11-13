@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import { listSessionFiles, sessionFilePath, writeSession } from "../store/sessions";
 import { isSessionDeleted, listTombstones, markSessionDeleted, tombstoneDir } from "../store/tombstones";
 import { deleteSessionArchives } from "../store/delete";
-import { backupRaw, rawFiles, restoreRaw } from "./raw";
+import { backupRaw, rawFiles, restoreRaw, type RestoreRawResult } from "./raw";
 import { rawDirForCanonicalDir } from "../store/raw";
 import { assetsDirForCanonicalDir } from "../store/assets";
 import type { BackupTarget } from "./target";
@@ -198,7 +198,14 @@ export interface RestoreBackupResult {
   restored_count: number;
   /** Number of asset files restored. */
   restored_asset_count?: number;
+  /** Raw versions written where none existed. */
   restored_raw_count?: number;
+  /** Raw versions whose local bytes differed from the backup; the old bytes are kept as `<name>.mismatch-<timestamp>`. */
+  repaired_raw_count?: number;
+  /** Raw versions already identical to the backup. */
+  already_present_raw_count?: number;
+  /** Where repaired versions' local bytes were kept. */
+  mismatch_raw_paths?: string[];
 }
 
 export async function restoreBackup(opts: RestoreBackupOptions): Promise<RestoreBackupResult> {
@@ -248,17 +255,27 @@ export async function restoreBackup(opts: RestoreBackupOptions): Promise<Restore
   } finally { rmSync(temp, { recursive: true, force: true }); }
 
   const assetsDir = assetsDirForCanonicalDir(canonicalDir);
-  for (const relPath of assetRelPaths) {
-    const relInAssets = relPath.slice("canonical/assets/".length);
-    const destAbs = join(assetsDir, relInAssets);
-    await target.getFile(snapshot, relPath, destAbs);
-  }
-
-  // Reference records are derived. Restored legacy aliases require one fresh ownership pass.
+  // Reference records are derived. Restored legacy aliases require one fresh ownership
+  // pass, so invalidate before copying any.
   invalidateReferences(assetsDir);
-  const restored_raw_count = await restoreRaw(opts.rawDir ?? rawDirForCanonicalDir(canonicalDir), target, snapshot, (source, id) => isSessionDeleted(canonicalDir, source, id));
+  let raw: RestoreRawResult;
+  try {
+    for (const relPath of assetRelPaths) {
+      const relInAssets = relPath.slice("canonical/assets/".length);
+      const destAbs = join(assetsDir, relInAssets);
+      await target.getFile(snapshot, relPath, destAbs);
+    }
+    raw = await restoreRaw(opts.rawDir ?? rawDirForCanonicalDir(canonicalDir), target, snapshot, (source, id) => isSessionDeleted(canonicalDir, source, id));
+  } catch (error) {
+    // Assets are copied for every session, so a failed restore still erases deleted
+    // sessions' files. Blob collection waits: live references may not be restored yet.
+    try { deleteSessionArchives(canonicalDir, listTombstones(canonicalDir), opts.rawDir, { deferBlobCleanup: true }); }
+    catch (cleanupError) { console.error(JSON.stringify({ event: "restore_cleanup_failed", error: cleanupError instanceof Error ? cleanupError.message : String(cleanupError) })); }
+    throw error;
+  }
   deleteSessionArchives(canonicalDir, listTombstones(canonicalDir), opts.rawDir);
-  return { restored_count: restoredCount, restored_asset_count: assetRelPaths.length, restored_raw_count };
+  return { restored_count: restoredCount, restored_asset_count: assetRelPaths.length, restored_raw_count: raw.restored,
+    repaired_raw_count: raw.repaired, already_present_raw_count: raw.already_present, mismatch_raw_paths: raw.kept_aside };
 }
 
 // ---------------------------------------------------------------------------
