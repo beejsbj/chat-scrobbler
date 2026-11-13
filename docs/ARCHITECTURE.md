@@ -343,6 +343,19 @@ and comments are searchable; edit patterns stay structured. Unknown parts retain
 to 16 KiB of JSON per part and 64 KiB inline JSON per session, plus raw references
 and JSON pointers. Known Gemini metadata stays in raw only. Version 1 files
 remain loadable. The contract is the `Block` types in `src/schema/types.ts`.
+
+Each provider type the parsers meet gets one of three dispositions, decided in code:
+parsed into an existing block (ChatGPT `content_references`, `citations` and
+`attachments` entries and Claude web citations become `citation` blocks, deduplicated
+per message; Claude `image` content becomes an `image` block), known and ignored
+(display-only spans whose payload the message text already carries, such as ChatGPT
+`hidden`, `entity` and `followup_a`, and Claude `token_budget` and `flag`; the raw
+capture keeps them), or unknown (anything unrecognized, which the monitor reports).
+The lists live in `src/parsers/chatgpt-references.ts` and `claude-parts.ts`. ChatGPT
+web-result images are cited by title and page url only: the extension never fetches
+them, so no image block or asset reference is invented. A parser change reaches
+existing sessions only through `reparse` (parsers are not versioned; reparse always
+rebuilds from the latest raw).
 Media blocks preserve the provider `pointer`; `local_path` is a
 canonical-relative asset path when bytes were captured successfully, otherwise null.
 

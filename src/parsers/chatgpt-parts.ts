@@ -32,6 +32,8 @@ export function blocksFromContent(content: any, assets: AssetLookup = assetLooku
     return [{ type: "reasoning", text: content.content, summary: true }];
   }
   if (ct === "code" || ct === "execution_output") return [toolCall("code")];
+  // A browsing display with no result or summary text has nothing to show; one that carries text stays unknown.
+  if (ct === "tether_browsing_display" && !content.result && !content.summary && content.assets == null) return [];
   if (ct === "model_editable_context" || ct === "user_editable_context") {
     const text = [content.model_set_context, content.profile, content.instructions]
       .filter((s: any) => typeof s === "string" && s.trim()).join("\n\n");

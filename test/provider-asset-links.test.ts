@@ -19,14 +19,14 @@ function gpt(messages: Array<{ id: string; role: string; content: any; metadata?
   return { source: "chatgpt", source_id: "c1", payload: { conversation_id: "c1", current_node: messages.at(-1)!.id, mapping }, assets };
 }
 
-test("ChatGPT links metadata attachments by file id and keeps the opaque entry", () => {
+test("ChatGPT links metadata attachments by file id without reporting them unknown", () => {
   const [s] = parseChatgpt(gpt([{ id: "u1", role: "user", content: { content_type: "text", parts: ["see file"] },
     metadata: { attachments: [{ id: "file-DOC1", name: "report.pdf", mime_type: "application/pdf" }] } }],
     [asset("file-service://file-DOC1", "assets/chatgpt/c1/doc111.pdf", { content_type: "application/pdf", filename: "report.pdf" })]));
   const files = media(s.messages[0].blocks);
   expect(files).toEqual([expect.objectContaining({ type: "file", pointer: "file-service://file-DOC1",
     local_path: "assets/chatgpt/c1/doc111.pdf", mime_type: "application/pdf" })]);
-  expect(s.messages[0].blocks.some(b => b.type === "unknown" && b.provider_type === "attachments")).toBe(true);
+  expect(s.messages[0].blocks.some(b => b.type === "unknown" && b.provider_type === "attachments")).toBe(false);
 });
 
 test("ChatGPT links assets by message_id once, even for a media-only tool message", () => {

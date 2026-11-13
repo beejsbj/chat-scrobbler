@@ -9,7 +9,8 @@ import { renderText } from "./render";
 import { blocksFromContent } from "./chatgpt-parts";
 import { blocksFromCanvas, canvasAncestor, type CanvasArtifact } from "./chatgpt-artifacts";
 export { blocksFromContent } from "./chatgpt-parts";
-import { childLocation, limitUnknownJson, mediaBlock, toolCall, unknownBlock, type ParserContext } from "./parts";
+import { childLocation, limitUnknownJson, mediaBlock, toolCall, type ParserContext } from "./parts";
+import { blocksFromMetadata } from "./chatgpt-references";
 import { addCapturedAssets, capturedAssetBlocks, linkedPointers, mediaKind } from "./captured-assets";
 
 export interface RawNode { id: string; message: any | null; parent: string | null; children?: string[]; }
@@ -121,11 +122,9 @@ export function sessionFromChatgptConversation(conv: RawConversation, opts: Chat
       blocks.push(...canvasBlocks);
       for (const block of canvasBlocks) if (block.type === "artifact") canvasArtifacts.set(node.id, block);
     }
-    for (const key of ["citations", "content_references", "attachments"]) {
-      const entries = m.metadata?.[key];
-      if (Array.isArray(entries)) entries.forEach((entry: unknown, i: number) =>
-        blocks.push(unknownBlock(entry, childLocation(location, "metadata", key, i), key)));
-      else if (entries != null) blocks.push(unknownBlock(entries, childLocation(location, "metadata", key), key));
+    const citationsSeen = new Set<string>();
+    for (const key of ["citations", "content_references", "attachments"] as const) {
+      blocks.push(...blocksFromMetadata(key, m.metadata?.[key], childLocation(location, "metadata", key), citationsSeen));
     }
     const msgId = m.id ?? node.id;
     blocks.push(...metadataMediaBlocks(m.metadata, blocks, scoped));
