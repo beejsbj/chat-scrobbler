@@ -20,9 +20,11 @@ test("Gemini API data: media is held apart from link candidates", () => {
   expect(geminiApiAssetCandidates(payload, "c")).toEqual([]);
 });
 
-test("Gemini keeps a descriptor's file id but never a data: download url", () => {
+test("a descriptor with a file id and a data: download url keeps the id as pointer and decodes the bytes", async () => {
   const payload = [[[["c_c", "r_user"], null, [["prompt"], 1, [{ type: "image", file_id: "file-1", download_url: dataUrl, mime_type: "image/png" }]], null]]];
-  expect(geminiApiAssetCandidates(payload, "c")).toMatchObject([{ pointer: "file-1", url: null }]);
+  expect(geminiApiAssetCandidates(payload, "c")).toEqual([]);
+  const { inline } = scanGeminiApiAssets(payload, "c");
+  expect(await inlineDataCandidates(inline, "c", 1024)).toMatchObject([{ pointer: "file-1", url: null, messageId: "r_user", inlineBase64: base64(PNG) }]);
 });
 
 test("inline data candidates use a short digest pointer and carry the bytes once", async () => {
@@ -31,8 +33,8 @@ test("inline data candidates use a short digest pointer and carry the bytes once
   expect(candidate.pointer.length).toBeLessThan(100);
 });
 
-test("inline data candidates drop oversized, non-base64 and non-media data URLs", async () => {
-  const media = ["data:image/svg+xml,%3Csvg%2F%3E", "data:text/html;base64,PGI+", `data:image/png;base64,${"A".repeat(400)}`, "data:image/png;base64,@@@@"]
+test("inline data candidates drop oversized, svg, non-base64 and non-media data URLs", async () => {
+  const media = ["data:image/svg+xml,%3Csvg%2F%3E", `data:image/svg+xml;base64,${base64(PNG)}`, "data:text/html;base64,PGI+", `data:image/png;base64,${"A".repeat(400)}`, "data:image/png;base64,@@@@"]
     .map(dataUrl => ({ dataUrl, messageId: null, mime: null, filename: null }));
   expect(await inlineDataCandidates(media, "c", 100)).toEqual([]);
 });

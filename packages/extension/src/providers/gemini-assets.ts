@@ -2,9 +2,14 @@ import { asObject } from "./types";
 import { estimatedBase64Bytes, type ProviderAssetCandidate } from "./assets";
 
 /** A `data:` media URL found in Gemini data. It is decoded through the inline path and never kept as a pointer or url. */
-export interface InlineDataMedia { dataUrl: string; messageId: string | null; mime: string | null; filename: string | null; }
+export interface InlineDataMedia {
+  dataUrl: string; messageId: string | null; mime: string | null; filename: string | null;
+  /** A descriptor's own stable id (file_id) replaces the digest pointer. */
+  pointer?: string;
+}
 
-const DATA_URL = /^data:((?:image|audio|video)\/[\w.+-]+);base64,([A-Za-z0-9+/]*={0,2})$/i;
+// SVG is page chrome (icons), never a Gemini upload or generation, and is active content.
+const DATA_URL = /^data:((?:image(?!\/svg)|audio|video)\/[\w.+-]+);base64,([A-Za-z0-9+/]*={0,2})$/i;
 export const isDataUrl = (value: string): boolean => /^data:/i.test(value);
 export const INLINE_POINTER_PREFIX = "gemini-inline:sha256:";
 
@@ -19,7 +24,7 @@ export async function inlineDataCandidates(media: InlineDataMedia[], sourceId: s
     const match = DATA_URL.exec(item.dataUrl);
     if (!match || match[2].length % 4 !== 0 || estimatedBase64Bytes(match[2]) > maxBytes) continue;
     const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(item.dataUrl));
-    const pointer = INLINE_POINTER_PREFIX + Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, "0")).join("");
+    const pointer = item.pointer ?? INLINE_POINTER_PREFIX + Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, "0")).join("");
     out.push({ source: "gemini", sourceId, pointer, url: null, messageId: item.messageId, filename: item.filename,
       contentType: item.mime ?? match[1].toLowerCase(), inlineBase64: match[2] });
   }
@@ -42,7 +47,7 @@ export function scanGeminiApiAssets(payload: unknown, sourceId: string): { candi
   if (!Array.isArray(payload) || !Array.isArray(payload[0])) return { candidates: out, inline };
   const add = (pointer: string, messageId: string | null, mime: string | null = null, filename: string | null = null, url = pointer) => {
     if (isDataUrl(pointer)) { inline.push({ dataUrl: pointer, messageId, mime, filename }); return; }
-    if (isDataUrl(url)) url = "";
+    if (isDataUrl(url)) { inline.push({ dataUrl: url, messageId, mime, filename, pointer }); return; }
     out.push({ source: "gemini", sourceId, pointer, messageId, url: downloadable(url) ? url : null,
       contentType: mime, filename, fetchViaBackground: /^https?:/.test(url) && !url.startsWith("https://gemini.google.com/") });
   };
