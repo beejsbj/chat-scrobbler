@@ -266,10 +266,14 @@ export async function restoreBackup(opts: RestoreBackupOptions): Promise<Restore
       await target.getFile(snapshot, relPath, destAbs);
     }
     raw = await restoreRaw(opts.rawDir ?? rawDirForCanonicalDir(canonicalDir), target, snapshot, (source, id) => isSessionDeleted(canonicalDir, source, id));
-  } finally {
-    // Assets are copied for every session, so a failed restore must still erase deleted ones.
-    deleteSessionArchives(canonicalDir, listTombstones(canonicalDir), opts.rawDir);
+  } catch (error) {
+    // Assets are copied for every session, so a failed restore still erases deleted
+    // sessions' files. Blob collection waits: live references may not be restored yet.
+    try { deleteSessionArchives(canonicalDir, listTombstones(canonicalDir), opts.rawDir, { deferBlobCleanup: true }); }
+    catch (cleanupError) { console.error(JSON.stringify({ event: "restore_cleanup_failed", error: cleanupError instanceof Error ? cleanupError.message : String(cleanupError) })); }
+    throw error;
   }
+  deleteSessionArchives(canonicalDir, listTombstones(canonicalDir), opts.rawDir);
   return { restored_count: restoredCount, restored_asset_count: assetRelPaths.length, restored_raw_count: raw.restored,
     repaired_raw_count: raw.repaired, already_present_raw_count: raw.already_present, mismatch_raw_paths: raw.kept_aside };
 }

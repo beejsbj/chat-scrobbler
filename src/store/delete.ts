@@ -15,8 +15,9 @@ export function deleteSessionArchive(canonicalDir: string, source: string, sourc
   return { ...result.sessions[0], blobsDeleted: result.blobsDeleted };
 }
 
-/** Restore erases all tombstoned files before one shared blob-ownership check. */
-export function deleteSessionArchives(canonicalDir: string, identities: SessionIdentity[], rawDir = rawDirForCanonicalDir(canonicalDir)) {
+/** Restore erases all tombstoned files before one shared blob-ownership check.
+ *  deferBlobCleanup skips that check when the store may be missing live references. */
+export function deleteSessionArchives(canonicalDir: string, identities: SessionIdentity[], rawDir = rawDirForCanonicalDir(canonicalDir), options: { deferBlobCleanup?: boolean } = {}) {
   const assetsDir = assetsDirForCanonicalDir(canonicalDir);
   const candidates = new Set<string>();
   let collectionFailed = false;
@@ -51,7 +52,8 @@ export function deleteSessionArchives(canonicalDir: string, identities: SessionI
     return { ...result, rawDeleted };
   });
   if (collectionFailed) console.error(JSON.stringify({ event: "asset_cleanup_deferred", reason: "unreadable_deleted_reference" }));
-  const unreferenced = collectionFailed || !candidates.size ? null : unreferencedAssetHashes(canonicalDir, rawDir, candidates, legacyMetadata);
+  else if (options.deferBlobCleanup && candidates.size) console.error(JSON.stringify({ event: "asset_cleanup_deferred", reason: "incomplete_restore" }));
+  const unreferenced = collectionFailed || options.deferBlobCleanup || !candidates.size ? null : unreferencedAssetHashes(canonicalDir, rawDir, candidates, legacyMetadata);
   let blobsDeleted = 0;
   if (unreferenced) for (const hash of unreferenced) {
     const blob = assetBlobPath(canonicalDir, hash);

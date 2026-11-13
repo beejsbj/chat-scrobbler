@@ -237,11 +237,13 @@ test("legacy ownership initialization defers blob cleanup when a provider direct
   } finally { errors.mockRestore(); }
 });
 
-test("a restore that fails partway still erases what it restored for tombstoned sessions", async () => {
+test("a restore that fails partway erases tombstoned sessions' files but defers blob cleanup", async () => {
   const opts = setup();
   writeSession(opts.canonicalDir, session("gone"));
   const privateAsset = storeCanonicalAsset({ canonicalDir: opts.canonicalDir, source: "chatgpt", sourceId: "gone", pointer: "p", bytes: Buffer.from("private") });
-  storeRawCapture(opts.rawDir, buildRawCapture({ source: "chatgpt", sourceId: "remaining", endpoint: "/detail", payload: {} }));
+  const shared = storeCanonicalAsset({ canonicalDir: opts.canonicalDir, source: "chatgpt", sourceId: "gone", pointer: "s", bytes: Buffer.from("shared") });
+  // The live session references the shared blob only through raw, which the failing restore never reaches.
+  storeRawCapture(opts.rawDir, buildRawCapture({ source: "chatgpt", sourceId: "remaining", endpoint: "/detail", payload: {}, assets: [{ pointer: "s", local_path: "", sha256: shared.sha256 }] }));
   const target = new LocalDirTarget(join(opts.root, "backups"));
   const { snapshot } = await createBackup({ ...opts, target });
   await handleIngestRequest(new Request("http://local/captures?source=chatgpt&source_id=gone", { method: "DELETE" }), opts);
@@ -253,6 +255,17 @@ test("a restore that fails partway still erases what it restored for tombstoned 
     }
   }
   const restored = setup();
-  await expect(restoreBackup({ ...restored, target: new RawOffline(join(opts.root, "backups")), snapshot })).rejects.toThrow("target offline");
+  const errors = (await import("bun:test")).spyOn(console, "error").mockImplementation(() => {});
+  try {
+    await expect(restoreBackup({ ...restored, target: new RawOffline(join(opts.root, "backups")), snapshot })).rejects.toThrow("target offline");
+    expect(JSON.stringify(errors.mock.calls)).toContain("asset_cleanup_deferred");
+  } finally { errors.mockRestore(); }
+  // The deleted session's own files are erased; blob collection waits for a complete store.
+  expect(existsSync(join(restored.root, "canonical", "assets", "chatgpt", "gone"))).toBe(false);
+  expect(existsSync(assetBlobPath(restored.canonicalDir, shared.sha256))).toBe(true);
+
+  // A complete restore then collects the private blob and keeps the shared one.
+  await restoreBackup({ ...restored, target, snapshot, force: true });
   expect(existsSync(assetBlobPath(restored.canonicalDir, privateAsset.sha256))).toBe(false);
+  expect(existsSync(assetBlobPath(restored.canonicalDir, shared.sha256))).toBe(true);
 });

@@ -517,7 +517,9 @@ the original mtime. The `.mismatch-` suffix keeps it out of every `*.json.gz`
 scan (version listing, reparse, backup, monitor); deleting the session erases it
 with the rest of the raw directory. `restore` reports restored, repaired and
 already-present raw counts and the kept-aside paths. If a restore fails partway,
-it still erases restored files that belong to tombstoned sessions.
+it still tries to erase restored files that belong to tombstoned sessions, but
+defers blob collection (logging `asset_cleanup_deferred`) because live references
+may not be restored yet; the next complete restore collects those blobs.
 
 **Restore guard**: `restoreBackup` refuses to write into a non-empty `canonicalDir`
 unless `force: true` is passed, to prevent accidental overwrites.
