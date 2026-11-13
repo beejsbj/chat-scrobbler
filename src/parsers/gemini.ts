@@ -38,6 +38,7 @@ import { addCapturedAssets, capturedAssetBlocks } from "./captured-assets";
 import { renderText } from "./render";
 import { childLocation, limitUnknownJson, type ParserContext } from "./parts";
 import { geminiTextParts, geminiOpaqueSlots, geminiCandidates } from "./gemini-parts";
+import { uploadBlock } from "./gemini-uploads";
 
 // Epoch seconds + nanoseconds [s, ns] array -- the timestamp type Gemini uses.
 type GeminiTimestamp = [number, number] | null | undefined;
@@ -139,9 +140,10 @@ export function parseGemini(raw: unknown, context: ParserContext = {}): Session[
     // --- User message ---
     const at = childLocation(loc, 0, i);
     const userMeta = Array.isArray(turn[2]) ? turn[2] : [];
-    const userBlocks = [...geminiTextParts(userMeta[0], childLocation(at, 2, 0)),
-      ...geminiOpaqueSlots(userMeta, [0], childLocation(at, 2), "gemini.user")];
     const userMsgId = extractUserMsgId(turn);
+    const ownAssets = assetLookup.scoped([userMsgId]);
+    const userBlocks = [...geminiTextParts(userMeta[0], childLocation(at, 2, 0), files => files.map(file => uploadBlock(file, ownAssets))),
+      ...geminiOpaqueSlots(userMeta, [0], childLocation(at, 2), "gemini.user")];
     if (userMsgId) userBlocks.push(...capturedAssetBlocks(assetLookup, [userMsgId], userBlocks));
     if (userBlocks.length && userMsgId) {
       const userMsg: Message = {
