@@ -180,7 +180,9 @@ session references, so shared blobs survive. If reference records cannot be read
 blob cleanup is deferred and logged. A minimal tombstone stops reparse and asset
 backfill from recreating the session, and restores erase it again. Only a backup
 taken before the deletion, restored into a store without that tombstone, brings it
-back.
+back. The extension's delete control (`DELETE /captures`) and `chat-scrobbler
+delete` share `deleteSessionEverywhere` (`src/core/delete-session.ts`), which also
+drops the session's index rows, vectors and monitor asset outcomes.
 
 Asset capture is best-effort and local-only. The browser extension fetches provider
 asset URLs in the authenticated page context, then uploads bytes to the local ingest
@@ -572,6 +574,7 @@ The CLI is a thin frontend over the same core functions the MCP uses. Commands:
 | `get <id>` | Fetch session by id (`source:source_id`); `--format json|markdown` |
 | `list` | List sessions; `--source`, `--title`, `--limit`, `--json` |
 | `unify` | Rebuild SQLite index from canonical store |
+| `delete <id>` | Irreversibly erase one session (archive, private blobs, index rows) and tombstone it; `--dry-run`, `--yes`, `--json` |
 | `prune-embeddings` | Remove stored vectors the configured provider does not own (all, with provider `none`); dry run unless `--apply`; `--json` |
 | `reparse` | Rebuild from latest raw; `--source`, `--session`, `--dry-run`, `--json` |
 | `unknown-types` | Count opaque content by provider/type; `--source`, `--json` |
