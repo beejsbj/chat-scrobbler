@@ -4,7 +4,8 @@
 import { existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { Session } from "../schema/types";
-import { listSessionFiles } from "../store/sessions";
+import { scanSessionFiles } from "../store/sessions";
+import { isSessionDeleted } from "../store/tombstones";
 import { deleteIndexedSession, openIndex, indexSessionWithEmbeddings, type EmbeddingProvider } from "../indexer/sqlite";
 import { loadConfig } from "../config";
 import { embeddingProviderFromConfig } from "../indexer/embedding-providers";
@@ -13,14 +14,15 @@ export interface UnifyOptions { canonicalDir: string; indexPath: string; embeddi
 
 export async function runUnify(opts: UnifyOptions): Promise<number> {
   const canPrune = existsSync(opts.canonicalDir);
-  const files = listSessionFiles(opts.canonicalDir);
+  const scan = scanSessionFiles(opts.canonicalDir);
+  const files = scan.files;
 
   mkdirSync(dirname(opts.indexPath), { recursive: true });
   const db = openIndex(opts.indexPath);
   const pruneCandidates = db.query("SELECT id, source, source_id FROM sessions").all() as Array<{ id: string; source: string; source_id: string }>;
   let count = 0;
   const retained = new Set<string>();
-  let unreadable = false;
+  let unreadableFiles = 0;
   let consecutiveFailures = 0;
   let circuitOpen = false;
   const failureLimit = opts.embeddingFailureLimit ?? 3;
@@ -30,7 +32,7 @@ export async function runUnify(opts: UnifyOptions): Promise<number> {
       let session: Session;
       let snapshot: ReturnType<typeof statSync>;
       try { snapshot = statSync(f); session = JSON.parse(readFileSync(f, "utf8")) as Session; }
-      catch { unreadable = true; continue; }
+      catch { unreadableFiles++; continue; }
       retained.add(session.id);
       const result = await indexSessionWithEmbeddings(db, session, {
         canonicalDir: opts.canonicalDir,
@@ -49,10 +51,19 @@ export async function runUnify(opts: UnifyOptions): Promise<number> {
       count++;
     }
     // Refresh in place so failed embedding calls and concurrent readers keep
-    // their existing vectors. Prune absent sessions only after a complete read.
-    if (canPrune && !unreadable) db.transaction(() => {
-      const absent = pruneCandidates.filter(row => !retained.has(row.id) && !existsSync(join(opts.canonicalDir, row.source, `${row.source_id}.json`)));
-      if (absent.length && !opts.force && (!files.length || absent.length / pruneCandidates.length > 0.1)) {
+    // their existing vectors. Prune absent sessions only after a complete read:
+    // sessions in an unreadable directory or file look absent. A tombstone is
+    // positive evidence of deletion, so tombstoned rows go regardless.
+    const complete = !scan.unreadableDirs.length && !unreadableFiles;
+    if (canPrune) db.transaction(() => {
+      const deleted = pruneCandidates.filter(row => isSessionDeleted(opts.canonicalDir, row.source, row.source_id));
+      for (const row of deleted) deleteIndexedSession(db, row.source, row.source_id);
+      if (!complete) {
+        console.error(JSON.stringify({ event: "unify_prune_refused", reason: "incomplete_canonical_scan", unreadable_dirs: scan.unreadableDirs.length, unreadable_files: unreadableFiles }));
+        return;
+      }
+      const absent = pruneCandidates.filter(row => !retained.has(row.id) && !isSessionDeleted(opts.canonicalDir, row.source, row.source_id) && !existsSync(join(opts.canonicalDir, row.source, `${row.source_id}.json`)));
+      if (absent.length && !opts.force && (!files.length || absent.length / (pruneCandidates.length - deleted.length) > 0.1)) {
         console.error(JSON.stringify({ event: "unify_prune_refused", reason: files.length ? "prune_exceeds_10_percent" : "empty_canonical_store", candidates: absent.length, indexed_sessions: pruneCandidates.length }));
         return;
       }

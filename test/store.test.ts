@@ -91,3 +91,19 @@ test("canonical paths reject traversal while existing safe filenames keep resolv
     expect(readSession(root, "claude", legacy.source_id)).toEqual(legacy);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
+
+test("listSessionFiles refuses a partial listing but ignores stray files beside provider directories", async () => {
+  const { symlinkSync, writeFileSync } = await import("node:fs");
+  const { scanSessionFiles } = await import("../src/store/sessions");
+  const root = mkdtempSync(join(tmpdir(), "sess-scan-"));
+  try {
+    writeSession(root, session);
+    writeFileSync(join(root, "notes.txt"), "not a provider");
+    // Only provider directories can hold sessions, so an unreadable lost+found is not a gap.
+    symlinkSync(join(root, "unmounted"), join(root, "lost+found"));
+    expect(listSessionFiles(root)).toEqual([join(root, "claude", "cl-1.json")]);
+    symlinkSync(join(root, "unmounted"), join(root, "gemini"));
+    expect(() => listSessionFiles(root)).toThrow("canonical scan incomplete");
+    expect(scanSessionFiles(root)).toEqual({ files: [join(root, "claude", "cl-1.json")], unreadableDirs: [join(root, "gemini")] });
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});

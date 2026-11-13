@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runUnify } from "../src/cli/unify";
 import { writeSession } from "../src/store/sessions";
+import { markSessionDeleted } from "../src/store/tombstones";
 import { openIndex, searchMessages } from "../src/indexer/sqlite";
 import { makeSessionId, type Session } from "../src/schema/types";
 
@@ -261,4 +262,59 @@ test("unify skips vector replacement when canonical mtime or indexed revision ch
       expect((db.query("SELECT embedding FROM message_vectors").all() as Array<{embedding: Uint8Array}>).map(row => Array.from(decodeVector(row.embedding, 2)))).toEqual([[0,1], [0,1]]);
     } finally { db.close(); rmSync(dir, { recursive: true, force: true }); }
   }
+});
+
+test("unify keeps index rows for an unreadable provider directory, even when forced", async () => {
+  const { mkdirSync, symlinkSync, writeFileSync } = await import("node:fs");
+  const { spyOn } = await import("bun:test");
+  const { indexSession, listSessions } = await import("../src/indexer/sqlite");
+  const dir = mkdtempSync(join(tmpdir(), "unify-incomplete-"));
+  const opts = { canonicalDir: join(dir, "canonical", "sessions"), indexPath: join(dir, "index.db") };
+  const logs = spyOn(console, "error").mockImplementation(() => {});
+  const db = openIndex(opts.indexPath);
+  try {
+    for (let i = 0; i < 10; i++) writeSession(opts.canonicalDir, { ...sessionA, id: `chatgpt:kept-${i}`, source_id: `kept-${i}` });
+    indexSession(db, { ...sessionA, id: "claude:offline", source: "claude", source_id: "offline" });
+    indexSession(db, { ...sessionA, id: "chatgpt:erased", source_id: "erased" });
+    markSessionDeleted(opts.canonicalDir, { source: "chatgpt", source_id: "erased", deleted_at: "2026-11-12T00:00:00Z" });
+    // A provider directory behind a dangling link: readdir fails and its files look absent.
+    symlinkSync(join(dir, "unmounted", "claude"), join(opts.canonicalDir, "claude"));
+    await runUnify(opts);
+    await runUnify({ ...opts, force: true });
+    const ids = listSessions(db).map(row => row.id);
+    expect(ids).toContain("claude:offline");
+    // A tombstone is positive evidence of deletion, so its row goes even after a partial scan.
+    expect(ids).not.toContain("chatgpt:erased");
+    expect(JSON.stringify(logs.mock.calls)).toContain('{\\"event\\":\\"unify_prune_refused\\",\\"reason\\":\\"incomplete_canonical_scan\\",\\"unreadable_dirs\\":1,\\"unreadable_files\\":0}');
+
+    // A stray file beside the provider directories is not an incomplete scan.
+    rmSync(join(opts.canonicalDir, "claude"));
+    writeFileSync(join(opts.canonicalDir, "notes.txt"), "not a provider");
+    mkdirSync(join(opts.canonicalDir, "claude"));
+    await runUnify({ ...opts, force: true });
+    expect(listSessions(db).map(row => row.id)).not.toContain("claude:offline");
+  } finally { db.close(); logs.mockRestore(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("unify's 10% prune guard ignores tombstoned rows it has already pruned", async () => {
+  const { spyOn } = await import("bun:test");
+  const { indexSession, listSessions } = await import("../src/indexer/sqlite");
+  const dir = mkdtempSync(join(tmpdir(), "unify-guard-tombstones-"));
+  const opts = { canonicalDir: join(dir, "canonical", "sessions"), indexPath: join(dir, "index.db") };
+  const logs = spyOn(console, "error").mockImplementation(() => {});
+  const db = openIndex(opts.indexPath);
+  try {
+    for (let i = 0; i < 20; i++) {
+      indexSession(db, { ...sessionA, id: `chatgpt:erased-${i}`, source_id: `erased-${i}` });
+      markSessionDeleted(opts.canonicalDir, { source: "chatgpt", source_id: `erased-${i}`, deleted_at: "2026-11-12T00:00:00Z" });
+    }
+    for (let i = 0; i < 10; i++) {
+      indexSession(db, { ...sessionA, id: `chatgpt:live-${i}`, source_id: `live-${i}` });
+      if (i >= 3) writeSession(opts.canonicalDir, { ...sessionA, id: `chatgpt:live-${i}`, source_id: `live-${i}` });
+    }
+    // 3 of the 10 surviving rows look absent: 30%, not 3 of 30.
+    await runUnify(opts);
+    expect(listSessions(db).map(row => row.id).sort()).toEqual(Array.from({ length: 10 }, (_, i) => `chatgpt:live-${i}`).sort());
+    expect(JSON.stringify(logs.mock.calls)).toContain("prune_exceeds_10_percent");
+  } finally { db.close(); logs.mockRestore(); rmSync(dir, { recursive: true, force: true }); }
 });

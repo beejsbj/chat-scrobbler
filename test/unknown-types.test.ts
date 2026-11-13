@@ -43,3 +43,15 @@ test("unknown report groups legacy Gemini positional fallbacks by content catego
     ]);
   } finally { rmSync(root, { recursive: true, force: true }); }
 }, 30000);
+
+test("unknown report and monitor canonical scan fail loudly on an unreadable provider directory", async () => {
+  const { symlinkSync } = await import("node:fs");
+  const { canonicalObservations } = await import("../src/monitor/canonical");
+  const root = mkdtempSync(join(tmpdir(), "unknown-types-incomplete-"));
+  try {
+    writeSession(root, parseClaude(fixture)[0]);
+    symlinkSync(join(root, "unmounted"), join(root, "gemini"));
+    expect(() => unknownTypes(root)).toThrow("canonical scan incomplete");
+    expect(() => canonicalObservations(root, 0)).toThrow("canonical scan incomplete");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
