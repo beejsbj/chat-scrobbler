@@ -10,11 +10,14 @@ afterEach(() => {
   (globalThis as { document?: unknown }).document = originalDocument;
   (globalThis as { location?: unknown }).location = originalLocation;
 });
-beforeEach(() => { geminiListingTimings.timeoutMs = 60; geminiListingTimings.pollMs = 1; geminiListingTimings.settleMs = 5; });
+beforeEach(() => { geminiListingTimings.timeoutMs = 60; geminiListingTimings.pollMs = 1; geminiListingTimings.settleMs = 5; geminiListingTimings.hiddenTimeoutMs = 3_000; });
 
 const ID = "1a2b3c4d5e6f7a8b";
 const diagnostic: ListingDiagnostic = { ids: 0, appAnchors: 0, anchors: 3, containers: 1, hidden: true, readyState: "complete", waitedMs: 20_000, timedOut: true };
-const rpc = async () => new Response(")]}'\n\n" + JSON.stringify([["wrb.fr", "hNvQHb", JSON.stringify([["c"]]), null, null, null, "generic"]]));
+const rpc = async (url: string) => {
+  const id = url.includes("rpcids=MaZiqc") ? "MaZiqc" : "hNvQHb"; // the list RPC answers with no chats
+  return new Response(")]}'\n\n" + JSON.stringify([["wrb.fr", id, id === "MaZiqc" ? "[[]]" : JSON.stringify([["c"]]), null, null, null, "generic"]]));
+};
 
 function page(list: () => { ids: string[]; diagnostic?: ListingDiagnostic }): GeminiPageContext {
   return { listConversationIds: () => list().ids, awaitConversationIds: async () => ({ ids: list().ids, diagnostic: list().diagnostic ?? diagnostic }),
@@ -25,7 +28,7 @@ const sync = (ctx: GeminiPageContext, options: Record<string, unknown> = {}) => 
 test("an empty listing after the wait is a failure with its own reason once this install has synced Gemini before", async () => {
   const error = await sync(page(() => ({ ids: [] })), { lastSync: "2026-10-20T00:00:00Z" }).catch((e) => e);
   expect(error).toBeInstanceOf(ProviderListingEmptyError);
-  expect(syncErrorResponse(error)).toMatchObject({ ok: false, syncIssue: { reason: "provider_listing_empty" }, listingDiagnostic: diagnostic });
+  expect(syncErrorResponse(error)).toMatchObject({ ok: false, syncIssue: { reason: "provider_listing_empty" }, listingDiagnostic: { ...diagnostic, rpc: "zero_ids" } });
 });
 
 test("an empty listing is also a failure when earlier chat failures are on record", async () => {
@@ -35,13 +38,13 @@ test("an empty listing is also a failure when earlier chat failures are on recor
 
 test("a brand-new account (nothing ever synced) with no chats stays a clean sync but keeps the diagnostic", async () => {
   const result = await sync(page(() => ({ ids: [] })));
-  expect(result).toMatchObject({ scanned: 0, listing: diagnostic });
+  expect(result).toMatchObject({ scanned: 0, listing: { ...diagnostic, rpc: "zero_ids" } });
 });
 
 test("a non-empty listing syncs and carries the listing diagnostic", async () => {
   const seen = { ...diagnostic, ids: 1, timedOut: false };
   const result = await sync(page(() => ({ ids: [ID], diagnostic: seen })), { lastSync: "2026-10-20T00:00:00Z" });
-  expect(result).toMatchObject({ scanned: 1, captured: 1, listing: seen });
+  expect(result).toMatchObject({ scanned: 1, captured: 1, listing: { ...seen, source: "dom" } });
 });
 
 test("a page context without the wait hook keeps listing synchronously", async () => {
@@ -90,4 +93,19 @@ test("sidebar hrefs: relative, absolute, account-prefixed and query forms resolv
   expect(id(`app/${ID}`)).toBe(ID);
   expect(id("/app/0123456789abcdef0123")).toBe("0123456789abcdef0123");
   for (const bad of ["/app", "/app/download", "/app/abc", `/gem/${ID}`, `https://example.com/app/${ID}`, "javascript:void(0)", "", `/app/${ID}x`]) expect(id(bad)).toBeNull();
+});
+
+test("a loaded hidden tab gives the sidebar only a short wait; a visible or still-loading one the full wait", async () => {
+  geminiListingTimings.timeoutMs = 400; geminiListingTimings.hiddenTimeoutMs = 20;
+  fakeDocument(() => [], { hidden: true });
+  const hidden = await createBrowserPageContext().awaitConversationIds!();
+  expect(hidden.diagnostic).toMatchObject({ hidden: true, timedOut: true });
+  expect(hidden.diagnostic.waitedMs).toBeLessThan(200);
+  fakeDocument(() => [], { hidden: true });
+  (globalThis as { document: { readyState: string } }).document.readyState = "loading";
+  const loading = await createBrowserPageContext().awaitConversationIds!();
+  expect(loading.diagnostic.waitedMs).toBeGreaterThanOrEqual(400);
+  fakeDocument(() => []);
+  const visible = await createBrowserPageContext().awaitConversationIds!();
+  expect(visible.diagnostic.waitedMs).toBeGreaterThanOrEqual(400);
 });
