@@ -28,7 +28,10 @@ test("the compose keeps the embedder sandboxed and reachable only from the scrob
   expect(embedder.ports).toBeUndefined();
   expect(embedder.networks).toEqual(["embeddings"]);
   expect(plan.networks.embeddings.internal).toBe(true);
-  expect(embedder.volumes[1]).toMatchObject({ target: "/data/canonical/assets", read_only: true });
+  expect(embedder.volumes[1]).toMatchObject({ target: "/data/canonical/assets", read_only: true, bind: { create_host_path: false } });
+  expect(embedder.environment).toMatchObject({ EMBEDDER_ALLOWED_ROOTS: "/data/canonical/assets", EMBEDDER_NETWORK_MODE: "private-docker" });
+  expect(embedder.healthcheck.test[0]).toBe("CMD");
+  expect([embedder.init, embedder.restart, embedder.stop_grace_period]).toEqual([true, "unless-stopped", "300s"]);
   expect(plan.services.scrobbler.networks).toEqual(["default", "embeddings"]);
   expect(plan.services.scrobbler.depends_on.embedder).toEqual({ condition: "service_started", required: false });
   expect(plan.services.scrobbler.environment.CHAT_SCROBBLER_EMBED_BASE_URL).toBe("http://embedder:4320");
