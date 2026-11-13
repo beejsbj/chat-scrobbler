@@ -157,3 +157,25 @@ test("a deletion interrupted before blob collection is finished by the next run"
     expect(existsSync(assetBlobPath(s.canonicalDir, s.privateBlob.sha256))).toBe(false);
   } finally { chmodSync(blobDir, 0o700); rmSync(s.root, { recursive: true, force: true }); }
 });
+
+test("pending blob cleanup is flagged by the monitor and survives a backup restored into an empty store", async () => {
+  const { createBackup, restoreBackup } = await import("../src/backup/backup");
+  const { LocalDirTarget } = await import("../src/backup/local");
+  const { monitorReport } = await import("../src/monitor/report");
+  const s = setup();
+  const errors = (await import("bun:test")).spyOn(console, "error").mockImplementation(() => {});
+  try {
+    const [ref] = listRawCaptures(s.rawDir, "chatgpt", "gone");
+    writeFileSync(join(s.rawDir, ref), "not gzip");
+    expect(await runDeleteCmd({ cfg: s.cfg, id: "chatgpt:gone", yes: true, write: () => {} })).toBe("cleanup_pending");
+    expect((await monitorReport({ canonicalDir: s.canonicalDir, indexPath: s.indexPath, ingestToken: null })).failures).toContain("FAILED assets pending_blob_cleanup=1");
+
+    const target = new LocalDirTarget(join(s.root, "backups"));
+    const { snapshot } = await createBackup({ canonicalDir: s.canonicalDir, rawDir: s.rawDir, target });
+    const restored = join(s.root, "restored", "canonical", "sessions");
+    await restoreBackup({ canonicalDir: restored, rawDir: join(s.root, "restored", "raw"), target, snapshot });
+    expect(existsSync(assetBlobPath(restored, s.privateBlob.sha256))).toBe(false);
+    expect(existsSync(assetBlobPath(restored, s.shared.sha256))).toBe(true);
+    expect((await monitorReport({ canonicalDir: restored, indexPath: join(s.root, "restored", "index.db"), ingestToken: null })).failures.join("\n")).not.toContain("pending_blob_cleanup");
+  } finally { errors.mockRestore(); rmSync(s.root, { recursive: true, force: true }); }
+}, 30000);

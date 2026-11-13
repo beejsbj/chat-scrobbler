@@ -9,7 +9,7 @@ import { join, relative, basename, sep } from "node:path";
 import { tmpdir } from "node:os";
 import { listSessionFiles, sessionFilePath, writeSession } from "../store/sessions";
 import { isSessionDeleted, listTombstones, markSessionDeleted, tombstoneDir } from "../store/tombstones";
-import { deleteSessionArchives } from "../store/delete";
+import { deleteSessionArchives, pendingBlobCleanupDir, restorePendingBlobCleanup } from "../store/delete";
 import { backupRaw, rawFiles, restoreRaw, type RestoreRawResult } from "./raw";
 import { rawDirForCanonicalDir } from "../store/raw";
 import { assetsDirForCanonicalDir } from "../store/assets";
@@ -101,6 +101,10 @@ export async function createBackup(opts: CreateBackupOptions): Promise<CreateBac
 
   for (const file of listFilesRecursive(tombstoneDir(canonicalDir))) {
     await target.putFile(snapshot, `deleted/${relative(tombstoneDir(canonicalDir), file).split(sep).join("/")}`, file);
+  }
+  // Blobs whose deletion has not finished are in this snapshot too; their records let a restore finish it.
+  for (const file of listFilesRecursive(pendingBlobCleanupDir(canonicalDir)).filter(file => file.endsWith(".json"))) {
+    await target.putFile(snapshot, `pending-blob-cleanup/${relative(pendingBlobCleanupDir(canonicalDir), file).split(sep).join("/")}`, file);
   }
 
   const rawStats = await backupRaw(opts.rawDir ?? rawDirForCanonicalDir(canonicalDir), target, snapshot);
@@ -243,6 +247,15 @@ export async function restoreBackup(opts: RestoreBackupOptions): Promise<Restore
       sessionFilePath(canonicalDir, record.source, record.source_id);
       if (typeof record.deleted_at !== "string" || !Number.isFinite(Date.parse(record.deleted_at))) throw new Error("invalid deletion tombstone");
       markSessionDeleted(canonicalDir, record);
+    }
+    for (const file of files.filter(path => path.startsWith("pending-blob-cleanup/") && path.endsWith(".json"))) {
+      const parts = file.slice("pending-blob-cleanup/".length).split("/");
+      if (parts.length !== 2) throw new Error("invalid pending blob cleanup path");
+      const [source, id] = [decodeURIComponent(parts[0]), decodeURIComponent(parts[1].slice(0, -".json".length))];
+      if (!isSessionDeleted(canonicalDir, source, id)) continue;
+      const downloaded = join(temp, "pending.json");
+      await target.getFile(snapshot, file, downloaded);
+      restorePendingBlobCleanup(canonicalDir, source, id, JSON.parse(readFileSync(downloaded, "utf8")));
     }
     for (const relPath of sessionRelPaths.filter(f => !f.startsWith("canonical/assets/"))) {
       const downloaded = join(temp, "session.json");

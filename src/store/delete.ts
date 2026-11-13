@@ -17,10 +17,22 @@ export function deleteSessionArchive(canonicalDir: string, source: string, sourc
 
 // Blob candidates outlive the references they were found through, so a deletion
 // interrupted before blob collection (crash, error, deferral) can still finish.
+export const pendingBlobCleanupDir = (canonicalDir: string) => join(canonicalDir, ".pending-blob-cleanup");
 const pendingCleanupPath = (canonicalDir: string, source: string, id: string) =>
-  join(canonicalDir, ".pending-blob-cleanup", encodedSegment(source), `${encodedSegment(id)}.json`);
+  join(pendingBlobCleanupDir(canonicalDir), encodedSegment(source), `${encodedSegment(id)}.json`);
 export function hasPendingBlobCleanup(canonicalDir: string, source: string, id: string): boolean {
   return existsSync(pendingCleanupPath(canonicalDir, source, id));
+}
+export function countPendingBlobCleanup(canonicalDir: string): number {
+  return filesUnder(pendingBlobCleanupDir(canonicalDir), "*/*.json").length;
+}
+/** Restore merges backed-up records so a restored store can still finish that cleanup. */
+export function restorePendingBlobCleanup(canonicalDir: string, source: string, id: string, hashes: unknown): void {
+  sessionFilePath(canonicalDir, source, id);
+  if (!Array.isArray(hashes) || hashes.some(hash => typeof hash !== "string" || !/^[a-f0-9]{64}$/.test(hash))) throw new Error("invalid pending blob cleanup record");
+  const merged = new Set<string>(hashes);
+  readPendingBlobCleanup(canonicalDir, source, id, merged);
+  writeAtomicFile(pendingCleanupPath(canonicalDir, source, id), JSON.stringify([...merged]));
 }
 function readPendingBlobCleanup(canonicalDir: string, source: string, id: string, into: Set<string>): void {
   const file = pendingCleanupPath(canonicalDir, source, id);

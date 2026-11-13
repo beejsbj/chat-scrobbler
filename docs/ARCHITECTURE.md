@@ -186,7 +186,9 @@ drops the session's index rows, vectors and monitor asset outcomes. Before erasi
 anything, deletion records the session's blob candidates under
 `<canonicalDir>/.pending-blob-cleanup/`; the record is removed only after blob collection
 finishes, so a deletion that crashes or defers cleanup is finished by the next
-delete of that id or the next restore.
+delete of that id or the next restore. Backups carry these records (as
+`pending-blob-cleanup/` beside `deleted/`), and `monitor` reports
+`pending_blob_cleanup=N` while any remain.
 
 Asset capture is best-effort and local-only. The browser extension fetches provider
 asset URLs in the authenticated page context, then uploads bytes to the local ingest
