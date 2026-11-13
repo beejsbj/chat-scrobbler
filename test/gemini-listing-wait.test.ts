@@ -95,12 +95,16 @@ test("sidebar hrefs: relative, absolute, account-prefixed and query forms resolv
   for (const bad of ["/app", "/app/download", "/app/abc", `/gem/${ID}`, `https://example.com/app/${ID}`, "javascript:void(0)", "", `/app/${ID}x`]) expect(id(bad)).toBeNull();
 });
 
-test("a hidden tab gives the sidebar only a short wait, a visible one the full wait", async () => {
+test("a loaded hidden tab gives the sidebar only a short wait; a visible or still-loading one the full wait", async () => {
   geminiListingTimings.timeoutMs = 400; geminiListingTimings.hiddenTimeoutMs = 20;
   fakeDocument(() => [], { hidden: true });
   const hidden = await createBrowserPageContext().awaitConversationIds!();
   expect(hidden.diagnostic).toMatchObject({ hidden: true, timedOut: true });
   expect(hidden.diagnostic.waitedMs).toBeLessThan(200);
+  fakeDocument(() => [], { hidden: true });
+  (globalThis as { document: { readyState: string } }).document.readyState = "loading";
+  const loading = await createBrowserPageContext().awaitConversationIds!();
+  expect(loading.diagnostic.waitedMs).toBeGreaterThanOrEqual(400);
   fakeDocument(() => []);
   const visible = await createBrowserPageContext().awaitConversationIds!();
   expect(visible.diagnostic.waitedMs).toBeGreaterThanOrEqual(400);

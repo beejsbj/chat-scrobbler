@@ -76,13 +76,13 @@ const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve,
 /**
  * Poll until the sidebar lists conversations or the bound passes; after the first sighting, allow a short settle so a
  * partial render is not taken as the whole list. A hidden tab never renders the sidebar (seen live: nothing after 55 s),
- * so it gets the short `hiddenTimeoutMs` bound and sync moves on to the list RPC.
+ * so once the page has loaded it gets the short `hiddenTimeoutMs` bound and sync moves on to the list RPC. A page still loading keeps the full bound, since its bootstrap data may not be readable yet.
  */
 export async function waitForSidebarIds(): Promise<{ ids: string[]; diagnostic: ListingDiagnostic }> {
   const { timeoutMs, pollMs, settleMs } = geminiListingTimings;
   const started = Date.now();
   let ids = readSidebarIds();
-  const bound = () => isHidden() ? Math.min(timeoutMs, geminiListingTimings.hiddenTimeoutMs) : timeoutMs;
+  const bound = () => isHidden() && document.readyState === "complete" ? Math.min(timeoutMs, geminiListingTimings.hiddenTimeoutMs) : timeoutMs;
   while (ids.length === 0 && Date.now() - started < bound()) { await sleep(pollMs); ids = readSidebarIds(); }
   if (ids.length > 0 && settleMs > 0) { await sleep(settleMs); ids = readSidebarIds(); }
   return { ids, diagnostic: diagnose(ids.length, started, ids.length === 0) };
