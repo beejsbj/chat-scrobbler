@@ -15,7 +15,7 @@ import { AssetTransfers } from "./asset-transfers";
 import { uploadAssetToIngest } from "./asset-upload";
 import { knownPointerAsset, rememberPointer } from "./asset-pointer-cache";
 import { getInstallId } from "./install-id";
-import { ensureKeeperTab, recoverDeadTab, validateKeepers } from "./keeper-tabs";
+import { confirmRecovered, ensureKeeperTab, keepTabAlive, keeperTimings, recoverDeadTab, validateKeepers } from "./keeper-tabs";
 import { DeterministicCaptureError, TransientSyncError, ReceiverSyncError } from "./providers/sync-errors";
 import type {
   AssetFetchMessage,
@@ -427,6 +427,8 @@ export async function syncAllOpenProviderTabs(reason: "manual" | "periodic" | "r
       if (keeper?.id !== undefined) selected.set(provider, keeper);
     }
   }
+  // A background tab the browser discards loses its content script and costs a reload every period.
+  if (keep && reason === "periodic") for (const tab of selected.values()) await keepTabAlive(tab);
   // One provider failing (signed out, rate limited) must not starve the others.
   const results = [];
   let firstError: unknown;
@@ -446,13 +448,20 @@ async function syncTab(tab: any, provider: ProviderSource, reason: "manual" | "p
   // chaining so this surfaces a clear message instead of a "reading 'ok'" crash.
   const request = (target: any) => sendTabMessage(target.id, { type: "SCROBBLER_SYNC_REQUEST", provider, lastSync, captureFailures: status.providers[provider]?.captureFailures ?? [], detailFailureStreak: status.providers[provider]?.detailFailureStreak ?? [], retryFailed: reason === "retry" }) as Promise<SyncResponse | undefined>;
   let response = await request(tab);
+  let revived = false;
   // No answer means no live content script. Revive a keeper/discarded tab (rate-limited) or fall back to the
   // keeper; a user's own live tab is never reloaded. At most two recoveries (e.g. fallback, then reload it).
   for (let attempt = 0; !response && options.recover && attempt < 2; attempt++) {
     const next = await recoverDeadTab(provider, tab);
     if (!next) break;
     tab = next;
+    revived = true;
     response = await request(tab);
+    // A reloaded tab reports "complete" slightly before its content script listens; give it a bounded moment.
+    for (let wait = 1; !response && wait < keeperTimings.reviveAttempts; wait++) {
+      await new Promise((resolve) => setTimeout(resolve, keeperTimings.reviveWaitMs));
+      response = await request(tab);
+    }
   }
   if (!response?.ok) {
     const error = response?.error ?? "Content script not active in that tab; reload the tab and try again.";
@@ -467,6 +476,7 @@ async function syncTab(tab: any, provider: ProviderSource, reason: "manual" | "p
     throw new Error(error);
   }
 
+  if (revived) await confirmRecovered(provider);
   await mutateStatus((next) => {
     next.providers[provider] = {
       ...next.providers[provider],
