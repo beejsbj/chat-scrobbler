@@ -8,7 +8,14 @@ export interface AssetBackfillReference {
   message_id: string | null;
   filename: string | null;
   content_type: string | null;
+  /**
+   * Download URL the provider listed for this pointer when it is not the pointer itself. A hint: it can carry
+   * a signature and expire, so a failed fetch from it is ordinary. Absent on references archived before it existed.
+   */
+  download_url?: string;
 }
+/** Longest download_url the extension archives and the receiver offers back. */
+export const MAX_BACKFILL_DOWNLOAD_URL_CHARS = 2048;
 export interface AssetBackfillSession {
   source_id: string;
   references: AssetBackfillReference[];
