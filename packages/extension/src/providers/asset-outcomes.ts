@@ -9,7 +9,7 @@ import { DEFAULT_SYNC_PERIOD_MINUTES, MAX_ASSET_FAILURE_POINTER_CHARS, type Asse
  * fresh URL for the same pointer) is a new attempt and ignores the backoff. Successful
  * uploads clear the entry.
  */
-/** A little under the sync period, so the first retry is due at the very next pass instead of the one after. */
+// A little under the sync period, so the first retry is due at the very next pass instead of the one after.
 export const TRANSIENT_RETRY_BASE_MS = (DEFAULT_SYNC_PERIOD_MINUTES - 5) * 60 * 1000;
 export const TRANSIENT_RETRY_MAX_MS = 24 * 60 * 60 * 1000;
 export const MAX_REMEMBERED_OUTCOMES = 5000;

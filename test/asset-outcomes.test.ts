@@ -1,4 +1,5 @@
 import { expect, spyOn, test } from "bun:test";
+import { DEFAULT_SYNC_PERIOD_MINUTES } from "../packages/shared/src";
 import { uploadProviderAssets, type ProviderAssetCandidate } from "../packages/extension/src/providers/assets";
 import {
   assetOutcomeKey, createAssetOutcomeMemory, nextAssetOutcome, reportablePointer, skipRememberedAttempt,
@@ -331,7 +332,7 @@ test("an outcome memory that cannot read or write never stops the rest of the ba
 });
 
 test("the first transient retry lands on the next sync pass after one period, not the one after", () => {
-  const syncPeriodMs = 30 * 60 * 1000;
+  const syncPeriodMs = DEFAULT_SYNC_PERIOD_MINUTES * 60 * 1000;
   expect(transientRetryDelayMs(1)).toBeLessThan(syncPeriodMs);
   expect(transientRetryDelayMs(1)).toBeGreaterThanOrEqual(syncPeriodMs - 10 * 60 * 1000);
   expect(transientRetryDelayMs(2)).toBe(2 * transientRetryDelayMs(1));

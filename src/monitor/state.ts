@@ -8,7 +8,7 @@ import { createHash } from "node:crypto";
 import type { Source } from "../schema/types";
 import { isTerminalAssetFailure, MAX_ASSET_FAILURE_POINTER_CHARS } from "../../packages/shared/src/asset-failure";
 
-/** A failure record nobody has reported for this long is not being retried; a later report recreates it. */
+/** A failure record nobody has reported for this long is not being retried; a later report recreates it. A monitor window longer than this under-counts. */
 export const ASSET_OUTCOME_RETENTION_MS = 30 * 24 * 3_600_000;
 
 export interface AssetFailureRecord { source_id: string; message_id: string | null; reason: string; pointer?: string | null; }
