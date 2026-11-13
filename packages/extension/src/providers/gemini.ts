@@ -401,10 +401,33 @@ async function fetchConversationRpc(
 
   if (res.status === 429 || res.status === 503) throw new RateLimitError(BATCHEXECUTE_PATH, res.status, parseRetryAfterMs(res.headers.get("retry-after")));
   if (res.status >= 500) throw new ProviderDetailError(res.status);
-  if (!res.ok) throw new DeterministicCaptureError(`Provider rejected capture (${res.status})`, res.status);
+  if (!res.ok) {
+    const rejected = new DeterministicCaptureError(`Provider rejected capture (${res.status})`, res.status);
+    if (![401, 403].includes(res.status)) throw rejected;
+    // Distinguish a forbidden chat from an expired Google session or a stale page token.
+    let valid = false;
+    try { valid = await sessionUnchanged(fetcher, wiz.at); }
+    catch (verificationError) { if (verificationError instanceof TransientSyncError) throw verificationError; }
+    if (!valid) throw new TransientSyncError("Provider session unavailable or changed; sign in and retry", res.status);
+    throw rejected;
+  }
   let text: string;
   try { text = await res.text(); } catch { throw new TransientSyncError("Provider response interrupted"); }
   return parseBatchExecuteResponse(text, CONVERSATION_RPC_ID);
+}
+
+/**
+ * The page's own token cannot show a signed-out session, so ask the app page for a fresh one. A signed-out
+ * session (no token in the reply, or a sign-in redirect) or a token other than the one the request used means
+ * the rejection is the session's, not the chat's.
+ */
+async function sessionUnchanged(fetcher: FetchLike, at: string): Promise<boolean> {
+  let res: Response;
+  try { res = await fetcher("/app", { credentials: "include" }); } catch { throw new TransientSyncError("Provider network unavailable"); }
+  if (!res.ok || res.url && new URL(res.url, "https://gemini.google.com").hostname !== "gemini.google.com") return false;
+  let text: string;
+  try { text = await res.text(); } catch { throw new TransientSyncError("Provider response interrupted"); }
+  return parseWizDataFromScript(text)?.at === at;
 }
 
 /**
