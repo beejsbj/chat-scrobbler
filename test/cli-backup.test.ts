@@ -105,6 +105,26 @@ test("runRestore refuses a non-empty canonical dir without force", async () => {
   }
 });
 
+test("runRestore reports raw captures restored, repaired and already present", async () => {
+  const { writeFileSync } = await import("node:fs");
+  const { rawDirForCanonicalDir, storeRawCapture } = await import("../src/store/raw");
+  const { buildRawCapture } = await import("../packages/shared/src");
+  const { cfg, root, out, write } = makeEnv();
+  try {
+    const rawDir = rawDirForCanonicalDir(cfg.canonicalDir);
+    storeRawCapture(rawDir, buildRawCapture({ source: "chatgpt", sourceId: "kept", endpoint: "/detail", payload: { a: 1 } }));
+    const ref = storeRawCapture(rawDir, buildRawCapture({ source: "chatgpt", sourceId: "damaged", endpoint: "/detail", payload: { b: 2 } }));
+    await runBackup({ cfg, write });
+    const snapshot = readdirSync(cfg.backupTargets[0])[0];
+    writeFileSync(join(rawDir, ref), "truncated");
+    await runRestore({ cfg, snapshot, force: true, write });
+    expect(out.join("\n")).toContain("Raw captures: 0 restored, 1 repaired, 1 already present");
+    expect(out.join("\n")).toContain(".mismatch-");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("runBackup writes the same snapshot name to every configured target", async () => {
   const { cfg, root, out, write } = makeEnv();
   try {

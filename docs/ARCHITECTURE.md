@@ -508,7 +508,15 @@ same name. `backups` and `restore` use the first entry as the primary target.
 
 Raw history and asset blobs/metadata are included in snapshots; optional manifest
 fields record raw counts and bytes. Old snapshots without raw remain compatible.
-Raw restoration is append-only, including with `force: true`.
+Raw restoration never discards bytes, including with `force: true`. A missing
+version is written; an identical one is left alone and counted as already present.
+A local version whose bytes differ from the backup (for example a truncated file)
+is repaired: the local file is kept in the same directory as
+`<name>.mismatch-<timestamp>`, and the backup's bytes replace it atomically with
+the original mtime. The `.mismatch-` suffix keeps it out of every `*.json.gz`
+scan (version listing, reparse, backup, monitor); deleting the session erases it
+with the rest of the raw directory. `restore` reports restored, repaired and
+already-present raw counts.
 
 **Restore guard**: `restoreBackup` refuses to write into a non-empty `canonicalDir`
 unless `force: true` is passed, to prevent accidental overwrites.

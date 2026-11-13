@@ -198,7 +198,12 @@ export interface RestoreBackupResult {
   restored_count: number;
   /** Number of asset files restored. */
   restored_asset_count?: number;
+  /** Raw versions written where none existed. */
   restored_raw_count?: number;
+  /** Raw versions whose local bytes differed from the backup; the old bytes are kept as `<name>.mismatch-<timestamp>`. */
+  repaired_raw_count?: number;
+  /** Raw versions already identical to the backup. */
+  already_present_raw_count?: number;
 }
 
 export async function restoreBackup(opts: RestoreBackupOptions): Promise<RestoreBackupResult> {
@@ -256,9 +261,10 @@ export async function restoreBackup(opts: RestoreBackupOptions): Promise<Restore
 
   // Reference records are derived. Restored legacy aliases require one fresh ownership pass.
   invalidateReferences(assetsDir);
-  const restored_raw_count = await restoreRaw(opts.rawDir ?? rawDirForCanonicalDir(canonicalDir), target, snapshot, (source, id) => isSessionDeleted(canonicalDir, source, id));
+  const raw = await restoreRaw(opts.rawDir ?? rawDirForCanonicalDir(canonicalDir), target, snapshot, (source, id) => isSessionDeleted(canonicalDir, source, id));
   deleteSessionArchives(canonicalDir, listTombstones(canonicalDir), opts.rawDir);
-  return { restored_count: restoredCount, restored_asset_count: assetRelPaths.length, restored_raw_count };
+  return { restored_count: restoredCount, restored_asset_count: assetRelPaths.length, restored_raw_count: raw.restored,
+    repaired_raw_count: raw.repaired, already_present_raw_count: raw.already_present };
 }
 
 // ---------------------------------------------------------------------------
