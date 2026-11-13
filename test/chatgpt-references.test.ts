@@ -120,6 +120,23 @@ test("pure display metadata is known and ignored, with the payload still in the 
   expect(message.blocks.map(b => b.type)).toEqual(["text"]);
 });
 
+test("hidden references keep their http(s) safe_urls as URL-only citations, deduplicated against the whole message", () => {
+  const message = parseWith({ content_references: [
+    ref({ type: "hidden", matched_text: "", safe_urls: ["https://example.com/a", "javascript:alert(1)", "ftp://example.com/f", "", "https://example.com/shared"] }),
+    ref({ type: "hidden", matched_text: "", safe_urls: ["https://example.com/a", "https://example.com/b"] }),
+    ref({ type: "hidden", matched_text: "", safe_urls: [] }),
+    ref({ type: "hidden", matched_text: "" , safe_urls: undefined }),
+    ref({ type: "sources_footnote", matched_text: "", sources: [{ title: "Shared Page", url: "https://example.com/shared" }] }),
+  ] });
+  expect(unknownTypes(message)).toEqual([]);
+  expect(citations(message)).toEqual([
+    { type: "citation", provider_type: "sources_footnote", url: "https://example.com/shared", title: "Shared Page", text: null },
+    { type: "citation", provider_type: "hidden", url: "https://example.com/a", title: null, text: null },
+    { type: "citation", provider_type: "hidden", url: "https://example.com/b", title: null, text: null },
+  ]);
+  expect(message.text).toContain("https://example.com/b");
+});
+
 test("entity lookups with address or website keep them, and a span too short for its widget payload alerts", () => {
   const span = "\ue200entity\ue202[\"place\",\"Cafe One\",\"x\"]\ue201";
   const message = parseWith({ content_references: [

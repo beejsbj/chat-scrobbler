@@ -54,6 +54,11 @@ const spanHolds = (entry: Record<string, any>, content: unknown) => {
   return !!span && (typeof content !== "string" || span.length >= content.length);
 };
 
+const isWebUrl = (value: unknown): boolean => {
+  const url = str(value);
+  return !!url && /^https?:\/\//i.test(url.trim());
+};
+
 /** Citations for a recognized `content_references` entry, [] for a known-ignored one, null for unrecognized. */
 function fromReference(entry: Record<string, any>): Citation[] | null {
   const type = entry.type;
@@ -90,8 +95,8 @@ function fromReference(entry: Record<string, any>): Citation[] | null {
     // Interface layout. Lists of quoted sources inside it are the only content.
     case "dil": return list(rec(rec(entry.dil).initialState).items).filter(item => str(rec(item).source_url))
       .map(item => cite(type, rec(item).source_title, rec(item).source_url, rec(item).quote));
-    // Pure display spans: nothing a reader sees that the message text does not already carry.
-    case "hidden": return [];
+    // A display span with no content of its own; the URLs it carries are sources with no title or snippet.
+    case "hidden": return list(entry.safe_urls).filter(isWebUrl).map(url => cite(type, null, url, null));
     case "entity": {
       if (!spanCarries(entry, entry.name)) return null;
       // Business lookups carry address and links that are not in the span.
@@ -131,6 +136,8 @@ const citationKey = (c: Citation) => c.url && c.provider_type !== "map" && c.pro
 export function blocksFromMetadata(key: "citations" | "content_references" | "attachments", entries: unknown,
   loc: PartLocation, seen: Set<string>): Block[] {
   const blocks: Block[] = [];
+  // Hidden entries cite bare URLs, so they go last: a titled citation of the same URL elsewhere in the message wins.
+  const bare: Citation[] = [];
   const visit = (entry: unknown, at: PartLocation) => {
     const entryRec = rec(entry);
     let found: Citation[] | null = null;
@@ -146,6 +153,7 @@ export function blocksFromMetadata(key: "citations" | "content_references" | "at
       blocks.push(widget && block.type === "unknown" ? { ...block, provider_type: `client_defined_widget:${widget}` } : block);
       return;
     }
+    if (entryRec.type === "hidden" && key === "content_references") { bare.push(...found); return; }
     for (const citation of found) {
       const id = citationKey(citation);
       if (seen.has(id)) continue;
@@ -155,5 +163,11 @@ export function blocksFromMetadata(key: "citations" | "content_references" | "at
   };
   if (Array.isArray(entries)) entries.forEach((entry, i) => visit(entry, childLocation(loc, i)));
   else if (entries != null) blocks.push(unknownBlock(entries, loc, key));
+  for (const citation of bare) {
+    const id = citationKey(citation);
+    if (seen.has(id)) continue;
+    seen.add(id);
+    blocks.push(citation);
+  }
   return blocks;
 }
