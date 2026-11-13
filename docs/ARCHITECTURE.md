@@ -525,6 +525,7 @@ same name. `backups` and `restore` use the first entry as the primary target.
     gemini/<id>.json
   raw/
     <source>/<encoded-source-id>/<timestamp>-<sha256>.json.gz
+    <source>/<encoded-source-id>/latest.json   # which version arrived last
   config/
     <config-filename>.json  # optional, included when a config file is active
 ```
@@ -536,7 +537,14 @@ version is written; an identical one is left alone and counted as already presen
 A local version whose bytes differ from the backup or cannot be read (for example
 a truncated file) is repaired: the local file is kept in the same directory as
 `<name>.mismatch-<timestamp>`, and the backup's bytes replace it atomically with
-the original mtime. The `.mismatch-` suffix keeps it out of every `*.json.gz`
+the original mtime. A session's `latest.json` marker, which records the version
+ingest received last, is restored when the local store has no valid marker of its
+own, so reparse and asset backfill rebuild from the same version as before the
+backup. Without a marker (snapshots made before markers were backed up, or stores
+already restored from one), the newest version is the one with the latest
+`fetched_at` in its file name, not the newest mtime, which a restore rewrites.
+Versions that share a `fetched_at` were derived from one capture (asset backfill,
+Gemini media retention); the most enriched one wins, then mtime. The `.mismatch-` suffix keeps it out of every `*.json.gz`
 scan (version listing, reparse, backup, monitor); deleting the session erases it
 with the rest of the raw directory. `restore` reports restored, repaired and
 already-present raw counts and the kept-aside paths. If a restore fails partway,
