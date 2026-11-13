@@ -1,5 +1,15 @@
 import { cpSync, mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
+import { manifestVersionFromTag, stampManifestVersion } from "./manifest-version";
+
+// `--tag vX.Y.Z` (the release build) writes that version into the built manifest; without it the
+// source manifest ships as is.
+const tagFlag = process.argv.indexOf("--tag");
+const tag = tagFlag === -1 ? null : process.argv[tagFlag + 1] ?? "";
+if (tag !== null) {
+  try { manifestVersionFromTag(tag); }
+  catch (error) { console.error(error instanceof Error ? error.message : error); process.exit(2); }
+}
 
 const root = new URL("..", import.meta.url).pathname;
 const buildDir = join(root, "build");
@@ -26,4 +36,5 @@ if (!result.success) {
 }
 
 cpSync(join(root, "static"), buildDir, { recursive: true });
+if (tag !== null) stampManifestVersion(buildDir, tag);
 console.log(`Built extension in ${buildDir}`);

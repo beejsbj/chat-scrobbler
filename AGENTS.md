@@ -57,6 +57,12 @@ bun run mcp                  # read-only MCP over stdio
 bun run mcp:http             # read-only MCP over HTTP at /mcp (env MCP_HTTP_PORT, default 4319)
 ```
 
+The release build writes the tag's version into the built extension manifest (`dist`
+only), so do not bump `packages/extension/static/manifest.json` per release. A tag must
+look like `vX.Y.Z` or `vX.Y.Z-rc1`: a pre-release builds as `version` `X.Y.Z` with the
+full tag in `version_name`, and any other tag is rejected. `bun run build:dist` ships the
+source manifest unchanged.
+
 Config resolution: defaults < JSON config file (`CHAT_SCROBBLER_CONFIG`,
 `./chat-scrobbler.config.json`, or `~/.config/chat-scrobbler/config.json`) < env
 (`CANONICAL_DIR`, `INDEX_PATH`, `PORT`, `MCP_HTTP_PORT`, `INGEST_BASE_URL`,
