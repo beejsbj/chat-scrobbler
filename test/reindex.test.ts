@@ -295,3 +295,26 @@ test("unify keeps index rows for an unreadable provider directory, even when for
     expect(listSessions(db).map(row => row.id)).not.toContain("claude:offline");
   } finally { db.close(); logs.mockRestore(); rmSync(dir, { recursive: true, force: true }); }
 });
+
+test("unify's 10% prune guard ignores tombstoned rows it has already pruned", async () => {
+  const { spyOn } = await import("bun:test");
+  const { indexSession, listSessions } = await import("../src/indexer/sqlite");
+  const dir = mkdtempSync(join(tmpdir(), "unify-guard-tombstones-"));
+  const opts = { canonicalDir: join(dir, "canonical", "sessions"), indexPath: join(dir, "index.db") };
+  const logs = spyOn(console, "error").mockImplementation(() => {});
+  const db = openIndex(opts.indexPath);
+  try {
+    for (let i = 0; i < 20; i++) {
+      indexSession(db, { ...sessionA, id: `chatgpt:erased-${i}`, source_id: `erased-${i}` });
+      markSessionDeleted(opts.canonicalDir, { source: "chatgpt", source_id: `erased-${i}`, deleted_at: "2026-11-12T00:00:00Z" });
+    }
+    for (let i = 0; i < 10; i++) {
+      indexSession(db, { ...sessionA, id: `chatgpt:live-${i}`, source_id: `live-${i}` });
+      if (i >= 3) writeSession(opts.canonicalDir, { ...sessionA, id: `chatgpt:live-${i}`, source_id: `live-${i}` });
+    }
+    // 3 of the 10 surviving rows look absent: 30%, not 3 of 30.
+    await runUnify(opts);
+    expect(listSessions(db).map(row => row.id).sort()).toEqual(Array.from({ length: 10 }, (_, i) => `chatgpt:live-${i}`).sort());
+    expect(JSON.stringify(logs.mock.calls)).toContain("prune_exceeds_10_percent");
+  } finally { db.close(); logs.mockRestore(); rmSync(dir, { recursive: true, force: true }); }
+});

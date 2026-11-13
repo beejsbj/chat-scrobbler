@@ -63,7 +63,7 @@ export async function runUnify(opts: UnifyOptions): Promise<number> {
         return;
       }
       const absent = pruneCandidates.filter(row => !retained.has(row.id) && !isSessionDeleted(opts.canonicalDir, row.source, row.source_id) && !existsSync(join(opts.canonicalDir, row.source, `${row.source_id}.json`)));
-      if (absent.length && !opts.force && (!files.length || absent.length / pruneCandidates.length > 0.1)) {
+      if (absent.length && !opts.force && (!files.length || absent.length / (pruneCandidates.length - deleted.length) > 0.1)) {
         console.error(JSON.stringify({ event: "unify_prune_refused", reason: files.length ? "prune_exceeds_10_percent" : "empty_canonical_store", candidates: absent.length, indexed_sessions: pruneCandidates.length }));
         return;
       }
