@@ -21,7 +21,7 @@ if (provider) {
     if (message.type === "SCROBBLER_BACKFILL_ASSETS" && message.provider === provider.source) {
       refreshIgnoredIds().then(() => backfillProviderAssets(provider, message.page, {
         uploadAsset, shouldIgnore: id => ignoredIds.has(id),
-        commit: async value => { const res = await sendRuntimeMessage({ type: "SCROBBLER_BACKFILL_COMMIT", value }); if (!res?.ok) throw new Error(res?.error ?? "Backfill commit failed"); },
+        commit: async value => { const res = await sendRuntimeMessage({ type: "SCROBBLER_BACKFILL_COMMIT", value }); if (!res?.ok) throw new Error(res?.error ?? "Backfill commit failed"); return res; },
       })).then(result => sendResponse({ ok: true, result }), () => sendResponse({ ok: false, error: "Asset backfill failed; inspect receiver reports" }));
       return true;
     }
