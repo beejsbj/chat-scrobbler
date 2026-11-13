@@ -351,7 +351,14 @@ per message; Claude `image` content becomes an `image` block), known and ignored
 (display-only spans whose payload the message text already carries, such as ChatGPT
 `hidden`, `entity` and `followup_a`, and Claude `token_budget` and `flag`; the raw
 capture keeps them), or unknown (anything unrecognized, which the monitor reports).
-The lists live in `src/parsers/chatgpt-references.ts` and `claude-parts.ts`. ChatGPT
+The lists live in `src/parsers/chatgpt-references.ts` and `claude-parts.ts`. Gemini's
+positional slots are decoded in `src/parsers/gemini-slots.ts` (thinking summaries become
+one `reasoning` block, search grounding, YouTube cards and uploaded-file citations become
+`citation` blocks) and `gemini-uploads.ts` (attached files become media blocks that link
+a captured asset or name the file with no local copy); `gemini-metadata.ts` lists the
+known metadata shapes. Each decoder checks the layout it expects at every step and
+returns nothing on a mismatch, so a changed layout stays an `unknown` block and alerts
+while the message text is kept. ChatGPT
 web-result images are cited by title and page url only: the extension never fetches
 them, so no image block or asset reference is invented. A parser change reaches
 existing sessions only through `reparse` (parsers are not versioned; reparse always

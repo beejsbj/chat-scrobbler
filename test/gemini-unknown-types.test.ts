@@ -32,9 +32,9 @@ test("positional slots that are all null, or a bare number or boolean, are not r
 test("a slot with real content, or a string, is still reported with its fallback label", () => {
   const session = parseWith((turn, capture) => {
     turn[2][10] = [null, null, ["file-like", "provider://upload"]];
-    turn[3][4] = [[null, ["abcdef", [null, null, "x"], 1]]];
-    turn[3][0][0][2] = [null, [[["text", null, null], [1], [["https://example.org/x", "Title"]]]]];
-    turn[3][31] = "opaque-string";
+    turn[3][4] = [[null, ["abcdef", "not a label", 1]]];
+    turn[3][0][0][2] = [null, [[["text", null, null], [1], "sources"]]];
+    turn[3][31] = "an opaque string that is much too long to be a model name";
     capture.payload[3] = [[[["https://example.org/y"]]]];
   });
   expect(unknowns(session).map(b => b.provider_type).sort()).toEqual([
