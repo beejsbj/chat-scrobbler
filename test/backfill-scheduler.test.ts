@@ -6,6 +6,7 @@ import { DEFAULT_CONFIG } from "../src/config";
 import { indexSession, openIndex } from "../src/indexer/sqlite";
 import { fixture } from "./support/embedding-fixture";
 import { startEmbeddingBackfillScheduler } from "../src/indexer/backfill-scheduler";
+import { EmbeddingRequestError } from "../src/indexer/embedding-failures";
 
 function setup() {
   const root=mkdtempSync(join(tmpdir(),"backfill-scheduler-"));
@@ -201,4 +202,30 @@ test('background batches honor the configurable skipped timer and recover with n
   broken=false;clock=361999;expect(await scheduler.runNow()).toMatchObject({attempted:0});
   clock=362000;expect(await scheduler.runNow()).toMatchObject({embedded:4,queue:{skipped:0}});
  }finally{await scheduler.stop();now.mockRestore();rmSync(root,{recursive:true,force:true});}
+});
+
+test("rejected skips are retried once per process start, then wait for their timer", async () => {
+  const {root,cfg}=setup();
+  const reject=async()=>{throw new EmbeddingRequestError({kind:"rejected",reason:"rejected_400_media_unreadable"});};
+  const first=startEmbeddingBackfillScheduler({cfg,provider:{...p,embed:reject}});
+  try {
+    expect(await first.runNow()).toMatchObject({retry_scheduled:4,queue:{skipped:4,reasons:{rejected_400_media_unreadable:4}}});
+    await first.stop();
+    let calls=0;
+    const second=startEmbeddingBackfillScheduler({cfg,provider:{...p,embed:async()=>{calls++;return [1,0];}}});
+    try {
+      expect(await second.runNow()).toMatchObject({embedded:4});
+      expect(calls).toBe(4);
+    } finally {await second.stop();}
+  } finally {await first.stop();rmSync(root,{recursive:true,force:true});}
+});
+
+test("one scheduler requeues rejected skips on its first run only", async () => {
+  const {root,cfg}=setup();
+  let calls=0;
+  const scheduler=startEmbeddingBackfillScheduler({cfg,provider:{...p,embed:async()=>{calls++;throw new EmbeddingRequestError({kind:"rejected",reason:"rejected_400_media_unreadable"});}}});
+  try {
+    await scheduler.runNow(); expect(calls).toBe(4);
+    await scheduler.runNow(); await scheduler.runNow(); expect(calls).toBe(4);
+  } finally {await scheduler.stop();rmSync(root,{recursive:true,force:true});}
 });

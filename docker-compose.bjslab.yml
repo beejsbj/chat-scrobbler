@@ -2,9 +2,16 @@
 # Coolify env. The embedder sidecar always runs and its image carries the model,
 # so there is no pull step after first boot.
 
+# DATA_UID and DATA_GID (default 999) must match the owner of the data directory.
+# Both images and the embedder's `user:` take them from here, so they cannot drift.
+
 services:
   scrobbler:
-    build: .
+    build:
+      context: .
+      args:
+        DATA_UID: ${DATA_UID:-999}
+        DATA_GID: ${DATA_GID:-999}
     restart: unless-stopped
     # No host ports are published. Coolify Traefik reaches this service over
     # its proxy network.
@@ -35,10 +42,15 @@ services:
       - embedder
 
   embedder:
-    user: "1001:1001"
+    # Same uid:gid as the scrobbler, which writes asset blobs 0600. The asset
+    # mount below stays read-only.
+    user: "${DATA_UID:-999}:${DATA_GID:-999}"
     build:
       context: .
       dockerfile: services/embedder/Dockerfile
+      args:
+        DATA_UID: ${DATA_UID:-999}
+        DATA_GID: ${DATA_GID:-999}
     init: true
     restart: unless-stopped
     cpus: 2
@@ -60,7 +72,7 @@ services:
       EMBEDDER_ALLOWED_ROOTS: /data/canonical/assets
       EMBEDDER_CACHE_DIR: /var/cache/embedder
     volumes:
-      - embedder-cache:/var/cache/embedder
+      - embedder-cache-v2:/var/cache/embedder
       - type: bind
         source: /mnt/server-ssd/chat-scrobbler/canonical/assets
         target: /data/canonical/assets
@@ -83,4 +95,6 @@ networks:
     internal: true
 
 volumes:
-  embedder-cache:
+  # v2: the first volume was created with a different owner. A new name is created from
+  # the image with the right owner (the old volume can be removed after deploy).
+  embedder-cache-v2:

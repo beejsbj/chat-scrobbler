@@ -12,3 +12,6 @@ test('exhausted item attempts yield a stable reason for the queue timer',()=> {
  // A provider being offline must not permanently discard messages.
  expect(failureRetry('connection',20,1000).state).toBe('deferred');
 });
+test('a rejected input is skipped at once with its own reason, never burning retry cycles',()=> {
+ expect(failureRetry('rejected',1,1000,'rejected_400_media_unreadable')).toEqual({state:'skipped',retry_at:0,reason:'rejected_400_media_unreadable'});
+});

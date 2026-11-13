@@ -1,5 +1,6 @@
 import { afterEach, expect, spyOn, test } from "bun:test";
 import { DEFAULT_CONFIG } from "../src/config";
+import { EmbeddingRequestError } from "../src/indexer/embedding-failures";
 import {
   GeminiEmbeddingProvider,
   OllamaEmbeddingProvider,
@@ -567,4 +568,33 @@ test("EmbeddingGemma checks cancellation after awaiting the load hook", async ()
   await expect(provider.embed("notes", context)).rejects.toBe(failure);
   expect(hooks).toBe(2);
   expect(calls).toHaveLength(0);
+});
+
+test("a 4xx from the embedder is a permanent rejection carrying the status and error code", async () => {
+  const provider = new EmbeddingGemmaProvider({ baseUrl: "http://embed.example:4320", model: "gemma-test" });
+  const body = { error: { message: "media path cannot be read safely: /data/private.png", type: "invalid_request_error", code: "media_unreadable" } };
+  mockEmbeddingGemmaFetch(body, 400);
+  const error = await provider.embedAsset({ type: "image", path: "/archive/image.png" }).catch(e => e);
+  expect(error).toBeInstanceOf(EmbeddingRequestError);
+  expect(error.failure).toEqual({ kind: "rejected", reason: "rejected_400_media_unreadable" });
+  // The message class is derived from the code. The embedder's text never leaks into the reason.
+  expect(error.message).not.toContain("private");
+  mockEmbeddingGemmaFetch({ error: { code: "Not A Code!" } }, 413);
+  expect((await provider.embed("notes").catch(e => e)).failure).toEqual({ kind: "rejected", reason: "rejected_413" });
+  mockEmbeddingGemmaFetch("not json", 422);
+  expect((await provider.embed("notes").catch(e => e)).failure).toEqual({ kind: "rejected", reason: "rejected_422" });
+});
+
+test("408, 429 and 5xx from the embedder stay transient", async () => {
+  const provider = new EmbeddingGemmaProvider({ baseUrl: "http://embed.example:4320", model: "gemma-test" });
+  for (const status of [408, 429, 500, 503]) {
+    mockEmbeddingGemmaFetch({ error: { code: "queue_full" } }, status);
+    expect((await provider.embed("notes").catch(e => e)).failure).toEqual({ kind: "item", reason: `http_${status}` });
+  }
+});
+
+test("a decode timeout from the embedder is load-dependent, so it is not a permanent rejection", async () => {
+  const provider = new EmbeddingGemmaProvider({ baseUrl: "http://embed.example:4320", model: "gemma-test" });
+  mockEmbeddingGemmaFetch({ error: { code: "decode_timeout" } }, 422);
+  expect((await provider.embedAsset({ type: "video", path: "/archive/clip.mp4" }).catch(e => e)).failure).toEqual({ kind: "item", reason: "http_422" });
 });

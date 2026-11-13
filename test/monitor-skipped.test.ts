@@ -32,6 +32,21 @@ function pending(db: Database, id: string, reason: string | null, count: number,
     [`${id}-${i}`, kind, model, "private-input", state, reason, Date.now() + 86_400_000]);
 }
 
+test("a permanent rejection shows its status and embedder error code on the monitor line", () => {
+  const { root, opts, cli } = setup();
+  try {
+    const db = new Database(opts.indexPath);
+    pending(db, "media", "rejected_400_media_unreadable", 4);
+    pending(db, "bad", "rejected_400_Path /private/x", 9);
+    db.close();
+    expect(cli().stdout.toString()).toBe("FAILED embeddings skipped=13 reason=unknown\n");
+    const update = new Database(opts.indexPath);
+    update.run("DELETE FROM embedding_pending WHERE message_id LIKE 'bad-%'");
+    update.close();
+    expect(cli().stdout.toString()).toBe("FAILED embeddings skipped=4 reason=rejected_400_media_unreadable\n");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
 test("CLI skipped alerts persist, scope the active provider, exclude empty text and break reason ties lexically", () => {
   const { root, opts, cli } = setup();
   try {

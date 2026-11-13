@@ -35,7 +35,7 @@ export interface BackfillOptions {
  signal?:AbortSignal;load?:()=>number;sleep?:(ms:number)=>Promise<void>;now?:()=>number;wallNow?:()=>number;
  progress?:(report:BackfillReport)=>void;assertLease?:()=>void;leaseStatus?:()=>BackfillLeaseStatus;
  background?:{cursor:number;assetCursor?:string;scanLimit:number};yieldToQueries?:()=>Promise<void>;
- connectionSequence?:ConnectionSequence;retrySkippedMs?:number;retrySkipped?:boolean;
+ connectionSequence?:ConnectionSequence;retrySkippedMs?:number;retrySkipped?:boolean;requeueRejected?:boolean;
 }
 export async function embedBackfill(db:Database,opts:BackfillOptions):Promise<BackfillReport> {
  const wal=deferWalCheckpoints(db);
@@ -80,7 +80,7 @@ async function runBackfill(db:Database,opts:BackfillOptions):Promise<BackfillRep
  };
  await wait();
  await initializePendingEmbeddings(db,provider,{signal,yield:pause,assertLease:opts.assertLease});prepared=true;
- db.transaction(()=>{guard();requeueSkippedEmbeddings(db,provider,{now:wallNow(),delayMs:opts.retrySkippedMs,force:opts.retrySkipped});guard();}).immediate();
+ db.transaction(()=>{guard();requeueSkippedEmbeddings(db,provider,{now:wallNow(),delayMs:opts.retrySkippedMs,force:opts.retrySkipped,rejected:opts.requeueRejected});guard();}).immediate();
  const coverage=pendingCoverage(db,provider);
  if(!opts.background) {
   skipped=coverage.embedded+coverage.empty;

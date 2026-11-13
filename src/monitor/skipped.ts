@@ -15,7 +15,7 @@ export function skippedEmbeddingFailure(indexPath?: string, provider?: Embedding
     if (!rows.length) return null;
     // An old or malformed queue may contain arbitrary errors. Emit only known categories.
     const reason = rows[0].reason;
-    const safe = reason && /^(retry_exhausted_)?(request_timeout|connection_unavailable|item_error|http_[1-5]\d{2})$/.test(reason) ? reason : "unknown";
+    const safe = reason && /^((retry_exhausted_)?(request_timeout|connection_unavailable|item_error|http_[1-5]\d{2})|rejected_4\d{2}(_[a-z][a-z0-9_]{0,39})?)$/.test(reason) ? reason : "unknown";
     return `FAILED embeddings skipped=${rows.reduce((sum, row) => sum + row.n, 0)} reason=${safe}`;
   } finally { db.close(); }
 }

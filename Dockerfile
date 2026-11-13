@@ -14,7 +14,13 @@ RUN apt-get update \
   && apt-get install -y --no-install-recommends ca-certificates \
   && rm -rf /var/lib/apt/lists/*
 
-RUN useradd --system --create-home --home-dir /home/scrobbler --shell /usr/sbin/nologin scrobbler \
+# Asset blobs are written 0600 by this user, and the embedder sidecar reads them
+# as the same uid:gid. Compose passes one DATA_UID/DATA_GID to both images so
+# they cannot drift. Existing data volumes are owned by 999, so keep that default.
+ARG DATA_UID=999
+ARG DATA_GID=999
+RUN groupadd --system --gid "${DATA_GID}" scrobbler \
+  && useradd --system --uid "${DATA_UID}" --gid "${DATA_GID}" --create-home --home-dir /home/scrobbler --shell /usr/sbin/nologin scrobbler \
   && mkdir -p /data \
   && chown -R scrobbler:scrobbler /data
 

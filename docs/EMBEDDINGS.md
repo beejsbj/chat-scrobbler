@@ -76,9 +76,21 @@ The compose defaults are provider `embeddinggemma`, model
 `litert-community/embeddinggemma-2-740m-litert-lm` and base URL
 `http://embedder:4320`, each overridable through the Compose environment.
 
-The embedder runs as `1001:1001`; its image provisions `/var/cache/embedder` with
-that ownership. Docker initializes the named `embedder-cache` volume from it.
-Previously populated volumes must be checked for ownership before deployment.
+The embedder runs as the same uid:gid that owns the data directory (`DATA_UID` and
+`DATA_GID`, default `999:999`, the `scrobbler` user of the root image). Asset blobs are
+written mode `0600` by that user, so a sidecar with any other uid cannot open them and
+answers `media_unreadable`. Compose passes one `DATA_UID`/`DATA_GID` to both images and
+to the embedder's `user:`. The embedder image provisions `/var/cache/embedder` with that
+ownership and Docker initializes the named `embedder-cache-v2` volume from it. A volume
+created for an earlier uid keeps its old owner, which is why the volume name changed;
+the cost of the new name is one cold LiteRT cache on first load (the model itself is in
+the image, nothing is downloaded at run time).
+
+A 4xx from the sidecar is a permanent rejection of that input. The backfill skips it at
+once as `rejected_<status>_<code>` (for example `rejected_400_media_unreadable`) instead
+of burning retries, and the monitor line shows that reason. 408, 429 and 5xx stay
+transient. Rejected rows follow the usual 1, 3, 7 day retry timer, and each scrobbler
+start retries them once, because the cure is usually an environment fix.
 Canonical assets are mounted read-only at `/data/canonical/assets`. The sidecar
 has only an internal Docker network, no published ports or proxy network. Local
 execution binds loopback; Docker wildcard binding requires explicit private mode.

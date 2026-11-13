@@ -176,9 +176,11 @@ checks, not retrieval quality measurements.
 `Dockerfile` uses Python 3.12 on Debian bookworm, installs ffmpeg and the pinned
 Python runtime, and fetches verified weights during build. It has no spike or
 host Python dependency. Model weights in the image are read-only. The named
-`embedder-cache` volume is writable by UID/GID `1001:1001`; assets use an existing
-read-only bind at `/data/canonical/assets`. Existing reused cache volumes must
-already be writable by that UID. The asset bind must exist and be readable by it.
+`embedder-cache-v2` volume is writable by `DATA_UID:DATA_GID` (default `999:999`, the
+user that owns the asset blobs); assets use an existing read-only bind at
+`/data/canonical/assets`. Reused cache volumes must already be writable by that UID.
+The asset bind must exist and its files must be readable by it. An unreadable or
+missing media path answers HTTP 400 with error code `media_unreadable`.
 
 The main `docker-compose.bjslab.yml` always runs the sidecar; there is no
 profile and no Ollama service. Validate the plan from the repo root:
