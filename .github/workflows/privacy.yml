@@ -37,6 +37,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      - run: node --test scripts/privacy/privacy-scan.test.mjs
       - run: node scripts/privacy/privacy-scan.mjs "$SCAN_MODE"
         env:
           SCAN_MODE: ${{ github.event_name == 'pull_request' && 'diff' || 'tree' }}
