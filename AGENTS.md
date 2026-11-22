@@ -39,6 +39,7 @@ them through a CLI and a read-only MCP connector.
 | `packages/shared/src/` | Shared constants and `RawCapture` schema |
 | `docker-compose.yml`, `.env.example` | Generic deployment: data dir, owner uid and tokens from env; `docker-compose.ports.yml` publishes ports, `docker-compose.no-embedder.yml` leaves the embedder out |
 | `test/no-host-paths.test.ts` | CI guard: tracked files carry no host paths |
+| `scripts/privacy/`, `.github/workflows/privacy.yml`, `.github/privacy-allow.txt` | public-repo gate: no personal paths, emails or identities, and a `LICENSE` ([docs/privacy-gate.md](docs/privacy-gate.md)); its tests run in that workflow |
 | `scripts/build-dist.ts` | Compiles `dist/chat-scrobbler` + bundles `dist/extension/` |
 | `scripts/release.ts` | Release assets; `--build-only` / `--publish-only` split for CI |
 | `.github/workflows/` | `ci.yml` (typecheck + tests on PRs and main), `release.yml` (v* tags) |

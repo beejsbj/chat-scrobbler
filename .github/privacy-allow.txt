@@ -1,0 +1,6 @@
+# Exemptions for the privacy scan (scripts/privacy/privacy-scan.mjs). Published with the repo:
+# list only what is meant to be public. Format: <rule|*> <path-glob> [literal in the match]
+home-path Dockerfile /home/scrobbler
+home-path test/no-host-paths.test.ts /home/scrobbler
+host-mount test/claude-asset-capture.test.ts /mnt/user-data
+host-mount test/config.test.ts /Volumes/nas

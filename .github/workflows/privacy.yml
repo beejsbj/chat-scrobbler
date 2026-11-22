@@ -1,0 +1,46 @@
+# Public-repo privacy gate. Fails on a personal path, email or identity, or a missing LICENSE.
+#
+#   pull_request            scans the lines the PR adds
+#   push to the default     scans every tracked file
+#   workflow_dispatch       scans every tracked file
+#
+# The scanner (scripts/privacy/privacy-scan.mjs) holds no personal identifier. Names, usernames
+# and hostnames come from the PRIVACY_PATTERNS Actions secret (one literal or /regex/ per line);
+# without it only the structural rules run (any home path, any email). Fork PRs never see the
+# secret, so they get the structural scan only. A private repo skips the scan.
+# Do not add path filters: a required check that skips never reports.
+name: privacy
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: privacy-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  privacy-scan:
+    name: privacy-scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: node scripts/privacy/privacy-scan.mjs "$SCAN_MODE"
+        env:
+          SCAN_MODE: ${{ github.event_name == 'pull_request' && 'diff' || 'tree' }}
+          PRIVACY_REPO_PRIVATE: ${{ github.event.repository.private }}
+          PRIVACY_PATTERNS: ${{ secrets.PRIVACY_PATTERNS }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
