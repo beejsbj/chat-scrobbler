@@ -2,7 +2,7 @@
 // Public-repo privacy gate: no personal paths, emails or identities in what a public repo
 // publishes, and a licence file at its root.
 //
-//   node privacy-scan.mjs diff   scan the lines a PR adds (BASE_SHA...HEAD_SHA, default origin/main...HEAD)
+//   node privacy-scan.mjs diff   scan the lines each commit of a PR adds (BASE_SHA..HEAD_SHA, default origin/main..HEAD)
 //   node privacy-scan.mjs tree   scan every tracked file (push to the default branch, or by hand)
 //   node privacy-scan.mjs text   scan stdin: a PR body, a commit log, a report you are about to post
 //
@@ -32,7 +32,7 @@ import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
 export const ALLOW_FILE = '.github/privacy-allow.txt'
-export const RULES = ['home-path', 'host-mount', 'email', 'private-list', 'derived', 'licence']
+export const RULES = ['home-path', 'host-mount', 'host-name', 'email', 'private-list', 'derived', 'licence']
 
 // ---------------------------------------------------------------------------
 // Structural rules (name no one)
@@ -52,7 +52,7 @@ const GENERIC_MOUNTS = new Set([
 // be personal, so a real public contact address goes in the allowlist.
 const ROLE_ADDRESSES = new Set([
   'noreply', 'no-reply', 'donotreply', 'do-not-reply', 'git', 'you', 'user', 'username', 'name', 'email', 'your-email',
-  'youremail', 'yourname', 'me', 'someone', 'foo', 'bar', 'test', 'john', 'jane', 'john.doe', 'jane.doe', 'jdoe',
+  'youremail', 'yourname', 'someone', 'foo', 'bar', 'test', 'john', 'jane', 'john.doe', 'jane.doe', 'jdoe',
 ])
 const FILE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'avif', 'ico', 'css', 'js', 'mjs', 'cjs', 'ts', 'json', 'html', 'woff', 'woff2'])
 const SAFE_DOMAIN = /(^|\.)(example\.(com|org|net)|users\.noreply\.github\.com|noreply\.github\.com)$|\.(invalid|test|example|localhost)$/i
@@ -62,7 +62,9 @@ const SAFE_DOMAIN = /(^|\.)(example\.(com|org|net)|users\.noreply\.github\.com|n
 const HOME_PATH = /(?<![A-Za-z0-9_])(?:\/mnt\/[a-z]|\/[a-z]|\/var|\/usr|\/System\/Volumes\/Data)?\/(?:Users|home)\/([A-Za-z0-9._-]+)(?![A-Za-z0-9._*-])/g
 // Windows drive paths, any case, and VS Code's file:///c%3A/ form.
 const WINDOWS_HOME = /(?<![A-Za-z0-9_])[A-Za-z](?::|%3A)[\\/]{1,2}Users[\\/]{1,2}([A-Za-z0-9._-]+)(?![A-Za-z0-9._*-])/gi
-const HOST_MOUNT = /(?<![A-Za-z0-9_])\/(?:mnt|Volumes)\/([A-Za-z0-9._-]{3,})(?![A-Za-z0-9._*-])/g
+const HOST_MOUNT = /(?<![A-Za-z0-9_])\/(?:mnt|Volumes|media)\/([A-Za-z0-9._-]{3,})(?![A-Za-z0-9._*-])/g
+// A Tailscale machine name (<machine>.<tailnet>.ts.net) names the owner's network.
+const TAILNET = /(?<![A-Za-z0-9-])[A-Za-z0-9-]+\.[A-Za-z0-9-]+\.ts\.net(?![A-Za-z0-9-])/gi
 const EMAIL = /(?<![A-Za-z0-9._%+-])([A-Za-z0-9._%+-]+)@((?:[A-Za-z0-9-]+\.)+[A-Za-z]{2,})(?![A-Za-z0-9-])/g
 
 /** Structural hits in a line, and in the line after URL-decoding it (a %2F or %40 hides a path or address). */
@@ -92,6 +94,7 @@ function structuralHitsOnce(line) {
     if (GENERIC_MOUNTS.has(m[1].toLowerCase())) continue
     hits.push({ rule: 'host-mount', key: `host-mount:${m[1].toLowerCase()}`, match: m[0], shown: m[0].slice(0, m[0].length - m[1].length) + mask(m[1]) })
   }
+  for (const m of line.matchAll(TAILNET)) hits.push({ rule: 'host-name', key: `host-name:${m[0].toLowerCase()}`, match: m[0], shown: '***.ts.net' })
   for (const m of line.matchAll(EMAIL)) {
     const local = m[1].toLowerCase()
     const domain = m[2].toLowerCase()
@@ -300,6 +303,11 @@ export function run({ mode = 'tree', cwd = process.cwd(), env = process.env, bas
     log(`::error title=Privacy scan configuration::${error.message}`)
     return 2
   }
+  const allowText = existsSync(join(cwd, ALLOW_FILE)) ? readFileSync(join(cwd, ALLOW_FILE), 'utf8') : ''
+  if (allowText && scanText(allowText, { patterns: options.patterns }).some(f => f.rule === 'private-list' || f.rule === 'derived')) {
+    log(`::error title=Privacy scan configuration::${ALLOW_FILE} contains a private value. Allowlist entries for those rules take a path glob only.`)
+    return 2
+  }
   const configured = options.patterns.some(p => p.label.startsWith('private pattern'))
   if (!configured) {
     const message = 'No private pattern list (PRIVACY_PATTERNS or ~/.config/privacy-scan/patterns): only the structural rules ran.'
@@ -313,7 +321,13 @@ export function run({ mode = 'tree', cwd = process.cwd(), env = process.env, bas
   } else if (mode === 'diff') {
     base ??= env.BASE_SHA || 'origin/main'
     head ??= env.HEAD_SHA || 'HEAD'
-    findings = scanDiff(git(cwd, 'diff', '--unified=0', '--no-color', '--no-renames', '--diff-filter=AM', base, head), options)
+    // Every commit's patch, not the net diff: a value added in one commit and removed in the next is still pushed, and a merge commit publishes both.
+    let isCommit = true
+    try { git(cwd, 'rev-parse', '--verify', '--quiet', `${base}^{commit}`) } catch { isCommit = false }
+    const patch = isCommit
+      ? git(cwd, 'log', '-p', '--unified=0', '--no-color', '--no-renames', '--diff-filter=AM', '--format=', `${base}..${head}`)
+      : git(cwd, 'diff', '--unified=0', '--no-color', '--no-renames', '--diff-filter=AM', base, head)
+    findings = scanDiff(patch, options)
   } else {
     findings = scanTree(cwd, options)
   }
@@ -324,7 +338,7 @@ export function run({ mode = 'tree', cwd = process.cwd(), env = process.env, bas
   for (const f of findings) log(`::error file=${escapeProp(displayName(f.file, options))},line=${f.line},title=Privacy ${f.rule}::${escapeData(`${f.rule}: ${f.shown}`)}`)
   if (!licence.ok) log(`::error title=Licence::${licence.reason}`)
   const summary = [
-    findings.length ? `${findings.length} personal detail(s) found (${where}); values are masked:\n\n${lines.map(l => `- ${l}`).join('\n')}\n\nRemove them, or exempt a real public one in ${ALLOW_FILE}.` : `No personal paths, emails or identities in the ${where}.`,
+    findings.length ? `${findings.length} personal detail(s) found (${where}); values are masked:\n\n${lines.map(l => `- ${l}`).join('\n')}\n\nIn a PR, rewrite the branch so no commit contains the value, then push again; a value that was already pushed to a public repo is already published. Exempt a real public one in ${ALLOW_FILE}.` : `No personal paths, emails or identities in the ${where}.`,
     ...(findings.skipped?.length ? [`Not scanned (over 4 MB): ${findings.skipped.length} file(s).`] : []),
     ...(mode === 'text' ? [] : [licence.ok ? `Licence present: ${licence.file} (presence only; the content is not checked).` : `Licence: ${licence.reason}`]),
   ].join('\n\n')

@@ -13,7 +13,7 @@ const MAC = ['', 'Users', 'practice-user', 'code'].join('/')
 const LINUX = ['', 'home', 'practice-user', 'app'].join('/')
 const WIN = ['C:', 'Users', 'practice-user', 'code'].join('\\')
 const MOUNT = ['', 'mnt', 'practice-disk', 'work'].join('/')
-const MAIL = ['practice.person', 'fastmail.net'].join('@')
+const MAIL = ['practice.person', 'practice-mail.net'].join('@')
 const CANARY = 'zq-canary-handle'
 
 const scan = (line, options) => scanLine(line, 'a.md', 1, options)
@@ -35,6 +35,7 @@ test('placeholder users and URL routes are not flagged', () => {
 
 test('a machine mount path is flagged; common generic ones are not', () => {
   assert.deepEqual(rules(`volume: ${MOUNT}:/data`), ['host-mount'])
+  assert.deepEqual(rules(['', 'media', 'practice-user', 'disk'].join('/')), ['host-mount'])
   for (const generic of ['/mnt/c/Users', '/mnt/data/x', '/mnt/shared', '/Volumes/Macintosh HD']) assert.deepEqual(rules(generic), [], generic)
 })
 
@@ -275,5 +276,31 @@ test('PRIVACY_REQUIRE_PATTERNS makes a missing private list an error instead of 
     assert.equal(run({ mode: 'tree', cwd: r.dir, env, ...quiet() }), 0)
     assert.equal(run({ mode: 'tree', cwd: r.dir, env: { ...env, PRIVACY_REQUIRE_PATTERNS: 'true' }, ...quiet() }), 2)
     assert.equal(run({ mode: 'tree', cwd: r.dir, env: { ...env, PRIVACY_REQUIRE_PATTERNS: 'true', PRIVACY_PATTERNS: CANARY }, ...quiet() }), 0)
+  } finally { r.cleanup() }
+})
+
+test('a value added in one commit and removed in the next is still found (every commit is scanned, not the net diff)', () => {
+  const r = repo({ LICENSE: LICENCE_TEXT, 'README.md': 'hello\n' })
+  try {
+    r.git('checkout', '-q', '-b', 'history')
+    writeFileSync(join(r.dir, 'notes.md'), `cd ${MAC}\n`); r.git('add', '-A'); r.git('commit', '-qm', 'add')
+    writeFileSync(join(r.dir, 'notes.md'), 'clean\n'); r.git('add', '-A'); r.git('commit', '-qm', 'remove')
+    const out = quiet()
+    assert.equal(run({ mode: 'diff', cwd: r.dir, base: 'main', head: 'history', env: { PRIVACY_PATTERNS_FILE: '/nonexistent' }, log: out.log }), 1)
+    assert.match(out.lines.join('\n'), /notes\.md:1/)
+    // a base that is a tree, not a commit (a new root commit pushed to an empty remote), falls back to a plain diff
+    const empty = r.git('hash-object', '-t', 'tree', '/dev/null').trim()
+    assert.equal(run({ mode: 'diff', cwd: r.dir, base: empty, head: 'main', env: { PRIVACY_PATTERNS_FILE: '/nonexistent' }, ...quiet() }), 0)
+  } finally { r.cleanup() }
+})
+
+test('a Tailscale machine name is flagged', () => {
+  assert.deepEqual(rules(['zelda-box', 'tail1234', 'ts', 'net'].join('.')), ['host-name'])
+})
+
+test('an allowlist file that names a private value is an error', () => {
+  const r = repo({ LICENSE: LICENCE_TEXT, '.github/privacy-allow.txt': `email docs/** ${CANARY}\n`, 'a.md': 'ok\n' })
+  try {
+    assert.equal(run({ mode: 'tree', cwd: r.dir, env: { PRIVACY_PATTERNS: CANARY, PRIVACY_PATTERNS_FILE: join(r.dir, 'none') }, ...quiet() }), 2)
   } finally { r.cleanup() }
 })
