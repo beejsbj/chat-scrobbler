@@ -35,7 +35,7 @@ test('placeholder users and URL routes are not flagged', () => {
 
 test('a machine mount path is flagged; common generic ones are not', () => {
   assert.deepEqual(rules(`volume: ${MOUNT}:/data`), ['host-mount'])
-  assert.deepEqual(rules(['', 'media', 'practice-user', 'disk'].join('/')), ['host-mount'])
+  assert.deepEqual(rules('/media/hero.jpg /media/uploads/a.png'), []) // web asset paths
   for (const generic of ['/mnt/c/Users', '/mnt/data/x', '/mnt/shared', '/Volumes/Macintosh HD']) assert.deepEqual(rules(generic), [], generic)
 })
 
@@ -303,4 +303,19 @@ test('an allowlist file that names a private value is an error', () => {
   try {
     assert.equal(run({ mode: 'tree', cwd: r.dir, env: { PRIVACY_PATTERNS: CANARY, PRIVACY_PATTERNS_FILE: join(r.dir, 'none') }, ...quiet() }), 2)
   } finally { r.cleanup() }
+})
+
+test('a root push (an empty-tree base) scans every commit, not just the net change', () => {
+  const r = repo({ LICENSE: LICENCE_TEXT })
+  try {
+    writeFileSync(join(r.dir, 'n.md'), `cd ${MAC}\n`); r.git('add', '-A'); r.git('commit', '-qm', 'add')
+    writeFileSync(join(r.dir, 'n.md'), 'clean\n'); r.git('add', '-A'); r.git('commit', '-qm', 'remove')
+    const empty = r.git('hash-object', '-t', 'tree', '/dev/null').trim()
+    assert.equal(run({ mode: 'diff', cwd: r.dir, base: empty, head: 'HEAD', env: { PRIVACY_PATTERNS_FILE: '/nonexistent' }, ...quiet() }), 1)
+  } finally { r.cleanup() }
+})
+
+test('an allowlist line that exempts everything is rejected', () => {
+  assert.throws(() => parseAllow('* **'), /switch the gate off/)
+  assert.throws(() => parseAllow('* *'), /switch the gate off/)
 })

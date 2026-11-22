@@ -62,7 +62,7 @@ const SAFE_DOMAIN = /(^|\.)(example\.(com|org|net)|users\.noreply\.github\.com|n
 const HOME_PATH = /(?<![A-Za-z0-9_])(?:\/mnt\/[a-z]|\/[a-z]|\/var|\/usr|\/System\/Volumes\/Data)?\/(?:Users|home)\/([A-Za-z0-9._-]+)(?![A-Za-z0-9._*-])/g
 // Windows drive paths, any case, and VS Code's file:///c%3A/ form.
 const WINDOWS_HOME = /(?<![A-Za-z0-9_])[A-Za-z](?::|%3A)[\\/]{1,2}Users[\\/]{1,2}([A-Za-z0-9._-]+)(?![A-Za-z0-9._*-])/gi
-const HOST_MOUNT = /(?<![A-Za-z0-9_])\/(?:mnt|Volumes|media)\/([A-Za-z0-9._-]{3,})(?![A-Za-z0-9._*-])/g
+const HOST_MOUNT = /(?<![A-Za-z0-9_])\/(?:mnt|Volumes)\/([A-Za-z0-9._-]{3,})(?![A-Za-z0-9._*-])/g
 // A Tailscale machine name (<machine>.<tailnet>.ts.net) names the owner's network.
 const TAILNET = /(?<![A-Za-z0-9-])[A-Za-z0-9-]+\.[A-Za-z0-9-]+\.ts\.net(?![A-Za-z0-9-])/gi
 const EMAIL = /(?<![A-Za-z0-9._%+-])([A-Za-z0-9._%+-]+)@((?:[A-Za-z0-9-]+\.)+[A-Za-z]{2,})(?![A-Za-z0-9-])/g
@@ -176,6 +176,7 @@ export function parseAllow(text) {
   return (text ?? '').split(/\r?\n/).map((raw, i) => ({ raw: raw.trim(), n: i + 1 })).filter(l => l.raw && !l.raw.startsWith('#')).map(({ raw, n }) => {
     const [rule, glob, ...rest] = raw.split(/\s+/)
     if (rule !== '*' && !RULES.includes(rule)) throw new Error(`${ALLOW_FILE} line ${n}: unknown rule "${rule}" (use ${RULES.join(', ')} or *)`)
+    if (rule === '*' && /^[*/]+$/.test(glob ?? '')) throw new Error(`${ALLOW_FILE} line ${n}: "* ${glob}" would switch the gate off; name a rule or a narrower path`)
     if (rule === 'licence') throw new Error(`${ALLOW_FILE} line ${n}: the licence check cannot be exempted; add a LICENSE`)
     if (!glob) throw new Error(`${ALLOW_FILE} line ${n}: add a path glob after the rule`)
     // A literal here would publish the private value it exempts, in a file that is public.
@@ -322,12 +323,20 @@ export function run({ mode = 'tree', cwd = process.cwd(), env = process.env, bas
     base ??= env.BASE_SHA || 'origin/main'
     head ??= env.HEAD_SHA || 'HEAD'
     // Every commit's patch, not the net diff: a value added in one commit and removed in the next is still pushed, and a merge commit publishes both.
+    // The net diff is scanned too, so what a merge commit's conflict resolution adds is covered.
+    const EMPTY_TREE = '4b825dc642cb6eb9a060e54bf8d69288fbee4904'
     let isCommit = true
     try { git(cwd, 'rev-parse', '--verify', '--quiet', `${base}^{commit}`) } catch { isCommit = false }
+    const flags = ['--unified=0', '--no-color', '--no-renames', '--diff-filter=AM']
     const patch = isCommit
-      ? git(cwd, 'log', '-p', '--unified=0', '--no-color', '--no-renames', '--diff-filter=AM', '--format=', `${base}..${head}`)
-      : git(cwd, 'diff', '--unified=0', '--no-color', '--no-renames', '--diff-filter=AM', base, head)
-    findings = scanDiff(patch, options)
+      ? git(cwd, 'log', '-p', ...flags, '--format=', `${base}..${head}`)
+      : base === EMPTY_TREE ? git(cwd, 'log', '-p', '--root', ...flags, '--format=', head) : ''
+    const net = git(cwd, 'diff', ...flags, base, head)
+    const seen = new Set()
+    findings = [...scanDiff(patch, options), ...scanDiff(net, options)].filter(f => {
+      const key = `${f.file}:${f.rule}:${f.match.toLowerCase()}`
+      return seen.has(key) ? false : (seen.add(key), true)
+    })
   } else {
     findings = scanTree(cwd, options)
   }
