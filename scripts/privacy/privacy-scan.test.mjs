@@ -42,7 +42,7 @@ test('an email address is flagged; noreply, example, ssh remotes, role aliases a
   assert.deepEqual(rules(`Author: ${MAIL}`), ['email'])
   for (const line of [
     ['12345+someone', 'users.noreply.github.com'].join('@'), ['a', 'example.com'].join('@'), ['git', 'github.com:owner/repo.git'].join('@'),
-    ['hello', 'somesite.dev'].join('@'), 'icon@2x.png', 'react@18.2.0', ['noreply', 'anthropic.com'].join('@'), ['a.b', 'corp.invalid'].join('@'),
+    'icon@2x.png', 'react@18.2.0', ['noreply', 'anthropic.com'].join('@'), ['a.b', 'corp.invalid'].join('@'),
   ]) assert.deepEqual(rules(line), [], line)
 })
 
@@ -62,7 +62,7 @@ test('private patterns: a literal matches as a whole word, a /regex/ matches as 
   assert.deepEqual(rules(`user ${CANARY.toUpperCase()} wrote this`, { patterns }), ['private-list'])
   assert.deepEqual(rules('see canary-host-42', { patterns }), ['private-list'])
   assert.deepEqual(rules(`${CANARY}x and x${CANARY}`, { patterns }), [])
-  assert.equal(scan(`name ${CANARY}`, { patterns })[0].shown, '[private pattern #1]')
+  assert.equal(scan(`name ${CANARY}`, { patterns })[0].shown, '[private pattern]')
 })
 
 test('an invalid pattern fails loudly and does not echo the entry', () => {
@@ -103,7 +103,7 @@ test('diff mode flags only added lines, with their new line numbers', () => {
 })
 
 test('lockfiles, licence texts and vendored files are not scanned', () => {
-  for (const file of ['package-lock.json', 'bun.lock', 'node_modules/x/package.json', 'LICENSE', 'licenses/mit.txt', 'NOTICE', 'AUTHORS.md']) {
+  for (const file of ['package-lock.json', 'bun.lock', 'node_modules/x/package.json', 'LICENSE', 'licenses/mit.txt', 'NOTICE']) {
     assert.deepEqual(scanDiff(diffOf(file, [], [`by ${MAIL}`]), {}), [], file)
   }
 })
@@ -184,7 +184,7 @@ test('run in diff mode: the practice cases fail, the fixed case passes, a privat
   } finally { r.cleanup() }
 })
 
-test('this directory scans clean: the scanner and its tests publish no personal value', () => {
+test('the scanner and its tests contain nothing the structural rules flag (the private list cannot be checked here)', () => {
   const here = dirname(fileURLToPath(import.meta.url))
   const r = repo({ LICENSE: LICENCE_TEXT })
   try {
@@ -192,7 +192,7 @@ test('this directory scans clean: the scanner and its tests publish no personal 
       writeFileSync(join(r.dir, file), readFileSync(join(here, file)))
     }
     r.git('add', '-A')
-    assert.deepEqual(scanTree(r.dir, {}), [])
+    assert.equal(scanTree(r.dir, {}).length, 0)
   } finally { r.cleanup() }
 })
 
@@ -224,5 +224,56 @@ test('annotations escape workflow-command characters in file names', () => {
   try {
     run({ mode: 'tree', cwd: r.dir, env: { PRIVACY_PATTERNS_FILE: join(r.dir, 'none') }, log: l => lines.push(l) })
     assert.ok(lines.some(l => l.startsWith('::error file=a%2Cb%3Ac.md,')), lines.join('\n'))
+  } finally { r.cleanup() }
+})
+
+test('role addresses and .local hosts are flagged (the domain may be personal); robots and placeholders are not', () => {
+  assert.deepEqual(rules(['hello', 'zelda-family.net'].join('@')), ['email'])
+  assert.deepEqual(rules(['zelda', 'zeldas-mac.local'].join('@')), ['email'])
+  assert.deepEqual(rules(['noreply', 'anthropic.com'].join('@')), [])
+  assert.equal(scan(['zelda', 'zelda-family.net'].join('@'))[0].shown, 'z***@***.net') // the domain is masked down to its TLD
+})
+
+test('path shapes: WSL, Git Bash, lowercase and URI-encoded Windows, /var/home, URL-encoded', () => {
+  for (const line of [
+    ['', 'mnt', 'c', 'Users', 'zelda', 'x'].join('/'), ['', 'c', 'Users', 'zelda', 'x'].join('/'), ['c:', 'users', 'zelda', 'x'].join('\\'),
+    ['file://', 'c%3A', 'Users', 'zelda', 'x'].join('/'), ['', 'var', 'home', 'zelda'].join('/'), ['', 'usr', 'home', 'zelda'].join('/'),
+    ['%2FUsers', 'zelda', 'x'].join('%2F'), ['zelda', '40zelda-family.net'].join('%'),
+  ]) assert.equal(scan(line).length, 1, line)
+  assert.deepEqual(rules(['', 'mnt', 'c', 'Users'].join('/')), []) // a bare directory with no user name is not a finding
+})
+
+test('file names are scanned for emails and private patterns, and a name that is the finding is never printed', () => {
+  const patterns = parsePatterns(CANARY)
+  assert.equal(scanDiff(diffOf(`notes/${CANARY}-setup.md`, [], ['fine']), { patterns }).length, 1)
+  const r = repo({ LICENSE: LICENCE_TEXT, [`${CANARY}.md`]: 'fine\n' })
+  const out = quiet()
+  try {
+    assert.equal(run({ mode: 'tree', cwd: r.dir, env: { PRIVACY_PATTERNS: CANARY, PRIVACY_PATTERNS_FILE: join(r.dir, 'none') }, log: out.log }), 1)
+    assert.ok(!out.lines.join('\n').includes(CANARY))
+    assert.match(out.lines.join('\n'), /\[a file name\]/)
+  } finally { r.cleanup() }
+})
+
+test('text mode scans stdin text (a PR body, a commit log, a report) with the same rules', () => {
+  const out = quiet()
+  assert.equal(run({ mode: 'text', text: `report\nran in ${MAC}\n`, env: { PRIVACY_PATTERNS_FILE: '/nonexistent' }, log: out.log }), 1)
+  assert.ok(!out.lines.join('\n').includes('practice-user'))
+  assert.equal(run({ mode: 'text', text: 'nothing here\n', env: { PRIVACY_PATTERNS_FILE: '/nonexistent' }, ...quiet() }), 0)
+})
+
+test('allowlist: a private-list or derived entry may not name the value, and the licence check cannot be exempted', () => {
+  assert.throws(() => parseAllow(`private-list docs/** ${CANARY}`), /path glob only/)
+  assert.doesNotThrow(() => parseAllow('private-list docs/**'))
+  assert.throws(() => parseAllow('licence **'), /cannot be exempted/)
+})
+
+test('PRIVACY_REQUIRE_PATTERNS makes a missing private list an error instead of a notice', () => {
+  const r = repo({ LICENSE: LICENCE_TEXT, 'a.md': 'ok\n' })
+  try {
+    const env = { PRIVACY_PATTERNS_FILE: join(r.dir, 'none') }
+    assert.equal(run({ mode: 'tree', cwd: r.dir, env, ...quiet() }), 0)
+    assert.equal(run({ mode: 'tree', cwd: r.dir, env: { ...env, PRIVACY_REQUIRE_PATTERNS: 'true' }, ...quiet() }), 2)
+    assert.equal(run({ mode: 'tree', cwd: r.dir, env: { ...env, PRIVACY_REQUIRE_PATTERNS: 'true', PRIVACY_PATTERNS: CANARY }, ...quiet() }), 0)
   } finally { r.cleanup() }
 })

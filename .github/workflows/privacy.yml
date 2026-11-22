@@ -8,12 +8,16 @@
 # and hostnames come from the PRIVACY_PATTERNS Actions secret (one literal or /regex/ per line);
 # without it only the structural rules run (any home path, any email). Fork PRs never see the
 # secret, so they get the structural scan only. A private repo skips the scan.
+# Besides file content it scans the commit authors, committers and messages the PR adds, and the PR
+# description (the `edited` trigger re-runs it): those are published too.
+# The PR's own copy of the scanner runs with the secret in its environment, so anyone who can push a branch
+# to this repo can read the secret: keep it to names, never credentials. See docs.
 # Do not add path filters: a required check that skips never reports.
 name: privacy
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened, ready_for_review]
+    types: [opened, synchronize, reopened, ready_for_review, edited]
   push:
     branches: [main]
   workflow_dispatch:
@@ -34,6 +38,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -45,3 +50,14 @@ jobs:
           PRIVACY_PATTERNS: ${{ secrets.PRIVACY_PATTERNS }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      - name: Commit authors, messages and the PR description
+        if: github.event_name == 'pull_request'
+        run: |
+          git log --format='%an%n%ae%n%cn%n%ce%n%B' "$BASE_SHA..$HEAD_SHA" | node scripts/privacy/privacy-scan.mjs text
+          printf '%s\n' "$PR_BODY" | node scripts/privacy/privacy-scan.mjs text
+        env:
+          PRIVACY_REPO_PRIVATE: ${{ github.event.repository.private }}
+          PRIVACY_PATTERNS: ${{ secrets.PRIVACY_PATTERNS }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_BODY: ${{ github.event.pull_request.body }}

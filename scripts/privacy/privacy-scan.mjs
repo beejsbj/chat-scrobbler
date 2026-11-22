@@ -4,6 +4,7 @@
 //
 //   node privacy-scan.mjs diff   scan the lines a PR adds (BASE_SHA...HEAD_SHA, default origin/main...HEAD)
 //   node privacy-scan.mjs tree   scan every tracked file (push to the default branch, or by hand)
+//   node privacy-scan.mjs text   scan stdin: a PR body, a commit log, a report you are about to post
 //
 // Where the list of personal identifiers lives (it must not be published by the repo that
 // scans for it, so this file holds none):
@@ -47,39 +48,56 @@ const GENERIC_MOUNTS = new Set([
   'data', 'shared', 'share', 'host', 'disk', 'disks', 'cdrom', 'usb', 'volume', 'volumes', 'storage', 'workspace',
   'work', 'home', 'tmp', 'src', 'app', 'code', 'repo', 'project', 'wsl', 'wslg', 'macintosh', 'cache', 'mount',
 ])
+// Never a person: robots and documentation placeholders. Role addresses (info@, hello@) are NOT here: the domain may
+// be personal, so a real public contact address goes in the allowlist.
 const ROLE_ADDRESSES = new Set([
-  'noreply', 'no-reply', 'donotreply', 'do-not-reply', 'git', 'info', 'contact', 'hello', 'support', 'admin', 'security',
-  'press', 'team', 'sales', 'abuse', 'you', 'user', 'username', 'name', 'email', 'your-email', 'youremail', 'yourname',
-  'me', 'someone', 'foo', 'bar', 'test', 'john', 'jane', 'john.doe', 'jane.doe', 'jdoe',
+  'noreply', 'no-reply', 'donotreply', 'do-not-reply', 'git', 'you', 'user', 'username', 'name', 'email', 'your-email',
+  'youremail', 'yourname', 'me', 'someone', 'foo', 'bar', 'test', 'john', 'jane', 'john.doe', 'jane.doe', 'jdoe',
 ])
-const FILE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'avif', 'ico', 'css', 'js', 'mjs', 'cjs', 'ts', 'json', 'md', 'html', 'woff', 'woff2'])
-const SAFE_DOMAIN = /(^|\.)(example\.(com|org|net)|users\.noreply\.github\.com|noreply\.github\.com)$|\.(invalid|test|example|localhost|local)$/i
+const FILE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'avif', 'ico', 'css', 'js', 'mjs', 'cjs', 'ts', 'json', 'html', 'woff', 'woff2'])
+const SAFE_DOMAIN = /(^|\.)(example\.(com|org|net)|users\.noreply\.github\.com|noreply\.github\.com)$|\.(invalid|test|example|localhost)$/i
 
 // A name must end at a non-name character and not at `*`, so the masked form we print (first letter, then stars) is itself safe to quote.
-const HOME_PATH = /(?:(?<![A-Za-z0-9_])|(?<=\/mnt\/[a-z]))\/(?:Users|home)\/([A-Za-z0-9._-]+)(?![A-Za-z0-9._*-])/g
-const WINDOWS_HOME = /(?<![A-Za-z0-9_])[A-Za-z]:[\\/]{1,2}Users[\\/]{1,2}([A-Za-z0-9._-]+)(?![A-Za-z0-9._*-])/g
+// Home directories, with the prefixes real machines add: WSL (/mnt/c), Git Bash (/c), Fedora Atomic (/var/home), FreeBSD (/usr/home), macOS data volume.
+const HOME_PATH = /(?<![A-Za-z0-9_])(?:\/mnt\/[a-z]|\/[a-z]|\/var|\/usr|\/System\/Volumes\/Data)?\/(?:Users|home)\/([A-Za-z0-9._-]+)(?![A-Za-z0-9._*-])/g
+// Windows drive paths, any case, and VS Code's file:///c%3A/ form.
+const WINDOWS_HOME = /(?<![A-Za-z0-9_])[A-Za-z](?::|%3A)[\\/]{1,2}Users[\\/]{1,2}([A-Za-z0-9._-]+)(?![A-Za-z0-9._*-])/gi
 const HOST_MOUNT = /(?<![A-Za-z0-9_])\/(?:mnt|Volumes)\/([A-Za-z0-9._-]{3,})(?![A-Za-z0-9._*-])/g
 const EMAIL = /(?<![A-Za-z0-9._%+-])([A-Za-z0-9._%+-]+)@((?:[A-Za-z0-9-]+\.)+[A-Za-z]{2,})(?![A-Za-z0-9-])/g
 
+/** Structural hits in a line, and in the line after URL-decoding it (a %2F or %40 hides a path or address). */
 function structuralHits(line) {
+  const hits = structuralHitsOnce(line)
+  if (line.includes('%')) {
+    let decoded = null
+    try { decoded = decodeURIComponent(line) } catch { /* not valid encoding */ }
+    if (decoded && decoded !== line) {
+      const seen = new Set(hits.map(h => h.key))
+      for (const hit of structuralHitsOnce(decoded)) if (!seen.has(hit.key)) { seen.add(hit.key); hits.push(hit) }
+    }
+  }
+  return hits
+}
+
+function structuralHitsOnce(line) {
   const hits = []
   for (const [re, rule] of [[HOME_PATH, 'home-path'], [WINDOWS_HOME, 'home-path']]) {
     for (const m of line.matchAll(re)) {
       const name = m[1].toLowerCase()
       if (PLACEHOLDER_NAMES.has(name) || /^\.+$/.test(name)) continue
-      hits.push({ rule, match: m[0], shown: m[0].slice(0, m[0].length - m[1].length) + mask(m[1]) })
+      hits.push({ rule, key: `${rule}:${name}`, match: m[0], shown: m[0].slice(0, m[0].length - m[1].length) + mask(m[1]) })
     }
   }
   for (const m of line.matchAll(HOST_MOUNT)) {
     if (GENERIC_MOUNTS.has(m[1].toLowerCase())) continue
-    hits.push({ rule: 'host-mount', match: m[0], shown: m[0].slice(0, m[0].length - m[1].length) + mask(m[1]) })
+    hits.push({ rule: 'host-mount', key: `host-mount:${m[1].toLowerCase()}`, match: m[0], shown: m[0].slice(0, m[0].length - m[1].length) + mask(m[1]) })
   }
   for (const m of line.matchAll(EMAIL)) {
     const local = m[1].toLowerCase()
     const domain = m[2].toLowerCase()
     if (ROLE_ADDRESSES.has(local) || SAFE_DOMAIN.test(domain)) continue
     if (FILE_EXTENSIONS.has(domain.split('.').pop())) continue
-    hits.push({ rule: 'email', match: m[0], shown: `${mask(m[1])}@${mask(m[2])}${m[2].slice(m[2].indexOf('.'))}` })
+    hits.push({ rule: 'email', key: `email:${m[0].toLowerCase()}`, match: m[0], shown: `${mask(m[1])}@***.${m[2].split('.').pop()}` })
   }
   return hits
 }
@@ -106,7 +124,7 @@ export function parsePatterns(text) {
     const regex = line.match(/^\/(.+)\/$/)
     try {
       const re = regex ? new RegExp(regex[1], 'gi') : new RegExp(`(?<![A-Za-z0-9])${escapeRe(line)}(?![A-Za-z0-9])`, 'gi')
-      entries.push({ re, label: `private pattern #${n}` })
+      entries.push({ re, label: 'private pattern' })
     } catch {
       throw new Error(`private pattern #${n} is not a valid regular expression`)
     }
@@ -155,7 +173,10 @@ export function parseAllow(text) {
   return (text ?? '').split(/\r?\n/).map((raw, i) => ({ raw: raw.trim(), n: i + 1 })).filter(l => l.raw && !l.raw.startsWith('#')).map(({ raw, n }) => {
     const [rule, glob, ...rest] = raw.split(/\s+/)
     if (rule !== '*' && !RULES.includes(rule)) throw new Error(`${ALLOW_FILE} line ${n}: unknown rule "${rule}" (use ${RULES.join(', ')} or *)`)
+    if (rule === 'licence') throw new Error(`${ALLOW_FILE} line ${n}: the licence check cannot be exempted; add a LICENSE`)
     if (!glob) throw new Error(`${ALLOW_FILE} line ${n}: add a path glob after the rule`)
+    // A literal here would publish the private value it exempts, in a file that is public.
+    if ((rule === 'private-list' || rule === 'derived') && rest.length) throw new Error(`${ALLOW_FILE} line ${n}: ${rule} entries take a path glob only, never the value`)
     return { rule, path: globToRegExp(glob), literal: rest.join(' ').toLowerCase() }
   })
 }
@@ -167,8 +188,9 @@ const isAllowed = (allow, finding) => allow.some(a =>
 // Scanning
 // ---------------------------------------------------------------------------
 
-// Third-party text that legitimately carries other people's emails and paths.
-const SKIP_FILE = /(^|\/)(node_modules|vendor|licenses?)\/|(^|\/)(licen[sc]e|notice|copying|authors|contributors)(\.[a-z]+)?$|(^|\/)(package-lock\.json|npm-shrinkwrap\.json|yarn\.lock|pnpm-lock\.yaml|bun\.lockb?|Cargo\.lock|poetry\.lock|Gemfile\.lock|composer\.lock|go\.sum)$|\.(lock|min\.js)$/i
+// Third-party text that legitimately carries other people's emails and paths. First-party AUTHORS/CONTRIBUTORS files are
+// scanned: they are where a personal email is most likely to be added. Source maps and svg are scanned: they embed build paths.
+const SKIP_FILE = /(^|\/)node_modules\/|^(vendor|licenses?)\/|(^|\/)(licen[sc]e|notice|copying)(\.[a-z]+)?$|(^|\/)(package-lock\.json|npm-shrinkwrap\.json|yarn\.lock|pnpm-lock\.yaml|bun\.lockb?|Cargo\.lock|poetry\.lock|Gemfile\.lock|composer\.lock|go\.sum)$|\.(lock|min\.js)$/i
 const isSkipped = file => file === ALLOW_FILE || SKIP_FILE.test(file)
 
 /** Scan one line. */
@@ -179,6 +201,21 @@ export function scanLine(line, file, lineNo, { patterns = [], allow = [] } = {})
     for (const m of line.matchAll(re)) found.push({ rule: label === 'local identity' ? 'derived' : 'private-list', match: m[0], shown: `[${label}]` })
   }
   return found.map(f => ({ ...f, file, line: lineNo })).filter(f => !isAllowed(allow, f))
+}
+
+const NAME_RULES = new Set(['email', 'private-list', 'derived'])
+
+/** A personal value in a path itself (not its content). The home-directory rules do not apply to a relative path. */
+export function scanName(file, options) {
+  return scanLine(file, file, 0, options).filter(f => NAME_RULES.has(f.rule))
+}
+
+/** What to print for a file: its name, unless the name is itself the finding. */
+const displayName = (file, options) => (scanName(file, options).length ? '[a file name]' : file)
+
+/** Findings for text with no files, such as a PR body, a commit log or a report about to be posted. */
+export function scanText(text, options) {
+  return text.split('\n').flatMap((line, i) => scanLine(line, '(text)', i + 1, options))
 }
 
 /** Findings for the lines a unified=0 diff adds. */
@@ -195,7 +232,11 @@ export function scanDiff(diff, options) {
       continue
     }
     if (row.startsWith('diff --git ')) { remaining = 0; continue }
-    if (row.startsWith('+++ ')) { file = row === '+++ /dev/null' ? null : row.replace(/^\+\+\+ b\//, ''); continue }
+    if (row.startsWith('+++ ')) {
+      file = row === '+++ /dev/null' ? null : row.replace(/^\+\+\+ b\//, '')
+      if (file !== null && !isSkipped(file)) findings.push(...scanName(file, options))
+      continue
+    }
     const hunk = row.match(/^@@ -\S+ \+(\d+)(?:,(\d+))? @@/)
     if (hunk) { lineNo = Number(hunk[1]); remaining = hunk[2] === undefined ? 1 : Number(hunk[2]) }
   }
@@ -208,10 +249,12 @@ const isBinary = buffer => buffer.subarray(0, 8000).includes(0)
 export function scanTree(cwd, options) {
   const names = execFileSync('git', ['-c', 'core.quotepath=off', 'ls-files', '-z'], { cwd, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 }).split('\0').filter(Boolean)
   const findings = []
+  findings.skipped = []
   for (const file of names) {
     if (isSkipped(file)) continue
+    findings.push(...scanName(file, options))
     let buffer
-    try { if (statSync(join(cwd, file)).size > 4 * 1024 * 1024) continue; buffer = readFileSync(join(cwd, file)) } catch { continue }
+    try { if (statSync(join(cwd, file)).size > 4 * 1024 * 1024) { findings.skipped.push(file); continue }; buffer = readFileSync(join(cwd, file)) } catch { continue }
     if (isBinary(buffer)) continue
     buffer.toString('utf8').split('\n').forEach((line, i) => findings.push(...scanLine(line, file, i + 1, options)))
   }
@@ -240,7 +283,7 @@ function git(cwd, ...args) {
   return execFileSync('git', ['-c', 'core.quotepath=off', ...args], { cwd, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 })
 }
 
-export function run({ mode = 'tree', cwd = process.cwd(), env = process.env, base, head, patterns, allow, log = console.log } = {}) {
+export function run({ mode = 'tree', cwd = process.cwd(), env = process.env, base, head, patterns, allow, text, log = console.log } = {}) {
   if (String(env.PRIVACY_REPO_PRIVATE).toLowerCase() === 'true') {
     log('Private repository: privacy scan skipped.')
     return 0
@@ -258,24 +301,32 @@ export function run({ mode = 'tree', cwd = process.cwd(), env = process.env, bas
     return 2
   }
   const configured = options.patterns.some(p => p.label.startsWith('private pattern'))
-  if (!configured && env.GITHUB_ACTIONS) log('::notice title=Privacy scan::No private pattern list (PRIVACY_PATTERNS) configured: only the structural rules ran.')
+  if (!configured) {
+    const message = 'No private pattern list (PRIVACY_PATTERNS or ~/.config/privacy-scan/patterns): only the structural rules ran.'
+    if (String(env.PRIVACY_REQUIRE_PATTERNS).toLowerCase() === 'true') { log(`::error title=Privacy scan configuration::${message} PRIVACY_REQUIRE_PATTERNS is set.`); return 2 }
+    log(env.GITHUB_ACTIONS ? `::notice title=Privacy scan::${message}` : message)
+  }
 
   let findings
-  if (mode === 'diff') {
+  if (mode === 'text') {
+    findings = scanText(text ?? '', options)
+  } else if (mode === 'diff') {
     base ??= env.BASE_SHA || 'origin/main'
     head ??= env.HEAD_SHA || 'HEAD'
-    findings = scanDiff(git(cwd, 'diff', '--unified=0', '--no-color', '--no-renames', '--diff-filter=AM', `${base}...${head}`), options)
+    findings = scanDiff(git(cwd, 'diff', '--unified=0', '--no-color', '--no-renames', '--diff-filter=AM', base, head), options)
   } else {
     findings = scanTree(cwd, options)
   }
-  const licence = checkLicence(cwd)
+  const licence = mode === 'text' ? { ok: true, file: 'not checked' } : checkLicence(cwd)
+  const where = mode === 'text' ? 'text' : mode === 'diff' ? 'added lines' : 'tracked files'
 
-  const lines = findings.map(f => `${f.file}:${f.line}  ${f.rule}  ${f.shown}`)
-  for (const f of findings) log(`::error file=${escapeProp(f.file)},line=${f.line},title=Privacy ${f.rule}::${escapeData(`${f.rule}: ${f.shown}`)}`)
+  const lines = findings.map(f => `${displayName(f.file, options)}:${f.line}  ${f.rule}  ${f.shown}`)
+  for (const f of findings) log(`::error file=${escapeProp(displayName(f.file, options))},line=${f.line},title=Privacy ${f.rule}::${escapeData(`${f.rule}: ${f.shown}`)}`)
   if (!licence.ok) log(`::error title=Licence::${licence.reason}`)
   const summary = [
-    findings.length ? `${findings.length} personal detail(s) found (${mode === 'diff' ? 'added lines' : 'tracked files'}); values are masked:\n\n${lines.map(l => `- ${l}`).join('\n')}\n\nRemove them, or exempt a real public one in ${ALLOW_FILE}.` : `No personal paths, emails or identities in the ${mode === 'diff' ? 'added lines' : 'tracked files'}.`,
-    licence.ok ? `Licence: ${licence.file}.` : `Licence: ${licence.reason}`,
+    findings.length ? `${findings.length} personal detail(s) found (${where}); values are masked:\n\n${lines.map(l => `- ${l}`).join('\n')}\n\nRemove them, or exempt a real public one in ${ALLOW_FILE}.` : `No personal paths, emails or identities in the ${where}.`,
+    ...(findings.skipped?.length ? [`Not scanned (over 4 MB): ${findings.skipped.length} file(s).`] : []),
+    ...(mode === 'text' ? [] : [licence.ok ? `Licence present: ${licence.file} (presence only; the content is not checked).` : `Licence: ${licence.reason}`]),
   ].join('\n\n')
   log(summary)
   if (env.GITHUB_STEP_SUMMARY) appendFileSync(env.GITHUB_STEP_SUMMARY, `### Privacy scan\n${summary}\n`)
@@ -283,6 +334,6 @@ export function run({ mode = 'tree', cwd = process.cwd(), env = process.env, bas
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  const mode = process.argv[2] === 'diff' ? 'diff' : 'tree'
-  process.exitCode = run({ mode })
+  const mode = ['diff', 'text'].includes(process.argv[2]) ? process.argv[2] : 'tree'
+  process.exitCode = run({ mode, text: mode === 'text' ? readFileSync(0, 'utf8') : undefined })
 }
