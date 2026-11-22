@@ -46,6 +46,10 @@ test('an email address is flagged; noreply, example, ssh remotes, role aliases a
   ]) assert.deepEqual(rules(line), [], line)
 })
 
+test('the masked form we print is not itself a finding, so docs can quote it', () => {
+  for (const f of [...scan(MAC), ...scan(MOUNT), ...scan(WIN)]) assert.deepEqual(rules(f.shown), [], f.shown)
+})
+
 test('output is masked: the matched value never appears in a finding\'s shown text', () => {
   for (const f of [...scan(MAC), ...scan(MAIL), ...scan(MOUNT)]) {
     assert.ok(!f.shown.includes('practice'), f.shown)
