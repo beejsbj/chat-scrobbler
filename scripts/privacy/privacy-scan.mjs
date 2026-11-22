@@ -55,9 +55,10 @@ const ROLE_ADDRESSES = new Set([
 const FILE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'avif', 'ico', 'css', 'js', 'mjs', 'cjs', 'ts', 'json', 'md', 'html', 'woff', 'woff2'])
 const SAFE_DOMAIN = /(^|\.)(example\.(com|org|net)|users\.noreply\.github\.com|noreply\.github\.com)$|\.(invalid|test|example|localhost|local)$/i
 
-const HOME_PATH = /(?<![A-Za-z0-9_])\/(?:Users|home)\/([A-Za-z0-9._-]+)/g
-const WINDOWS_HOME = /(?<![A-Za-z0-9_])[A-Za-z]:[\\/]{1,2}Users[\\/]{1,2}([A-Za-z0-9._-]+)/g
-const HOST_MOUNT = /(?<![A-Za-z0-9_])\/(?:mnt|Volumes)\/([A-Za-z0-9._-]{3,})/g
+// A name must end at a non-name character and not at `*`, so the masked form we print (/Users/p***) is itself safe to quote.
+const HOME_PATH = /(?<![A-Za-z0-9_])\/(?:Users|home)\/([A-Za-z0-9._-]+)(?![A-Za-z0-9._*-])/g
+const WINDOWS_HOME = /(?<![A-Za-z0-9_])[A-Za-z]:[\\/]{1,2}Users[\\/]{1,2}([A-Za-z0-9._-]+)(?![A-Za-z0-9._*-])/g
+const HOST_MOUNT = /(?<![A-Za-z0-9_])\/(?:mnt|Volumes)\/([A-Za-z0-9._-]{3,})(?![A-Za-z0-9._*-])/g
 const EMAIL = /(?<![A-Za-z0-9._%+-])([A-Za-z0-9._%+-]+)@((?:[A-Za-z0-9-]+\.)+[A-Za-z]{2,})(?![A-Za-z0-9-])/g
 
 function structuralHits(line) {
