@@ -28,7 +28,7 @@ test('a home directory path on macOS, Linux or Windows is flagged, whoever it be
 test('placeholder users and URL routes are not flagged', () => {
   for (const line of [
     ['', 'Users', 'username', 'x'].join('/'), ['', 'home', 'runner', 'work'].join('/'), ['', 'home', 'node', 'app'].join('/'),
-    ['', 'Users', '<you>', 'x'].join('/'), ['', 'home', '$USER'].join('/'), 'https://site.example/home/dashboard', 'localhost:3000/home/feed',
+    ['', 'Users', '<you>', 'x'].join('/'), ['', 'home', '$USER'].join('/'), ['https://site.example', 'home', 'dashboard'].join('/'), ['localhost:3000', 'home', 'feed'].join('/'),
     ['C:', 'Users', 'Public', 'x'].join('\\'),
   ]) assert.deepEqual(rules(line), [], line)
 })
@@ -83,7 +83,7 @@ test('derived identities come from the local machine, never in CI, and skip gene
 })
 
 test('exemptions: by rule, path glob and optional literal; unknown rules are rejected', () => {
-  const allow = parseAllow(`# intentional\nemail docs/**\nhome-path fixtures/*.json practice-user\n`)
+  const allow = parseAllow(`# intentional\nemail docs/**\nhome-path fixtures/*.json ${MAC.split('/').slice(0, 3).join('/')}\n`)
   assert.deepEqual(scanLine(MAIL, 'docs/deep/page.md', 1, { allow }), [])
   assert.deepEqual(scanLine(MAIL, 'src/page.md', 1, { allow }).map(f => f.rule), ['email'])
   assert.deepEqual(scanLine(MAC, 'fixtures/a.json', 1, { allow }), [])
@@ -193,5 +193,36 @@ test('this directory scans clean: the scanner and its tests publish no personal 
     }
     r.git('add', '-A')
     assert.deepEqual(scanTree(r.dir, {}), [])
+  } finally { r.cleanup() }
+})
+
+test('the allowlist literal must equal the whole match, so a longer name cannot ride on a short entry', () => {
+  const allow = parseAllow(['home-path', 'Dockerfile', ['', 'home', 'appuser'].join('/')].join(' '))
+  assert.deepEqual(scanLine(['', 'home', 'appuser'].join('/'), 'Dockerfile', 1, { allow }), [])
+  assert.deepEqual(scanLine(['', 'home', 'appuser-two'].join('/'), 'Dockerfile', 1, { allow }).map(f => f.rule), ['home-path'])
+})
+
+test('a WSL home path (a Windows drive mounted under /mnt) is flagged', () => {
+  assert.deepEqual(rules(['', 'mnt', 'c', 'Users', 'practice-user', 'code'].join('/')), ['home-path'])
+})
+
+test('source maps and svg files are scanned; only exact licence-type filenames are skipped', () => {
+  for (const file of ['dist/app.js.map', 'public/logo.svg', 'license-check.js', 'notice-board.md']) {
+    assert.equal(scanDiff(diffOf(file, [], [`at ${MAC}`]), {}).length, 1, file)
+  }
+  for (const file of ['LICENSE', 'LICENSE.md', 'docs/NOTICE.txt']) assert.equal(scanDiff(diffOf(file, [], [`at ${MAC}`]), {}).length, 0, file)
+})
+
+test('an added line whose content starts with ++ is still scanned', () => {
+  const diff = ['diff --git a/a.md b/a.md', '--- a/a.md', '+++ b/a.md', '@@ -1,0 +1,2 @@', `+++ ${MAC}`, '+second', ''].join('\n')
+  assert.deepEqual(scanDiff(diff, {}).map(f => [f.file, f.line]), [['a.md', 1]])
+})
+
+test('annotations escape workflow-command characters in file names', () => {
+  const lines = []
+  const r = repo({ LICENSE: LICENCE_TEXT, ['a,b:c.md']: `at ${MAC}\n` })
+  try {
+    run({ mode: 'tree', cwd: r.dir, env: { PRIVACY_PATTERNS_FILE: join(r.dir, 'none') }, log: l => lines.push(l) })
+    assert.ok(lines.some(l => l.startsWith('::error file=a%2Cb%3Ac.md,')), lines.join('\n'))
   } finally { r.cleanup() }
 })
